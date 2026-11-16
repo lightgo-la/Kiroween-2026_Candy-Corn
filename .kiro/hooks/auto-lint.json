@@ -1,0 +1,24 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "auto-lint-test",
+      "description": "AST 코드나 compiler-rules.md가 바뀌면 cargo test(QC 포함)를 실행한다",
+      "trigger": "PostFileSave",
+      "matcher": "(src[\\\\/]ast[\\\\/].*\\.rs|compiler-rules\\.md)$",
+      "action": { "type": "command", "command": "cargo test --quiet" },
+      "timeout": 300
+    },
+    {
+      "name": "auto-lint-cli",
+      "description": "같은 변경에 대해 steering 규칙으로 CLI 린트를 돌린다 (ERROR 진단이면 실패)",
+      "trigger": "PostFileSave",
+      "matcher": "(src[\\\\/]ast[\\\\/].*\\.rs|compiler-rules\\.md)$",
+      "action": {
+        "type": "command",
+        "command": "cargo run --quiet -- --cli --steering .kiro/steering/compiler-rules.md --data samples/sales.csv"
+      },
+      "timeout": 300
+    }
+  ]
+}

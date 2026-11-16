@@ -1,0 +1,13 @@
+# 빌드 산출물 (.cargo/config.toml이 C:/cargo-target 으로 보내지만 기본 경로도 막아 둔다)
+/target
+**/*.rs.bk
+
+# 편집기/OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# 로컬 비밀값
+.env
+*.key
