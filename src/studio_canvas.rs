@@ -1,9 +1,11 @@
-//! 노드 캔버스: 데이터/역할/제약/출력 블록을 끌어 배치하고 컴파일러 노드로 연결해 결과까지 한 화면에서 본다.
+//! 블루프린트 캔버스: 설정·데이터·역할·제약·출력 블록을 컴파일러 노드에 연결하고 결과·LLM 실행까지 한 화면에서 구성한다.
+//! 캔버스의 모든 노드 값이 곧 블루프린트(.kiro) 파일의 내용이다.
 //! 이동(드래그)·확대(Ctrl+휠, 핀치)는 egui::Scene이 처리한다.
 
 use crate::ast::{ConstraintNode, ConstraintType, OutputFormat, OutputSchemaAst, TargetModel};
+use crate::blueprint::{MAX_SAMPLE_ROWS, PRESETS};
 use crate::pipeline::{self, CompileResult, LoadedData};
-use crate::theme::{self, Palette};
+use crate::theme::{self, Palette, THEMES};
 use eframe::egui::{
     self, Align, Color32, CornerRadius, CursorIcon, Frame, Id, Layout, Margin, Pos2, Rect, RichText, Sense, Shape,
     Stroke, Ui, UiBuilder, epaint::CubicBezierShape, epaint::Shadow,
@@ -18,6 +20,8 @@ pub enum NodeKey {
     Output,
     Root,
     Result,
+    Llm,
+    Settings,
     Goal(u64),
 }
 
@@ -29,15 +33,19 @@ impl NodeKey {
             NodeKey::Output => Some("output"),
             NodeKey::Root => Some("root"),
             NodeKey::Result => Some("result"),
+            NodeKey::Llm => Some("llm"),
+            NodeKey::Settings => Some("settings"),
             NodeKey::Goal(_) => None,
         }
     }
-    pub const FIXED: [NodeKey; 5] = [
+    pub const FIXED: [NodeKey; 7] = [
         NodeKey::Data,
         NodeKey::Role,
         NodeKey::Output,
         NodeKey::Root,
         NodeKey::Result,
+        NodeKey::Llm,
+        NodeKey::Settings,
     ];
 }
 
@@ -60,6 +68,22 @@ pub struct Model<'a> {
     pub loading: bool,
     pub compiling: bool,
     pub stale: bool,
+    pub project: &'a mut String,
+    pub theme_idx: &'a mut usize,
+    pub sample_rows: &'a mut usize,
+    pub llm: LlmView<'a>,
+}
+
+/// LLM 실행 노드에 보여 줄 상태.
+pub struct LlmView<'a> {
+    pub provider: &'static str,
+    pub key_env: &'static str,
+    pub model: &'a mut String,
+    pub model_hint: &'static str,
+    pub has_key: bool,
+    pub running: bool,
+    /// (통과 여부, 한 줄 요약)
+    pub verdict: Option<(bool, String)>,
 }
 
 /// 캔버스가 앱에 요청하는 동작(소유권 충돌을 피하려고 반환값으로 전달한다).
@@ -68,61 +92,15 @@ pub enum Action {
     Compile,
     RemoveGoal(u64),
     AddGoal(String),
-    Recipe(usize),
+    /// 내장 블루프린트 적용 (blueprint::PRESETS 번호)
+    Preset(usize),
     SaveProject,
     LoadProject,
     SaveOutput,
+    RunLlm,
+    /// 샘플 행 수를 바꿨으니 데이터를 다시 프로파일링
+    ReloadSample,
 }
-
-pub struct Recipe {
-    pub name: &'static str,
-    pub role: &'static str,
-    pub goals: &'static [&'static str],
-    pub fields: &'static str,
-}
-
-pub const RECIPES: [Recipe; 4] = [
-    Recipe {
-        name: "매출 이상치 분석",
-        role: "매출 데이터를 분석해 근본 원인을 찾는 데이터 분석가",
-        goals: &[
-            "결측치 0.2% 제외",
-            "이상치 우선 탐지",
-            "데이터에 없는 내용은 추론하지 마",
-        ],
-        fields: "root_causes,outliers,recommendations",
-    },
-    Recipe {
-        name: "데이터 품질 점검",
-        role: "데이터 품질 감사관",
-        goals: &[
-            "결측치 비율을 컬럼별로 보고",
-            "중복 행 여부를 확인",
-            "데이터에 없는 내용은 추론하지 마",
-        ],
-        fields: "quality_issues,severity,fixes",
-    },
-    Recipe {
-        name: "경영진 요약 리포트",
-        role: "경영진에게 보고하는 비즈니스 분석가",
-        goals: &[
-            "요약은 3문장 이내",
-            "숫자는 소수점 둘째 자리까지",
-            "핵심 지표를 먼저 제시",
-        ],
-        fields: "headline,key_metrics,next_steps",
-    },
-    Recipe {
-        name: "고객 세그먼트 분류",
-        role: "고객 데이터를 세그먼트로 분류하는 분석가",
-        goals: &[
-            "금액 4M 기준으로 분류",
-            "분류 근거를 한 줄로 설명",
-            "분류할 수 없으면 unknown으로 표기",
-        ],
-        fields: "segment,reason,confidence",
-    },
-];
 
 pub const TEMPLATES: [(&str, &[&str]); 5] = [
     ("결측치", &["결측치 0.2% 제외", "결측치 비율을 컬럼별로 보고"]),
@@ -181,6 +159,8 @@ const ROLE_COLOR: Color32 = Color32::from_rgb(0xc0, 0x8c, 0xff);
 const DATA_COLOR: Color32 = Color32::from_rgb(0x4f, 0xd1, 0xc5);
 const OUT_COLOR: Color32 = Color32::from_rgb(0xf2, 0xd4, 0x6b);
 const RESULT_COLOR: Color32 = Color32::from_rgb(0xff, 0x8f, 0xb8);
+const LLM_COLOR: Color32 = Color32::from_rgb(0x9a, 0xe6, 0x6e);
+const SETTINGS_COLOR: Color32 = Color32::from_rgb(0xc8, 0xb8, 0xa6);
 
 impl Canvas {
     pub fn pos_of(&self, key: NodeKey) -> Option<Pos2> {
@@ -216,9 +196,10 @@ impl Canvas {
     }
 
     fn layout(&mut self, goals: &[Goal]) {
-        self.pos.insert(NodeKey::Data, Pos2::new(0.0, 0.0));
-        self.pos.insert(NodeKey::Role, Pos2::new(0.0, 210.0));
-        self.pos.insert(NodeKey::Output, Pos2::new(0.0, 390.0));
+        self.pos.insert(NodeKey::Settings, Pos2::new(0.0, 0.0));
+        self.pos.insert(NodeKey::Data, Pos2::new(0.0, 170.0));
+        self.pos.insert(NodeKey::Role, Pos2::new(0.0, 400.0));
+        self.pos.insert(NodeKey::Output, Pos2::new(0.0, 580.0));
         for (i, g) in goals.iter().enumerate() {
             self.pos
                 .insert(NodeKey::Goal(g.id), Pos2::new(290.0, i as f32 * GOAL_STEP));
@@ -226,6 +207,7 @@ impl Canvas {
         let mid = (goals.len() as f32 * GOAL_STEP / 2.0 - 110.0).max(120.0);
         self.pos.insert(NodeKey::Root, Pos2::new(590.0, mid));
         self.pos.insert(NodeKey::Result, Pos2::new(590.0, mid + 190.0));
+        self.pos.insert(NodeKey::Llm, Pos2::new(900.0, mid + 190.0));
     }
 
     fn fit(&mut self) {
@@ -319,17 +301,26 @@ impl Canvas {
                     ui.close();
                 }
             });
-            ui.menu_button("🎃 레시피", |ui| {
+            ui.menu_button("🧩 블루프린트", |ui| {
                 ui.label(
-                    RichText::new("역할·제약·출력 필드를 한 번에 채웁니다")
+                    RichText::new("타겟·역할·제약·출력·샘플 행 수·테마를 한 번에 설정합니다 (현재 데이터는 유지)")
                         .small()
                         .color(p.sub),
                 );
-                for (i, r) in RECIPES.iter().enumerate() {
-                    if ui.button(r.name).clicked() {
-                        actions.push(Action::Recipe(i));
+                for (i, preset) in PRESETS.iter().enumerate() {
+                    if ui.button(preset.name).on_hover_text(preset.summary).clicked() {
+                        actions.push(Action::Preset(i));
                         ui.close();
                     }
+                }
+                ui.separator();
+                if ui.button("블루프린트 열기…").clicked() {
+                    actions.push(Action::LoadProject);
+                    ui.close();
+                }
+                if ui.button("현재 설정을 블루프린트로 저장…").clicked() {
+                    actions.push(Action::SaveProject);
+                    ui.close();
                 }
             });
             if ui
@@ -345,10 +336,14 @@ impl Canvas {
             ui.checkbox(&mut self.snap, "격자 스냅");
             ui.checkbox(&mut self.animate, "흐름 애니메이션");
             ui.separator();
-            if ui.button("프로젝트 저장").clicked() {
+            if ui
+                .button("블루프린트 저장")
+                .on_hover_text("데이터 경로·역할·제약·출력·타겟·샘플 행 수·테마·LLM 모델·노드 배치를 .kiro 파일로 저장")
+                .clicked()
+            {
                 actions.push(Action::SaveProject);
             }
-            if ui.button("불러오기").clicked() {
+            if ui.button("블루프린트 열기").clicked() {
                 actions.push(Action::LoadProject);
             }
             if ui.button("결과 저장").clicked() {
@@ -357,7 +352,7 @@ impl Canvas {
         });
         ui.label(
             RichText::new(
-                "노드 제목줄을 끌어 이동 · 빈 곳을 끌어 화면 이동 · Ctrl+휠 확대 · Delete로 선택한 제약 삭제",
+                "노드 제목줄을 끌어 이동 · 빈 곳을 끌어 화면 이동 · Ctrl+휠 확대 · Delete로 선택한 제약 삭제 · 캔버스 전체가 블루프린트로 저장됩니다",
             )
             .small()
             .color(p.sub),
@@ -448,6 +443,42 @@ impl Canvas {
         self.rects
             .retain(|k, _| matches!(k, NodeKey::Goal(_)) && live_ids.contains(k) || !matches!(k, NodeKey::Goal(_)));
 
+        // 블루프린트 설정
+        self.node(
+            ui,
+            NodeKey::Settings,
+            "⚙ 블루프린트 설정",
+            SETTINGS_COLOR,
+            250.0,
+            p,
+            false,
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("이름");
+                    ui.add(egui::TextEdit::singleline(m.project).desired_width(f32::INFINITY));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("테마");
+                    egui::ComboBox::from_id_salt("canvas-theme")
+                        .width(170.0)
+                        .selected_text(THEMES[(*m.theme_idx).min(THEMES.len() - 1)].name)
+                        .show_ui(ui, |ui| {
+                            for (i, t) in THEMES.iter().enumerate() {
+                                ui.selectable_value(m.theme_idx, i, t.name);
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
+                    if ui.small_button("저장").clicked() {
+                        actions.push(Action::SaveProject);
+                    }
+                    if ui.small_button("열기").clicked() {
+                        actions.push(Action::LoadProject);
+                    }
+                });
+            },
+        );
+
         // 데이터
         self.node(
             ui,
@@ -483,6 +514,13 @@ impl Canvas {
                         ui.label(RichText::new("파일을 창에 끌어다 놓아도 됩니다").small().color(p.sub));
                     }
                 }
+                ui.horizontal(|ui| {
+                    ui.label("샘플 행");
+                    let r = ui.add(egui::DragValue::new(m.sample_rows).range(0..=MAX_SAMPLE_ROWS));
+                    if r.drag_stopped() || r.lost_focus() {
+                        actions.push(Action::ReloadSample);
+                    }
+                });
                 ui.horizontal(|ui| {
                     if ui.add_enabled(!m.loading, egui::Button::new("📂 로드")).clicked() {
                         actions.push(Action::PickFile);
@@ -660,6 +698,64 @@ impl Canvas {
             },
         );
 
+        // LLM 실행
+        let has_result = m.result.is_some();
+        let llm = &mut m.llm;
+        self.node(
+            ui,
+            NodeKey::Llm,
+            "✦ LLM 실행",
+            LLM_COLOR,
+            250.0,
+            p,
+            !llm.has_key,
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(llm.provider);
+                    ui.add(
+                        egui::TextEdit::singleline(llm.model)
+                            .id_salt("canvas-llm-model")
+                            .desired_width(f32::INFINITY)
+                            .hint_text(llm.model_hint),
+                    );
+                });
+                let enabled = llm.has_key && has_result && !llm.running;
+                if theme::primary_button(ui, p, if llm.running { "실행 중" } else { "▶ 실제 실행" }, enabled).clicked()
+                {
+                    actions.push(Action::RunLlm);
+                }
+                if llm.running {
+                    ui.spinner();
+                }
+                match (&llm.verdict, llm.has_key, has_result) {
+                    (Some((ok, text)), _, _) => {
+                        ui.label(
+                            RichText::new(text)
+                                .small()
+                                .color(if *ok { theme::OK } else { theme::ERR }),
+                        );
+                    }
+                    (None, false, _) => {
+                        ui.label(
+                            RichText::new(format!("{} 설정 후 앱을 다시 시작하세요", llm.key_env))
+                                .small()
+                                .color(p.sub),
+                        );
+                    }
+                    (None, true, false) => {
+                        ui.label(RichText::new("먼저 컴파일하세요").small().color(p.sub));
+                    }
+                    (None, true, true) => {
+                        ui.label(
+                            RichText::new("응답은 출력 형식·필수 필드로 검증합니다")
+                                .small()
+                                .color(p.sub),
+                        );
+                    }
+                }
+            },
+        );
+
         // 연결선
         let time = ui.ctx().input(|i| i.time) as f32;
         let mut shapes = Vec::new();
@@ -699,6 +795,19 @@ impl Canvas {
                     true,
                     p,
                 );
+                if let Some(l) = self.rects.get(&NodeKey::Llm) {
+                    let live = m.llm.has_key && m.result.is_some();
+                    wire(
+                        &mut shapes,
+                        res.right_center(),
+                        l.left_center(),
+                        LLM_COLOR,
+                        time,
+                        self.animate && m.llm.running,
+                        live,
+                        p,
+                    );
+                }
             }
         }
         ui.painter().set(wire_slot, Shape::Vec(shapes));

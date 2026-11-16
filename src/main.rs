@@ -2,6 +2,7 @@
 
 mod app;
 mod ast;
+mod blueprint;
 mod canvas;
 mod history;
 mod mcp_server;
@@ -38,9 +39,14 @@ enum FormatArg {
     about = "프롬프트 압축/린트 스튜디오 (인자 없으면 GUI 실행)"
 )]
 struct Cli {
-    /// GUI 시작 시 바로 불러올 CSV/JSON 파일
+    /// GUI 시작 시 바로 불러올 CSV/JSON 파일 (.kiro 파일이면 블루프린트로 연다)
     #[arg(conflicts_with_all = ["cli", "mcp"])]
     file: Option<PathBuf>,
+    /// 블루프린트(.kiro): 전체 설정을 한 번에 적용한다.
+    /// --cli와 함께 쓰면 그 설정으로 컴파일하고, 없으면 GUI를 그 설정으로 연다.
+    /// --data는 블루프린트의 데이터 경로를, --constraint/--steering은 제약을 추가한다.
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["mcp", "canvas", "run_graph", "file"])]
+    blueprint: Option<PathBuf>,
     /// GUI 테마 번호 1~7 (디자인샘플 01~07)
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=7))]
     theme: Option<u8>,
@@ -69,7 +75,7 @@ struct Cli {
     #[arg(long, requires = "cli")]
     data: Option<PathBuf>,
     /// 역할 지시문
-    #[arg(long, default_value = "Data analyst", requires = "cli")]
+    #[arg(long, default_value = "Data analyst", requires = "cli", conflicts_with = "blueprint")]
     role: String,
     /// 제약 조건 (여러 번 지정 가능)
     #[arg(long = "constraint", requires = "cli")]
@@ -77,15 +83,27 @@ struct Cli {
     /// steering 마크다운 (`- ` 불릿을 제약으로 읽음)
     #[arg(long, requires = "cli")]
     steering: Option<PathBuf>,
-    #[arg(long, value_enum, default_value = "claude", requires = "cli")]
+    #[arg(
+        long,
+        value_enum,
+        default_value = "claude",
+        requires = "cli",
+        conflicts_with = "blueprint"
+    )]
     target: TargetArg,
-    #[arg(long, value_enum, default_value = "json", requires = "cli")]
+    #[arg(
+        long,
+        value_enum,
+        default_value = "json",
+        requires = "cli",
+        conflicts_with = "blueprint"
+    )]
     format: FormatArg,
     /// 필수 출력 필드 (쉼표 구분)
-    #[arg(long, default_value = pipeline::DEFAULT_FIELDS, requires = "cli")]
+    #[arg(long, default_value = pipeline::DEFAULT_FIELDS, requires = "cli", conflicts_with = "blueprint")]
     fields: String,
     /// 샘플 행 수
-    #[arg(long, default_value_t = 8, requires = "cli")]
+    #[arg(long, default_value_t = 8, requires = "cli", conflicts_with = "blueprint")]
     sample_rows: usize,
 }
 
@@ -154,7 +172,11 @@ fn main() -> ExitCode {
             }
         };
     }
-    let startup_file = cli.file.clone();
+    // .kiro 파일을 위치 인자로 넘기면(탐색기에서 연결 프로그램으로 열기 등) 블루프린트로 연다.
+    let (startup_file, startup_blueprint) = match (cli.file.clone(), cli.blueprint.clone()) {
+        (Some(f), None) if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("kiro")) => (None, Some(f)),
+        (f, b) => (f, b),
+    };
     let theme_arg = cli.theme.map(|t| t as usize - 1);
     detach_console();
     let options = eframe::NativeOptions {
@@ -167,7 +189,14 @@ fn main() -> ExitCode {
     match eframe::run_native(
         "Sugar-Coat Studio",
         options,
-        Box::new(|cc| Ok(Box::new(app::StudioApp::new(cc, startup_file.clone(), theme_arg)))),
+        Box::new(|cc| {
+            Ok(Box::new(app::StudioApp::new(
+                cc,
+                startup_file.clone(),
+                startup_blueprint.clone(),
+                theme_arg,
+            )))
+        }),
     ) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -178,6 +207,16 @@ fn main() -> ExitCode {
 }
 
 fn run_cli(cli: Cli) -> ExitCode {
+    let bp = match &cli.blueprint {
+        Some(p) => match blueprint::Blueprint::load(p) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                eprintln!("블루프린트 로드 실패: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
     let mut constraints = cli.constraints;
     if let Some(p) = &cli.steering {
         match std::fs::read_to_string(p) {
@@ -188,8 +227,13 @@ fn run_cli(cli: Cli) -> ExitCode {
             }
         }
     }
-    let data = match &cli.data {
-        Some(p) => match pipeline::load_data(p, cli.sample_rows) {
+    let sample_rows = bp.as_ref().map_or(cli.sample_rows, |b| b.sample_rows);
+    let data_path = cli
+        .data
+        .clone()
+        .or_else(|| bp.as_ref().and_then(|b| b.data_path_from(cli.blueprint.as_deref())));
+    let data = match &data_path {
+        Some(p) => match pipeline::load_data(p, sample_rows) {
             Ok(d) => Some(d),
             Err(e) => {
                 eprintln!("데이터 로드 실패: {e}");
@@ -198,27 +242,26 @@ fn run_cli(cli: Cli) -> ExitCode {
         },
         None => None,
     };
-    let req = pipeline::CompileRequest {
-        target: match cli.target {
-            TargetArg::Claude => TargetModel::Claude,
-            TargetArg::Gpt => TargetModel::Gpt,
-            TargetArg::Gemini => TargetModel::Gemini,
+    let req = match &bp {
+        Some(b) => b.to_request(constraints, data),
+        None => pipeline::CompileRequest {
+            target: match cli.target {
+                TargetArg::Claude => TargetModel::Claude,
+                TargetArg::Gpt => TargetModel::Gpt,
+                TargetArg::Gemini => TargetModel::Gemini,
+            },
+            role: cli.role,
+            constraints,
+            format: match cli.format {
+                FormatArg::Json => OutputFormat::StrictJson,
+                FormatArg::Table => OutputFormat::MarkdownTable,
+            },
+            fields: pipeline::parse_fields(&cli.fields),
+            data,
         },
-        role: cli.role,
-        constraints,
-        format: match cli.format {
-            FormatArg::Json => OutputFormat::StrictJson,
-            FormatArg::Table => OutputFormat::MarkdownTable,
-        },
-        fields: pipeline::parse_fields(&cli.fields),
-        data,
     };
     let r = pipeline::compile(&req);
-    println!(
-        "{}
-",
-        r.output
-    );
+    println!("{}\n", r.output);
     for d in &r.ast.lint_warnings {
         eprintln!("[{}] {}", d.severity, d.message);
     }

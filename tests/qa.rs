@@ -263,3 +263,48 @@ fn qa_1000_scenarios() {
         fails.iter().take(15).cloned().collect::<Vec<_>>().join("\n")
     );
 }
+
+/// 블루프린트로 전체 설정을 적용하는 CLI 경로 (기본 cargo test에 포함).
+#[test]
+fn blueprint_cli() {
+    let dir = std::env::temp_dir().join(format!("sc_qa_bp_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("d.csv"), "id,amount\n1,10\n2,20\n3,30\n").unwrap();
+    let bp = dir.join("plan.kiro");
+    std::fs::write(
+        &bp,
+        r#"{"version":2,"target":"Gpt","format":"MarkdownTable","role":"품질 감사관","fields":"column,issue",
+            "sample_rows":2,"data_path":"d.csv",
+            "goals":[{"text":"중복 행 여부를 확인","on":true},{"text":"꺼진 제약","on":false}]}"#,
+    )
+    .unwrap();
+    let out = Command::new(BIN)
+        .args(["--cli", "--blueprint"])
+        .arg(&bp)
+        .args(["--constraint", "추가 제약"])
+        .output()
+        .unwrap();
+    let so = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(so.contains("# Role"), "GPT 형식이어야 함: {so}");
+    assert!(so.contains("rows: 3"), "상대 경로 데이터가 로드되어야 함");
+    assert!(so.contains("중복 행 여부를 확인") && so.contains("추가 제약"));
+    assert!(!so.contains("꺼진 제약"));
+    assert!(so.contains("| column | issue |"));
+
+    // 블루프린트가 정하는 값을 CLI로 함께 주면 거부한다.
+    let clash = Command::new(BIN)
+        .args(["--cli", "--blueprint"])
+        .arg(&bp)
+        .args(["--role", "x"])
+        .output()
+        .unwrap();
+    assert_eq!(clash.status.code(), Some(2));
+    // 없는 파일은 오류 종료
+    let missing = Command::new(BIN)
+        .args(["--cli", "--blueprint", "Z:\\no\\such.kiro"])
+        .output()
+        .unwrap();
+    assert_eq!(missing.status.code(), Some(1));
+    let _ = std::fs::remove_dir_all(&dir);
+}

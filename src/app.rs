@@ -2,14 +2,14 @@
 //! 무거운 작업(프로파일링, 컴파일)은 워커 스레드에서 실행하고 mpsc 채널로 결과만 받는다.
 
 use crate::ast::{ConstraintNode, OutputFormat, TargetModel};
+use crate::blueprint::{self, Blueprint, GoalSpec, PRESETS};
 use crate::canvas::{graph::Provider, llm};
 use crate::history::{self, History};
 use crate::pipeline::{self, CompileRequest, CompileResult, LoadedData};
-use crate::studio_canvas::{self as canvas, Action, Canvas, Goal, Model, NodeKey};
+use crate::studio_canvas::{Action, Canvas, Goal, LlmView, Model, NodeKey};
 use crate::theme::{self, Palette, THEMES};
 use eframe::egui::{self, Pos2, RichText};
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 enum Msg {
@@ -96,51 +96,6 @@ enum Tab {
     XRay,
 }
 
-/// `.kiro` 프로젝트 파일 형식. 필드가 빠진 예전 파일도 읽을 수 있게 기본값을 둔다.
-#[derive(Serialize, Deserialize)]
-#[serde(default)]
-struct ProjectFile {
-    version: u32,
-    project: String,
-    target: TargetModel,
-    role: String,
-    goals: Vec<GoalSave>,
-    format: OutputFormat,
-    fields: String,
-    sample_rows: usize,
-    theme: usize,
-    data_path: Option<String>,
-    positions: Vec<(String, [f32; 2])>,
-}
-
-const PROJECT_VERSION: u32 = 1;
-
-impl Default for ProjectFile {
-    fn default() -> Self {
-        ProjectFile {
-            version: PROJECT_VERSION,
-            project: "untitled.kiro".into(),
-            target: TargetModel::Claude,
-            role: String::new(),
-            goals: vec![],
-            format: OutputFormat::StrictJson,
-            fields: pipeline::DEFAULT_FIELDS.into(),
-            sample_rows: 8,
-            theme: 3,
-            data_path: None,
-            positions: vec![],
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Default)]
-#[serde(default)]
-struct GoalSave {
-    text: String,
-    on: bool,
-    pos: Option<[f32; 2]>,
-}
-
 pub struct StudioApp {
     project: String,
     target: TargetModel,
@@ -167,6 +122,10 @@ pub struct StudioApp {
     loaded_k: usize,
     hovering_file: bool,
     steering_rules: Vec<String>,
+    /// 마지막으로 적용한 테마(캔버스·헤더·블루프린트 어디서 바꿔도 프레임 시작에 한 번 적용)
+    applied_theme: usize,
+    /// 마지막으로 열거나 저장한 블루프린트 파일
+    blueprint_path: Option<PathBuf>,
     history: History<Snapshot>,
     logo: Option<egui::TextureHandle>,
     llm_models: [String; 3],
@@ -205,7 +164,12 @@ pub fn install_korean_font(ctx: &egui::Context) -> bool {
 }
 
 impl StudioApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, startup_file: Option<PathBuf>, theme_arg: Option<usize>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        startup_file: Option<PathBuf>,
+        startup_blueprint: Option<PathBuf>,
+        theme_arg: Option<usize>,
+    ) -> Self {
         let font_ok = install_korean_font(&cc.egui_ctx);
         let theme_idx = theme_arg.unwrap_or(3).min(THEMES.len() - 1); // 기본: 04 프리미엄 느와르 오렌지
         theme::apply(&cc.egui_ctx, &THEMES[theme_idx]);
@@ -242,6 +206,8 @@ impl StudioApp {
             loaded_k: 8,
             hovering_file: false,
             steering_rules: vec![],
+            applied_theme: theme_idx,
+            blueprint_path: None,
             history: History::new(Snapshot {
                 target: TargetModel::Claude,
                 role: String::new(),
@@ -279,6 +245,12 @@ impl StudioApp {
         if !font_ok {
             app.status = "한글 폰트(malgun.ttf 등)를 찾지 못해 한글이 깨질 수 있습니다".into();
             app.status_err = true;
+        }
+        if let Some(bp) = startup_blueprint {
+            app.open_blueprint(&bp, &cc.egui_ctx);
+            if let Some(t) = theme_arg {
+                app.theme_idx = t.min(THEMES.len() - 1); // --theme가 블루프린트보다 우선
+            }
         }
         if let Some(p) = startup_file {
             app.spawn_load(p, &cc.egui_ctx);
@@ -511,29 +483,30 @@ impl StudioApp {
 
     // ---------- 프로젝트 / 결과 파일 ----------
 
-    fn save_project(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("Sugar-Coat 프로젝트", &["kiro"])
-            .set_file_name(self.project.clone())
-            .save_file()
-        else {
-            return;
-        };
-        let mut positions = vec![];
-        for k in NodeKey::FIXED {
-            if let (Some(name), Some(p)) = (k.fixed_name(), self.canvas.pos_of(k)) {
-                positions.push((name.to_string(), [p.x, p.y]));
-            }
-        }
-        let file = ProjectFile {
-            version: PROJECT_VERSION,
+    /// 현재 화면의 전체 설정을 블루프린트로 만든다.
+    fn to_blueprint(&self, save_to: Option<&Path>) -> Blueprint {
+        let positions = NodeKey::FIXED
+            .iter()
+            .filter_map(|k| Some((k.fixed_name()?.to_string(), self.canvas.pos_of(*k).map(|p| [p.x, p.y])?)))
+            .collect();
+        // 데이터가 블루프린트와 같은 폴더(또는 하위)에 있으면 상대 경로로 저장해 폴더째 옮겨도 동작하게 한다.
+        let data_path = self.loaded.as_ref().map(|d| {
+            save_to
+                .and_then(Path::parent)
+                .and_then(|dir| d.path.strip_prefix(dir).ok())
+                .unwrap_or(&d.path)
+                .display()
+                .to_string()
+        });
+        Blueprint {
+            version: blueprint::VERSION,
             project: self.project.clone(),
             target: self.target,
             role: self.role.clone(),
             goals: self
                 .goals
                 .iter()
-                .map(|g| GoalSave {
+                .map(|g| GoalSpec {
                     text: g.text.clone(),
                     on: g.on,
                     pos: self.canvas.pos_of(NodeKey::Goal(g.id)).map(|p| [p.x, p.y]),
@@ -543,68 +516,42 @@ impl StudioApp {
             fields: self.fields_text.clone(),
             sample_rows: self.sample_rows,
             theme: self.theme_idx,
-            data_path: self.loaded.as_ref().map(|d| d.path.display().to_string()),
+            data_path,
             positions,
-        };
-        match serde_json::to_string_pretty(&file)
-            .map_err(|e| e.to_string())
-            .and_then(|s| std::fs::write(&path, s).map_err(|e| e.to_string()))
-        {
-            Ok(()) => {
-                self.status = format!("프로젝트 저장: {}", path.display());
-                self.status_err = false;
-            }
-            Err(e) => {
-                self.status = format!("저장 실패: {e}");
-                self.status_err = true;
-            }
+            llm_models: Provider::ALL
+                .iter()
+                .copied()
+                .zip(self.llm_models.iter().cloned())
+                .collect(),
         }
     }
 
-    fn load_project(&mut self, ctx: &egui::Context) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("Sugar-Coat 프로젝트", &["kiro"])
-            .pick_file()
-        else {
-            return;
-        };
-        let parsed = std::fs::read_to_string(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|s| serde_json::from_str::<ProjectFile>(&s).map_err(|e| format!("형식 오류: {e}")));
-        let f = match parsed {
-            Ok(f) if f.version > PROJECT_VERSION => {
-                self.status = format!("불러오기 실패: 더 새로운 형식(v{})의 프로젝트입니다", f.version);
-                self.status_err = true;
-                return;
-            }
-            Ok(f) => f,
-            Err(e) => {
-                self.status = format!("불러오기 실패: {e}");
-                self.status_err = true;
-                return;
-            }
-        };
-        // 이전 프로젝트의 데이터와 진행 중인 로드를 버린다.
-        self.loaded = None;
-        self.loading = false;
-        self.load_gen += 1;
+    /// 블루프린트의 설정을 모두 적용한다. keep_data면 현재 데이터를 유지하고(샘플 행 수가 바뀌면 다시 프로파일링),
+    /// 아니면 블루프린트의 데이터 경로를 불러온다. 경고 문구가 있으면 돌려준다.
+    fn apply_blueprint(
+        &mut self,
+        bp: Blueprint,
+        source: Option<&Path>,
+        keep_data: bool,
+        ctx: &egui::Context,
+    ) -> Option<String> {
+        let bp = bp.normalized();
         self.canvas.reset_layout();
-        self.project = f.project;
-        self.target = f.target;
-        self.role = f.role;
-        self.format = f.format;
-        self.fields_text = f.fields;
-        self.sample_rows = f.sample_rows.min(50);
-        self.theme_idx = f.theme.min(THEMES.len() - 1);
-        theme::apply(ctx, &self.palette());
+        self.project = bp.project.clone();
+        self.target = bp.target;
+        self.role = bp.role.clone();
+        self.format = bp.format;
+        self.fields_text = bp.fields.clone();
+        self.sample_rows = bp.sample_rows;
+        self.theme_idx = bp.theme;
         self.goals.clear();
-        for g in f.goals {
-            self.add_goal(g.text, g.on);
+        for g in &bp.goals {
+            self.add_goal(g.text.clone(), g.on);
             if let (Some(p), Some(last)) = (g.pos, self.goals.last()) {
                 self.canvas.set_pos(NodeKey::Goal(last.id), Pos2::new(p[0], p[1]));
             }
         }
-        for (name, p) in f.positions {
+        for (name, p) in &bp.positions {
             if let Some(k) = NodeKey::FIXED
                 .into_iter()
                 .find(|k| k.fixed_name() == Some(name.as_str()))
@@ -612,23 +559,98 @@ impl StudioApp {
                 self.canvas.set_pos(k, Pos2::new(p[0], p[1]));
             }
         }
+        for (i, p) in Provider::ALL.iter().enumerate() {
+            if let Some(m) = bp.llm_model(*p) {
+                self.llm_models[i] = m.to_string();
+            }
+        }
         self.canvas.request_fit();
         self.result = None;
-        self.status = format!("프로젝트 불러옴: {}", path.display());
-        self.status_err = false;
-        match f.data_path.map(PathBuf::from) {
-            Some(dp) if dp.is_file() => self.spawn_load(dp, ctx),
-            Some(dp) => {
-                self.status = format!("프로젝트 불러옴 · 데이터 파일을 찾을 수 없음: {}", dp.display());
-                self.status_err = true;
-            }
-            None => {}
-        }
+        self.result_key.clear();
         self.llm_out = None;
         self.llm_gen += 1;
         self.llm_running = false;
-        self.history.reset(self.snapshot()); // 다른 프로젝트로 되돌아가지 않게 기록을 비운다
         clear_text_undo(ctx);
+        if keep_data {
+            let reload = self
+                .loaded
+                .as_ref()
+                .map(|d| d.path.clone())
+                .filter(|_| self.sample_rows != self.loaded_k);
+            if let Some(path) = reload {
+                self.spawn_load(path, ctx);
+            }
+            return None;
+        }
+        // 이전 데이터와 진행 중인 로드를 버린다.
+        self.loaded = None;
+        self.loading = false;
+        self.load_gen += 1;
+        match bp.data_path_from(source) {
+            Some(dp) if dp.is_file() => {
+                self.spawn_load(dp, ctx);
+                None
+            }
+            Some(dp) => Some(format!("데이터 파일을 찾을 수 없음: {}", dp.display())),
+            None => None,
+        }
+    }
+
+    fn open_blueprint(&mut self, path: &Path, ctx: &egui::Context) {
+        let bp = match Blueprint::load(path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status = format!("블루프린트 열기 실패: {e}");
+                self.status_err = true;
+                return;
+            }
+        };
+        let warning = self.apply_blueprint(bp, Some(path), false, ctx);
+        self.blueprint_path = Some(path.to_path_buf());
+        self.history.reset(self.snapshot()); // 다른 블루프린트로 되돌아가지 않게 기록을 비운다
+        match warning {
+            Some(w) => {
+                self.status = format!("블루프린트 열림 · {w}");
+                self.status_err = true;
+            }
+            None => {
+                self.status = format!("블루프린트 열림: {}", path.display());
+                self.status_err = false;
+            }
+        }
+    }
+
+    fn save_project(&mut self) {
+        let mut dialog = rfd::FileDialog::new()
+            .add_filter("Sugar-Coat 블루프린트", &["kiro"])
+            .set_file_name(self.project.clone());
+        if let Some(dir) = self.blueprint_path.as_deref().and_then(Path::parent) {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.save_file() else {
+            return;
+        };
+        match self.to_blueprint(Some(&path)).save(&path) {
+            Ok(()) => {
+                self.status = format!("블루프린트 저장: {}", path.display());
+                self.status_err = false;
+                self.blueprint_path = Some(path);
+            }
+            Err(e) => {
+                self.status = e;
+                self.status_err = true;
+            }
+        }
+    }
+
+    fn load_project(&mut self, ctx: &egui::Context) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Sugar-Coat 블루프린트", &["kiro", "json"])
+            .pick_file()
+        else {
+            return;
+        };
+        self.open_blueprint(&path, ctx);
     }
 
     fn save_output(&mut self) {
@@ -661,22 +683,27 @@ impl StudioApp {
         }
     }
 
-    fn apply_recipe(&mut self, i: usize) {
-        let r = &canvas::RECIPES[i];
-        self.role = r.role.to_string();
-        self.fields_text = r.fields.to_string();
-        self.goals.clear();
-        for g in r.goals {
-            self.add_goal(g.to_string(), true);
-        }
-        // steering 규칙은 레시피와 별개로 유지한다.
-        for rule in self.steering_rules.clone() {
-            if !r.goals.contains(&rule.as_str()) {
-                self.add_goal(rule, true);
+    /// 내장 블루프린트 적용. 현재 데이터는 유지하고, 편집 내용은 실행 취소할 수 있다.
+    fn apply_preset(&mut self, i: usize, ctx: &egui::Context) {
+        let Some(preset) = PRESETS.get(i) else { return };
+        let mut bp = preset.to_blueprint();
+        // steering 규칙은 블루프린트와 별개로 유지한다.
+        for rule in &self.steering_rules {
+            if !bp.goals.iter().any(|g| g.text == *rule) {
+                bp.goals.push(GoalSpec {
+                    text: rule.clone(),
+                    on: true,
+                    pos: None,
+                });
             }
         }
-        self.canvas.reset_layout();
-        self.status = format!("레시피 적용: {}", r.name);
+        bp.llm_models = Provider::ALL
+            .iter()
+            .copied()
+            .zip(self.llm_models.iter().cloned())
+            .collect();
+        self.apply_blueprint(bp, None, true, ctx);
+        self.status = format!("블루프린트 적용: {} ({})", preset.name, preset.summary);
         self.status_err = false;
     }
 
@@ -705,7 +732,22 @@ impl StudioApp {
                 }
                 Action::RemoveGoal(id) => self.remove_goal(id),
                 Action::AddGoal(t) => self.add_goal(t, true),
-                Action::Recipe(i) => self.apply_recipe(i),
+                Action::Preset(i) => self.apply_preset(i, ctx),
+                Action::RunLlm => {
+                    if !self.llm_running {
+                        self.start_llm(ctx)
+                    }
+                }
+                Action::ReloadSample => {
+                    let reload = self
+                        .loaded
+                        .as_ref()
+                        .map(|d| d.path.clone())
+                        .filter(|_| self.sample_rows != self.loaded_k);
+                    if let Some(path) = reload {
+                        self.spawn_load(path, ctx);
+                    }
+                }
                 Action::SaveProject => self.dialog = Some(Dialog::SaveProject),
                 Action::LoadProject => self.dialog = Some(Dialog::LoadProject),
                 Action::SaveOutput => self.dialog = Some(Dialog::SaveOutput),
@@ -815,6 +857,18 @@ impl StudioApp {
         match self.tab {
             Tab::Canvas => {
                 let stale = self.result.is_some() && self.result_key != self.input_key();
+                let provider = provider_for(self.result.as_ref().map_or(self.target, |r| r.ast.target_model));
+                let verdict = self.llm_out.as_ref().map(|o| match o {
+                    Ok(c) if c.ok => (true, "✔ 출력 형식·필수 필드 통과".to_string()),
+                    Ok(c) => (
+                        false,
+                        c.error
+                            .clone()
+                            .unwrap_or_else(|| format!("누락 필드: {}", c.missing.join(", "))),
+                    ),
+                    Err(e) => (false, short(e, 80)),
+                });
+                let has_key = api_key(provider).is_some();
                 let actions = {
                     let mut model = Model {
                         role: &mut self.role,
@@ -827,6 +881,18 @@ impl StudioApp {
                         loading: self.loading,
                         compiling: self.compiling,
                         stale,
+                        project: &mut self.project,
+                        theme_idx: &mut self.theme_idx,
+                        sample_rows: &mut self.sample_rows,
+                        llm: LlmView {
+                            provider: provider.label(),
+                            key_env: provider.default_key_env(),
+                            model: &mut self.llm_models[provider_index(provider)],
+                            model_hint: provider.default_model(),
+                            has_key,
+                            running: self.llm_running,
+                            verdict,
+                        },
                     };
                     self.canvas.show(ui, &mut model, p)
                 };
@@ -1076,6 +1142,11 @@ impl eframe::App for StudioApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll();
         let ctx = ui.ctx().clone();
+        if self.theme_idx != self.applied_theme {
+            self.theme_idx = self.theme_idx.min(THEMES.len() - 1);
+            theme::apply(&ctx, &THEMES[self.theme_idx]);
+            self.applied_theme = self.theme_idx;
+        }
         let p = self.palette();
         theme::paint_backdrop(ui.painter(), ctx.content_rect(), &p);
         theme::paint_fog(&ctx, &p);
@@ -1145,7 +1216,6 @@ impl eframe::App for StudioApp {
                             }
                         });
                     ui.label("테마");
-                    let before = self.theme_idx;
                     egui::ComboBox::from_id_salt("theme")
                         .width(190.0)
                         .selected_text(THEMES[self.theme_idx].name)
@@ -1154,9 +1224,6 @@ impl eframe::App for StudioApp {
                                 ui.selectable_value(&mut self.theme_idx, i, t.name);
                             }
                         });
-                    if before != self.theme_idx {
-                        theme::apply(&ctx, &THEMES[self.theme_idx]);
-                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if theme::primary_button(ui, &p, "⚡ Compile & Run", !self.compiling).clicked() {
                             self.start_compile(&ctx);
