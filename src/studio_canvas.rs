@@ -701,6 +701,7 @@ impl Canvas {
         // LLM 실행
         let has_result = m.result.is_some();
         let stale = m.stale;
+        let compiling = m.compiling;
         let llm = &mut m.llm;
         self.node(
             ui,
@@ -721,7 +722,7 @@ impl Canvas {
                     );
                 });
                 // 입력이 바뀐 뒤의 오래된 결과로는 실행하지 않는다.
-                let enabled = llm.has_key && has_result && !stale && !llm.running;
+                let enabled = llm.has_key && has_result && !stale && !compiling && !llm.running;
                 if theme::primary_button(ui, p, if llm.running { "실행 중" } else { "▶ 실제 실행" }, enabled).clicked()
                 {
                     actions.push(Action::RunLlm);

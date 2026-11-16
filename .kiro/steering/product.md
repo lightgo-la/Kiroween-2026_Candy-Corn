@@ -10,14 +10,14 @@
 - `--canvas`, `--run-graph`: 프롬프트·LLM API·MCP 도구를 잇는 별도 그래프 도구 (`src/canvas/`).
 
 ## 블루프린트
-캔버스의 모든 노드 값이 곧 블루프린트다: 데이터 경로, 샘플 행 수, 역할, 제약, 출력 포맷·필드, 타겟, 테마, LLM 모델, 노드 배치. `.kiro`(JSON)로 저장·열기, 내장 블루프린트 5종(🧩 메뉴), CLI `--blueprint`가 같은 형식을 쓴다. 데이터 경로는 블루프린트 폴더 기준 상대 경로로 저장되어 폴더째 옮겨도 열린다.
+캔버스의 모든 노드 값이 곧 블루프린트다: 데이터 경로, 샘플 행 수, 역할, 제약, 출력 포맷·필드, 타겟, 테마, LLM 모델, 노드 배치. `.kiro`(JSON)로 저장·열기, 내장 블루프린트 5종(🧩 메뉴), CLI `--blueprint`가 같은 형식을 쓴다. 데이터가 블루프린트 폴더(또는 하위 폴더) 안에 있으면 상대 경로로 저장되어 폴더째 옮겨도 열리고, 다른 곳에 있으면 절대 경로로 저장된다. GUI는 블루프린트를 열 때 작업 폴더의 steering 규칙 중 블루프린트에 없는 것을 덧붙인다(CLI는 `--steering`으로 직접 지정).
 
 ## 데모 시나리오 (3분)
 1. `Candy-Corn.exe samples/sales.csv`: 데이터 노드에 301 rows, amount 이상치 1건.
 2. 🧩 블루프린트 → "매출 이상치 분석" 적용, 제약 "이상치 탐지하지 마" 추가.
 3. Ctrl+Enter: 린트 로그에 모순 제거 경고, 토큰 절감률 표시. Ctrl+Z로 추가한 제약 되돌리기.
 4. 블루프린트 "데이터 품질 점검"(GPT·표·안개 테마)으로 바꿔 다시 컴파일, "블루프린트 저장".
-5. 터미널에서 `Candy-Corn.exe --cli --blueprint 저장한파일.kiro`로 같은 결과 확인, MCP `tools/list` 응답 확인.
+5. 터미널에서 `Candy-Corn.exe --cli --blueprint 저장한파일.kiro --steering .kiro/steering/compiler-rules.md`로 같은 프롬프트 확인, MCP `tools/list` 응답 확인.
 
 ## 범위 밖
 - API 키가 없으면 LLM 실행 결과는 스키마 골격(모의 응답)만 보여 준다. 키는 환경 변수(ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY)에서만 읽는다.

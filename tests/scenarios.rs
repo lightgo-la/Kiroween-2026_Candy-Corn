@@ -4,9 +4,9 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_Candy-Corn");
-const STEERING: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/.kiro/steering/compiler-rules.md");
 const GRAPH_SAMPLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/samples/flow.canvas.json");
 
 struct Run {
@@ -15,8 +15,23 @@ struct Run {
     err: String,
 }
 
-/// 시나리오마다 독립된 작업 폴더 (병렬 실행 대비)
-fn work(name: &str) -> PathBuf {
+/// 시나리오마다 독립된 작업 폴더 (병렬 실행 대비). 테스트가 끝나면 지운다.
+struct Work(PathBuf);
+
+impl std::ops::Deref for Work {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Work {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn work(name: &str) -> Work {
     let dir = std::env::temp_dir().join(format!("cc_scn_{}_{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("proj").join("sub")).unwrap();
@@ -25,15 +40,32 @@ fn work(name: &str) -> PathBuf {
     write(&dir.join("proj/d.csv"), "id,amount\n1,10\n2,20\n3,30\n");
     write(&dir.join("proj/sub/s.csv"), "id,amount\n1,10\n2,20\n3,30\n4,40\n");
     write(&dir.join("cwd/c.csv"), "id,amount\n1,1\n2,2\n3,3\n4,4\n5,5\n");
-    dir
+    Work(dir)
 }
 
 fn write(p: &Path, text: &str) {
     std::fs::write(p, text).unwrap();
 }
 
+/// 실행 파일을 돌리고 30초 안에 끝나지 않으면 종료시킨다(예: 옵션 검사가 깨져 GUI가 뜨는 경우).
 fn run_in(cwd: &Path, args: &[&str]) -> Run {
-    let o = Command::new(BIN).current_dir(cwd).args(args).output().unwrap();
+    let mut child = Command::new(BIN)
+        .current_dir(cwd)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if start.elapsed() > Duration::from_secs(30) {
+            let _ = child.kill();
+            panic!("30초 안에 끝나지 않음: {args:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let o = child.wait_with_output().unwrap();
     Run {
         code: o.status.code().unwrap_or(-1),
         out: String::from_utf8_lossy(&o.stdout).into_owned(),
@@ -131,12 +163,18 @@ fn s07_steering_flag_appends_rules() {
     let w = work("s07");
     let bp = w.join("proj/rel.kiro");
     write(&bp, &gpt_bp(""));
+    let steering = w.join("proj/rules.md");
+    write(
+        &steering,
+        "# 규칙\n- 숫자는 소수점 둘째 자리까지\n* 근거 컬럼을 함께 표기\n설명 줄은 무시\n",
+    );
     let r = run_in(
         &w.join("cwd"),
-        &["--cli", "--blueprint", s(&bp), "--steering", STEERING],
+        &["--cli", "--blueprint", s(&bp), "--steering", s(&steering)],
     );
     ok(&r);
-    assert!(r.out.contains("데이터에 없는 내용은 추론하지 마"));
+    assert!(r.out.contains("숫자는 소수점 둘째 자리까지") && r.out.contains("근거 컬럼을 함께 표기"));
+    assert!(!r.out.contains("설명 줄은 무시"));
 }
 
 #[test]

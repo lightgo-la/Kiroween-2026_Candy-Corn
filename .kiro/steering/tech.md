@@ -22,3 +22,4 @@
 - `cargo run -- --cli --data samples/sales.csv --constraint "..."`
 - `cargo run -- --cli --blueprint plan.kiro`
 - 배포: `cargo build --release` 후 `C:/cargo-target/candy-corn/release/Candy-Corn.exe`를 프로젝트 폴더로 복사
+- 에이전트 작업 중 GUI는 복사한 `Candy-Corn.exe`로 띄운다. `cargo run`으로 띄운 GUI가 열려 있으면 Windows가 debug exe를 잠가 Stop 훅의 `cargo test`가 링크에 실패한다.

@@ -119,16 +119,14 @@ pub struct StudioApp {
     result_key: String,
     dialog: Option<Dialog>,
     load_gen: u64,
-    loaded_k: usize,
     hovering_file: bool,
     steering_rules: Vec<String>,
     /// 마지막으로 적용한 테마(캔버스·헤더·블루프린트 어디서 바꿔도 프레임 시작에 한 번 적용)
     applied_theme: usize,
     /// 마지막으로 열거나 저장한 블루프린트 파일
     blueprint_path: Option<PathBuf>,
-    /// 지금 설정이 가리키는 데이터 파일. 로드 중이거나 실패했거나 파일이 없어도 유지해서
-    /// 블루프린트 저장과 샘플 행 수 변경 시 다시 프로파일링에 쓴다.
-    data_source: Option<PathBuf>,
+    /// 데이터 파일 참조 (화면의 데이터와 진행 중·누락된 요청). 블루프린트 저장과 다시 프로파일링에 쓴다.
+    data_ref: DataRef,
     compile_gen: u64,
     /// 컴파일 결과가 현재 입력과 다른지 (프레임마다 한 번 계산)
     stale: bool,
@@ -209,12 +207,11 @@ impl StudioApp {
             result_key: String::new(),
             dialog: None,
             load_gen: 0,
-            loaded_k: 8,
             hovering_file: false,
             steering_rules: vec![],
             applied_theme: theme_idx,
             blueprint_path: None,
-            data_source: None,
+            data_ref: DataRef::default(),
             compile_gen: 0,
             stale: false,
             history: History::new(Snapshot {
@@ -381,12 +378,11 @@ impl StudioApp {
     }
 
     fn spawn_load(&mut self, path: PathBuf, ctx: &egui::Context) {
-        self.data_source = Some(path.clone());
+        self.data_ref.requested(path.clone(), self.sample_rows);
         self.loading = true;
         self.status = format!("프로파일링 중: {}", path.display());
         self.status_err = false;
         self.load_gen += 1;
-        self.loaded_k = self.sample_rows;
         let (tx, ctx, k, generation) = (self.tx.clone(), ctx.clone(), self.sample_rows, self.load_gen);
         std::thread::spawn(move || {
             let r = std::panic::catch_unwind(|| pipeline::load_data(&path, k))
@@ -399,7 +395,7 @@ impl StudioApp {
     /// 샘플 행 수가 마지막 프로파일링 요청과 다르면 같은 파일을 다시 프로파일링한다.
     /// 로드가 진행 중이면 그 파일을 대상으로 한다(이전 파일로 되돌아가지 않는다).
     fn reprofile_if_needed(&mut self, ctx: &egui::Context) {
-        if let Some(path) = reprofile_path(self.data_source.as_deref(), self.sample_rows, self.loaded_k) {
+        if let Some(path) = self.data_ref.reprofile_target(self.sample_rows) {
             self.spawn_load(path, ctx);
         }
     }
@@ -459,10 +455,13 @@ impl StudioApp {
                 Ok(d) => {
                     self.status = format!("로드 완료 · {} ({} rows)", path.display(), d.data.total_rows);
                     self.loaded = Some(d);
+                    self.data_ref.succeeded();
                 }
                 Err(e) => {
                     self.status = format!("로드 실패: {e}");
                     self.status_err = true;
+                    // 화면에 이전 데이터가 남아 있으면 저장·다시 프로파일링도 그 데이터를 가리킨다.
+                    self.data_ref.failed();
                 }
             }
         }
@@ -515,7 +514,7 @@ impl StudioApp {
             .filter_map(|k| Some((k.fixed_name()?.to_string(), self.canvas.pos_of(*k).map(|p| [p.x, p.y])?)))
             .collect();
         // 데이터가 블루프린트와 같은 폴더(또는 하위)에 있으면 상대 경로로 저장해 폴더째 옮겨도 동작하게 한다.
-        let data_path = self.data_source.as_deref().map(|d| match save_to {
+        let data_path = self.data_ref.source().map(|d| match save_to {
             Some(bp_file) => Blueprint::portable_data_path(d, bp_file),
             None => d.display().to_string(),
         });
@@ -603,29 +602,23 @@ impl StudioApp {
         self.loaded = None;
         self.loading = false;
         self.load_gen += 1;
-        self.data_source = bp.data_path_from(source);
-        match self.data_source.clone() {
+        self.data_ref = DataRef::default();
+        match bp.data_path_from(source) {
             Some(dp) if dp.is_file() => {
                 self.spawn_load(dp, ctx);
                 None
             }
-            Some(dp) => Some(format!("데이터 파일을 찾을 수 없음: {}", dp.display())),
+            Some(dp) => {
+                let warning = format!("데이터 파일을 찾을 수 없음: {}", dp.display());
+                self.data_ref.missing(dp, self.sample_rows); // 다시 저장해도 참조가 사라지지 않게
+                Some(warning)
+            }
             None => None,
         }
     }
 
-    /// 작업 폴더의 steering 규칙 중 블루프린트에 없는 것을 사용 상태로 덧붙인다.
-    fn with_steering(&self, mut bp: Blueprint) -> Blueprint {
-        for rule in &self.steering_rules {
-            if !bp.goals.iter().any(|g| g.text.trim() == rule.trim()) {
-                bp.goals.push(GoalSpec {
-                    text: rule.clone(),
-                    on: true,
-                    pos: None,
-                });
-            }
-        }
-        bp
+    fn with_steering(&self, bp: Blueprint) -> Blueprint {
+        merge_steering(bp, &self.steering_rules)
     }
 
     fn open_blueprint(&mut self, path: &Path, ctx: &egui::Context) {
@@ -1077,7 +1070,7 @@ impl StudioApp {
             } else {
                 "▶ 실제 실행"
             };
-            let btn = theme::primary_button(ui, p, label, has_key && !stale && !self.llm_running);
+            let btn = theme::primary_button(ui, p, label, has_key && !stale && !self.compiling && !self.llm_running);
             // 키가 없을 때만 안내한다(실행 중 비활성 상태에는 붙이지 않는다).
             let btn = if has_key {
                 btn
@@ -1344,27 +1337,147 @@ impl eframe::App for StudioApp {
     }
 }
 
-/// 다시 프로파일링할 파일. 샘플 행 수가 마지막 요청과 같거나 데이터가 없으면 None.
-fn reprofile_path(source: Option<&Path>, want_rows: usize, profiled_rows: usize) -> Option<PathBuf> {
-    if want_rows == profiled_rows {
-        return None;
+/// 작업 폴더의 steering 규칙 중 블루프린트에 없는 것을 사용 상태로 덧붙인다.
+/// 블루프린트에 이미 있는 규칙(꺼 둔 것 포함)은 그대로 둔다.
+fn merge_steering(mut bp: Blueprint, rules: &[String]) -> Blueprint {
+    for rule in rules {
+        if !bp.goals.iter().any(|g| g.text.trim() == rule.trim()) {
+            bp.goals.push(GoalSpec {
+                text: rule.clone(),
+                on: true,
+                pos: None,
+            });
+        }
     }
-    source.filter(|p| p.is_file()).map(Path::to_path_buf)
+    bp
+}
+
+/// 데이터 파일 참조. 화면·컴파일에 쓰는 데이터(shown)와 진행 중이거나 실패·누락된 요청(pending)을 나눠,
+/// 로드가 실패해도 이전 데이터를 가리키고 파일이 없어도 블루프린트의 참조를 잃지 않게 한다.
+/// 각 항목은 (경로, 그 경로를 프로파일링할 때의 샘플 행 수).
+#[derive(Default, Debug, Clone, PartialEq)]
+struct DataRef {
+    shown: Option<(PathBuf, usize)>,
+    pending: Option<(PathBuf, usize)>,
+}
+
+impl DataRef {
+    fn requested(&mut self, path: PathBuf, rows: usize) {
+        self.pending = Some((path, rows));
+    }
+
+    /// 블루프린트가 가리키는 파일이 없을 때: 로드는 하지 않고 참조만 남긴다.
+    fn missing(&mut self, path: PathBuf, rows: usize) {
+        self.pending = Some((path, rows));
+    }
+
+    fn succeeded(&mut self) {
+        if let Some(p) = self.pending.take() {
+            self.shown = Some(p);
+        }
+    }
+
+    /// 실패: 화면에 데이터가 있으면 그쪽으로 되돌리고, 없으면 요청한 파일을 참조로 남긴다.
+    fn failed(&mut self) {
+        if self.shown.is_some() {
+            self.pending = None;
+        }
+    }
+
+    fn current(&self) -> Option<&(PathBuf, usize)> {
+        self.pending.as_ref().or(self.shown.as_ref())
+    }
+
+    /// 블루프린트에 저장할 데이터 파일
+    fn source(&self) -> Option<&Path> {
+        self.current().map(|(p, _)| p.as_path())
+    }
+
+    /// 샘플 행 수가 바뀌었을 때 다시 프로파일링할 파일 (진행 중인 요청이 있으면 그 파일)
+    fn reprofile_target(&self, want_rows: usize) -> Option<PathBuf> {
+        let (path, rows) = self.current()?;
+        (want_rows != *rows && path.is_file()).then(|| path.clone())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn temp_csv(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("cc_dataref_{}_{name}.csv", std::process::id()));
+        std::fs::write(&p, "a\n1\n").unwrap();
+        p
+    }
+
     #[test]
-    fn reprofile_only_when_rows_change_and_file_exists() {
-        let file = std::env::temp_dir().join(format!("sc_reprofile_{}.csv", std::process::id()));
-        std::fs::write(&file, "a\n1\n").unwrap();
-        assert_eq!(reprofile_path(Some(&file), 12, 8), Some(file.clone()));
-        assert_eq!(reprofile_path(Some(&file), 8, 8), None);
-        assert_eq!(reprofile_path(None, 12, 8), None);
-        assert_eq!(reprofile_path(Some(Path::new("Z:/no/such.csv")), 12, 8), None);
-        let _ = std::fs::remove_file(&file);
+    fn data_ref_missing_blueprint_file_keeps_reference() {
+        let missing = PathBuf::from("Z:/no/such/data.csv");
+        let mut d = DataRef::default();
+        d.missing(missing.clone(), 8);
+        assert_eq!(d.source(), Some(missing.as_path())); // 다시 저장해도 data_path가 남는다
+        assert_eq!(d.reprofile_target(12), None); // 없는 파일은 다시 프로파일링하지 않는다
+    }
+
+    #[test]
+    fn data_ref_request_b_while_a_shown_targets_b() {
+        let (a, b) = (temp_csv("a1"), temp_csv("b1"));
+        let mut d = DataRef::default();
+        d.requested(a.clone(), 8);
+        d.succeeded();
+        d.requested(b.clone(), 8); // B 로드 중
+        assert_eq!(d.source(), Some(b.as_path()));
+        assert_eq!(d.reprofile_target(12), Some(b.clone()));
+        assert_eq!(d.reprofile_target(8), None);
+        d.succeeded();
+        assert_eq!(d.shown, Some((b.clone(), 8)));
+        let _ = (std::fs::remove_file(a), std::fs::remove_file(b));
+    }
+
+    #[test]
+    fn data_ref_failed_load_falls_back_to_shown_data() {
+        let (a, b) = (temp_csv("a2"), temp_csv("b2"));
+        let mut d = DataRef::default();
+        d.requested(a.clone(), 8);
+        d.succeeded();
+        d.requested(b.clone(), 12);
+        d.failed(); // B가 깨진 파일
+        assert_eq!(d.source(), Some(a.as_path()));
+        assert_eq!(d.reprofile_target(12), Some(a.clone())); // A를 12행으로 다시
+        assert_eq!(d.reprofile_target(8), None); // A는 이미 8행
+        let _ = (std::fs::remove_file(a), std::fs::remove_file(b));
+    }
+
+    #[test]
+    fn data_ref_first_load_failure_keeps_reference() {
+        let b = temp_csv("b3");
+        let mut d = DataRef::default();
+        d.requested(b.clone(), 8);
+        d.failed();
+        assert_eq!(d.source(), Some(b.as_path()));
+        let _ = std::fs::remove_file(b);
+    }
+
+    #[test]
+    fn steering_rules_are_added_once_and_disabled_ones_stay_off() {
+        let bp = Blueprint {
+            goals: vec![
+                GoalSpec {
+                    text: "규칙 A".into(),
+                    on: false,
+                    pos: None,
+                },
+                GoalSpec {
+                    text: "다른 제약".into(),
+                    on: true,
+                    pos: None,
+                },
+            ],
+            ..Blueprint::default()
+        };
+        let merged = merge_steering(bp, &["규칙 A ".to_string(), "규칙 B".to_string()]);
+        let texts: Vec<(&str, bool)> = merged.goals.iter().map(|g| (g.text.as_str(), g.on)).collect();
+        assert_eq!(texts, vec![("규칙 A", false), ("다른 제약", true), ("규칙 B", true)]);
     }
 
     #[test]
