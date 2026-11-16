@@ -9,8 +9,10 @@ fn main() {
     }
     let mut res = winresource::WindowsResource::new();
     res.set_icon("assets/icon.ico");
-    res.set("ProductName", "Sugar-Coat Studio");
-    res.set("FileDescription", "Sugar-Coat Studio");
+    res.set("ProductName", "Candy-Corn");
+    res.set("FileDescription", "Candy-Corn 프롬프트 컴파일러 스튜디오");
+    res.set("OriginalFilename", "Candy-Corn.exe");
+    res.set("InternalName", "Candy-Corn");
     // rc.exe(Windows SDK)가 없는 PC에서도 빌드는 되도록 실패는 경고로만 남긴다.
     if let Err(e) = res.compile() {
         println!("cargo:warning=exe 아이콘을 넣지 못했습니다 (Windows SDK의 rc.exe 필요): {e}");

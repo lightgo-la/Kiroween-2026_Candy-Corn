@@ -1,6 +1,6 @@
 # Compiler Rules
 
-이 파일의 `- ` 불릿은 Sugar-Coat Studio가 제약 AST(ConstraintSubAST)로 직접 파싱해 주입한다.
+이 파일의 `- ` 불릿은 Candy-Corn이 제약 AST(ConstraintSubAST)로 직접 파싱해 주입한다.
 (`--steering` CLI 옵션 또는 GUI 시작 시 자동 로드)
 
 ## Constraints

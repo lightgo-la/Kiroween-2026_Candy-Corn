@@ -14,4 +14,4 @@ Form / steering / data profile -> `pipeline::compile` -> RootPromptAst -> `linte
 ## Notes
 - Contradiction detection is a heuristic: negation markers + Jaccard >= 0.6 on stemmed tokens. Korean tokens are cut to 2 chars.
 - LLM preview is a local mock of the output schema; no LLM is called.
-- Build cache is redirected to `C:/cargo-target/sugar-coat-studio` (`.cargo/config.toml`).
+- Build cache is redirected to `C:/cargo-target/candy-corn` (`.cargo/config.toml`).

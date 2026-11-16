@@ -654,7 +654,7 @@ impl StudioApp {
 
     fn save_project(&mut self) {
         let mut dialog = rfd::FileDialog::new()
-            .add_filter("Sugar-Coat 블루프린트", &["kiro"])
+            .add_filter("Candy-Corn 블루프린트", &["kiro"])
             .set_file_name(self.project.clone());
         if let Some(dir) = self.blueprint_path.as_deref().and_then(Path::parent) {
             dialog = dialog.set_directory(dir);
@@ -677,7 +677,7 @@ impl StudioApp {
 
     fn load_project(&mut self, ctx: &egui::Context) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("Sugar-Coat 블루프린트", &["kiro"])
+            .add_filter("Candy-Corn 블루프린트", &["kiro"])
             .pick_file()
         else {
             return;
@@ -1028,7 +1028,7 @@ impl StudioApp {
         );
 
         ui.add_space(8.0);
-        theme::section_title(ui, p, "VII", "최종 Sugar-Coated 출력");
+        theme::section_title(ui, p, "VII", "최종 프롬프트 출력");
         ui.horizontal(|ui| {
             if ui.button("복사").clicked() {
                 ui.ctx().copy_text(r.output.clone());
@@ -1215,7 +1215,7 @@ impl eframe::App for StudioApp {
                         }
                     }
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("SUGAR-COAT STUDIO").size(20.0).strong().color(p.hi));
+                        ui.label(RichText::new("CANDY-CORN").size(20.0).strong().color(p.hi));
                         ui.label(RichText::new(p.tag).size(10.0).color(p.accent));
                     });
                     ui.add_space(16.0);

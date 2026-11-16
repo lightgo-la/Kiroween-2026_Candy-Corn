@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-const BIN: &str = env!("CARGO_BIN_EXE_sugar-coat-studio");
+const BIN: &str = env!("CARGO_BIN_EXE_Candy-Corn");
 const TOTAL: usize = 1000;
 
 struct Rng(u64);

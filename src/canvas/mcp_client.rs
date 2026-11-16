@@ -80,7 +80,7 @@ impl McpClient {
             json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": { "name": "sugar-coat-canvas", "version": env!("CARGO_PKG_VERSION") }
+                "clientInfo": { "name": "candy-corn-canvas", "version": env!("CARGO_PKG_VERSION") }
             }),
         )?;
         c.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))?;

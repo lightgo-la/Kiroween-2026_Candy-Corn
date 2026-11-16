@@ -1,4 +1,4 @@
-//! (보너스) stdio JSON-RPC 2.0 MCP 서버. 줄 단위(newline-delimited) JSON 메시지를 처리한다.
+//! stdio JSON-RPC 2.0 MCP 서버. 줄 단위(newline-delimited) JSON 메시지를 처리한다.
 //! 제공 도구: `compress_prompt`
 
 use crate::ast::{OutputFormat, TargetModel};
@@ -53,7 +53,7 @@ fn handle(msg: &Value) -> Option<Value> {
             json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "sugar-coat-studio", "version": env!("CARGO_PKG_VERSION") }
+                "serverInfo": { "name": "candy-corn", "version": env!("CARGO_PKG_VERSION") }
             }),
         ),
         "ping" => ok(id, json!({})),

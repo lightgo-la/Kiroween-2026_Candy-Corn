@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn profiles_csv_with_outlier_and_nulls() {
-        let dir = std::env::temp_dir().join("sugar_coat_test.csv");
+        let dir = std::env::temp_dir().join("candy_corn_test.csv");
         let mut f = File::create(&dir).unwrap();
         writeln!(f, "id,amount,city").unwrap();
         for i in 0..50 {
@@ -391,7 +391,7 @@ mod tests {
     #[test]
     fn reads_cp949_and_streams_json_array() {
         let dir = std::env::temp_dir();
-        let p = dir.join("sugar_coat_cp949.csv");
+        let p = dir.join("candy_corn_cp949.csv");
         let (bytes, _, _) = encoding_rs::EUC_KR.encode("id,이름\n1,홍길동\n2,김철수\n");
         std::fs::write(&p, &*bytes).unwrap();
         let d = profile_file(&p, 2).unwrap();
@@ -402,7 +402,7 @@ mod tests {
                 .any(|r| r.contains("홍길동") || r.contains("김철수"))
         );
 
-        let j = dir.join("sugar_coat_arr.json");
+        let j = dir.join("candy_corn_arr.json");
         std::fs::write(&j, r#"[{"a":1},{"a":2,"b":"x"}]"#).unwrap();
         let d = profile_file(&j, 2).unwrap();
         assert_eq!((d.total_rows, d.columns.len()), (2, 2));
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn id_columns_are_not_flagged() {
-        let p = std::env::temp_dir().join("sugar_coat_id.csv");
+        let p = std::env::temp_dir().join("candy_corn_id.csv");
         let mut s = String::from("order_id,v\n");
         for i in 0..30 {
             s += &format!("{},{}\n", if i == 29 { 9_000_000 } else { i }, i % 3);

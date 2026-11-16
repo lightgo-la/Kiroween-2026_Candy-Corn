@@ -1,4 +1,4 @@
-//! 타겟 모델별 Sugar-Coated 직렬화 (Claude=XML, GPT=Markdown, Gemini=구분자 섹션).
+//! 타겟 모델별 프롬프트 직렬화 (Claude=XML, GPT=Markdown, Gemini=구분자 섹션).
 
 use super::*;
 

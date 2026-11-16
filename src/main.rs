@@ -1,4 +1,4 @@
-//! Sugar-Coat Studio: 인자 없으면 GUI, `--cli` 는 터미널 린터, `--mcp` 는 stdio MCP 서버.
+//! Candy-Corn: 인자 없으면 GUI, `--cli` 는 터미널 린터, `--mcp` 는 stdio MCP 서버.
 
 mod app;
 mod ast;
@@ -34,7 +34,7 @@ enum FormatArg {
 
 #[derive(Parser)]
 #[command(
-    name = "sugar-coat-studio",
+    name = "Candy-Corn",
     version,
     about = "프롬프트 압축/린트 스튜디오 (인자 없으면 GUI 실행)"
 )]
@@ -157,11 +157,11 @@ fn main() -> ExitCode {
         let options = eframe::NativeOptions {
             viewport: window_icon()
                 .with_inner_size([1500.0, 900.0])
-                .with_title("Sugar-Coat Canvas"),
+                .with_title("Candy-Corn Canvas"),
             ..Default::default()
         };
         return match eframe::run_native(
-            "Sugar-Coat Canvas",
+            "Candy-Corn Canvas",
             options,
             Box::new(move |cc| Ok(Box::new(canvas::ui::CanvasApp::new(cc, file)))),
         ) {
@@ -183,11 +183,11 @@ fn main() -> ExitCode {
         viewport: window_icon()
             .with_inner_size([1400.0, 820.0])
             .with_min_inner_size([1000.0, 600.0])
-            .with_title("Sugar-Coat Studio"),
+            .with_title("Candy-Corn"),
         ..Default::default()
     };
     match eframe::run_native(
-        "Sugar-Coat Studio",
+        "Candy-Corn",
         options,
         Box::new(|cc| {
             Ok(Box::new(app::StudioApp::new(
