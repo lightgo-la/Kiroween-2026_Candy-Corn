@@ -64,8 +64,18 @@ pub const MAX_SAMPLE_ROWS: usize = 50;
 impl Blueprint {
     pub fn load(path: &Path) -> Result<Blueprint, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("파일을 읽을 수 없음: {e}"))?;
-        let bp: Blueprint =
+        Blueprint::parse(&text)
+    }
+
+    /// 블루프린트 JSON을 읽는다. 모든 블루프린트(v1 프로젝트 파일 포함)에는 숫자 version 키가 있으므로,
+    /// 그것이 없는 JSON은 다른 종류의 파일로 보고 거부한다.
+    pub fn parse(text: &str) -> Result<Blueprint, String> {
+        let value: serde_json::Value =
             serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| format!("형식 오류: {e}"))?;
+        if !value.get("version").is_some_and(serde_json::Value::is_u64) {
+            return Err("블루프린트 파일이 아닙니다 (version 항목 없음)".into());
+        }
+        let bp: Blueprint = serde_json::from_value(value).map_err(|e| format!("형식 오류: {e}"))?;
         if bp.version > VERSION {
             return Err(format!("더 새로운 형식(v{})의 블루프린트입니다", bp.version));
         }
@@ -96,6 +106,23 @@ impl Blueprint {
             Some(dir) if p.is_relative() => dir.join(p),
             _ => p,
         })
+    }
+
+    /// 데이터 파일 경로를 블루프린트 파일 위치 기준으로 저장할 문자열로 바꾼다.
+    /// 둘 다 절대 경로로 만든 뒤, 데이터가 블루프린트 폴더 아래에 있으면 `/` 구분 상대 경로를,
+    /// 아니면 절대 경로를 쓴다(작업 폴더 기준 상대 경로를 그대로 저장하면 다른 곳에서 열 때 깨진다).
+    pub fn portable_data_path(data: &Path, blueprint_file: &Path) -> String {
+        let abs = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+        let data_abs = abs(data);
+        let bp_abs = abs(blueprint_file);
+        match bp_abs.parent().and_then(|dir| data_abs.strip_prefix(dir).ok()) {
+            Some(rel) if !rel.as_os_str().is_empty() => rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/"),
+            _ => data_abs.display().to_string(),
+        }
     }
 
     pub fn llm_model(&self, p: Provider) -> Option<&str> {
@@ -283,6 +310,61 @@ mod tests {
         std::fs::write(&path, "{\"version\":99}").unwrap();
         assert!(Blueprint::load(&path).unwrap_err().contains("v99"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rejects_json_that_is_not_a_blueprint() {
+        assert!(
+            Blueprint::parse("{}")
+                .unwrap_err()
+                .contains("블루프린트 파일이 아닙니다")
+        );
+        let graph = r#"{"nodes":[{"id":1,"kind":"text"}],"edges":[]}"#;
+        assert!(Blueprint::parse(graph).is_err());
+        assert!(Blueprint::parse(r#"{"version":"2"}"#).is_err());
+        assert!(Blueprint::parse(r#"{"version":1,"role":"r"}"#).is_ok());
+        // 저장소의 캔버스 그래프 샘플도 블루프린트로 열리면 안 된다
+        let sample = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/flow.canvas.json")).unwrap();
+        assert!(Blueprint::parse(&sample).is_err());
+    }
+
+    #[test]
+    fn portable_data_path_cases() {
+        let root = std::env::temp_dir().join("sc_bp_paths");
+        let bp = root.join("proj").join("plan.kiro");
+        // 블루프린트 폴더 아래: / 구분 상대 경로
+        assert_eq!(
+            Blueprint::portable_data_path(&root.join("proj").join("d.csv"), &bp),
+            "d.csv"
+        );
+        assert_eq!(
+            Blueprint::portable_data_path(&root.join("proj").join("sub").join("s.csv"), &bp),
+            "sub/s.csv"
+        );
+        // 형제 폴더: 절대 경로
+        let sibling = root.join("other").join("x.csv");
+        assert_eq!(
+            Blueprint::portable_data_path(&sibling, &bp),
+            sibling.display().to_string()
+        );
+        // 작업 폴더 기준 상대 경로 데이터는 절대 경로로 바뀌어 다른 폴더에서도 열린다
+        let rel = Path::new("samples").join("sales.csv");
+        let saved = Blueprint::portable_data_path(&rel, &bp);
+        assert!(Path::new(&saved).is_absolute(), "{saved}");
+        let back = Blueprint {
+            data_path: Some(saved),
+            ..Blueprint::default()
+        };
+        assert_eq!(back.data_path_from(Some(&bp)), Some(std::path::absolute(&rel).unwrap()));
+        // 저장한 상대 경로는 블루프린트 기준으로 다시 해석된다
+        let back = Blueprint {
+            data_path: Some("sub/s.csv".into()),
+            ..Blueprint::default()
+        };
+        assert_eq!(
+            back.data_path_from(Some(&bp)),
+            Some(root.join("proj").join("sub/s.csv"))
+        );
     }
 
     #[test]

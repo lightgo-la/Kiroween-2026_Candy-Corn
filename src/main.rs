@@ -42,9 +42,9 @@ struct Cli {
     /// GUI 시작 시 바로 불러올 CSV/JSON 파일 (.kiro 파일이면 블루프린트로 연다)
     #[arg(conflicts_with_all = ["cli", "mcp"])]
     file: Option<PathBuf>,
-    /// 블루프린트(.kiro): 전체 설정을 한 번에 적용한다.
-    /// --cli와 함께 쓰면 그 설정으로 컴파일하고, 없으면 GUI를 그 설정으로 연다.
-    /// --data는 블루프린트의 데이터 경로를, --constraint/--steering은 제약을 추가한다.
+    /// 블루프린트(.kiro): 전체 설정을 한 번에 적용한다. --cli 없이 쓰면 GUI를 그 설정으로 연다.
+    /// --cli와 함께 쓰면 그 설정으로 컴파일한다. 이때 --data는 블루프린트의 데이터 경로를 대신하고,
+    /// --constraint/--steering은 제약을 추가한다.
     #[arg(long, value_name = "FILE", conflicts_with_all = ["mcp", "canvas", "run_graph", "file"])]
     blueprint: Option<PathBuf>,
     /// GUI 테마 번호 1~7 (디자인샘플 01~07)

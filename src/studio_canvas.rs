@@ -700,6 +700,7 @@ impl Canvas {
 
         // LLM 실행
         let has_result = m.result.is_some();
+        let stale = m.stale;
         let llm = &mut m.llm;
         self.node(
             ui,
@@ -719,7 +720,8 @@ impl Canvas {
                             .hint_text(llm.model_hint),
                     );
                 });
-                let enabled = llm.has_key && has_result && !llm.running;
+                // 입력이 바뀐 뒤의 오래된 결과로는 실행하지 않는다.
+                let enabled = llm.has_key && has_result && !stale && !llm.running;
                 if theme::primary_button(ui, p, if llm.running { "실행 중" } else { "▶ 실제 실행" }, enabled).clicked()
                 {
                     actions.push(Action::RunLlm);
@@ -728,6 +730,13 @@ impl Canvas {
                     ui.spinner();
                 }
                 match (&llm.verdict, llm.has_key, has_result) {
+                    _ if has_result && stale && llm.has_key && !llm.running => {
+                        ui.label(
+                            RichText::new("입력이 바뀜 · 다시 컴파일한 뒤 실행")
+                                .small()
+                                .color(p.warn()),
+                        );
+                    }
                     (Some((ok, text)), _, _) => {
                         ui.label(
                             RichText::new(text)

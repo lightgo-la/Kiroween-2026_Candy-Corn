@@ -17,8 +17,8 @@ enum Msg {
 }
 
 enum CompileMsg {
-    Done(Box<CompileResult>),
-    Failed(String),
+    Done(u64, Box<CompileResult>),
+    Failed(u64, String),
 }
 
 /// 실제 LLM 실행 결과. 첫 값은 요청 세대(오래된 응답은 버린다).
@@ -126,6 +126,12 @@ pub struct StudioApp {
     applied_theme: usize,
     /// 마지막으로 열거나 저장한 블루프린트 파일
     blueprint_path: Option<PathBuf>,
+    /// 지금 설정이 가리키는 데이터 파일. 로드 중이거나 실패했거나 파일이 없어도 유지해서
+    /// 블루프린트 저장과 샘플 행 수 변경 시 다시 프로파일링에 쓴다.
+    data_source: Option<PathBuf>,
+    compile_gen: u64,
+    /// 컴파일 결과가 현재 입력과 다른지 (프레임마다 한 번 계산)
+    stale: bool,
     history: History<Snapshot>,
     logo: Option<egui::TextureHandle>,
     llm_models: [String; 3],
@@ -208,6 +214,9 @@ impl StudioApp {
             steering_rules: vec![],
             applied_theme: theme_idx,
             blueprint_path: None,
+            data_source: None,
+            compile_gen: 0,
+            stale: false,
             history: History::new(Snapshot {
                 target: TargetModel::Claude,
                 role: String::new(),
@@ -372,6 +381,7 @@ impl StudioApp {
     }
 
     fn spawn_load(&mut self, path: PathBuf, ctx: &egui::Context) {
+        self.data_source = Some(path.clone());
         self.loading = true;
         self.status = format!("프로파일링 중: {}", path.display());
         self.status_err = false;
@@ -384,6 +394,14 @@ impl StudioApp {
             let _ = tx.send(Msg::Loaded(generation, path, r));
             ctx.request_repaint();
         });
+    }
+
+    /// 샘플 행 수가 마지막 프로파일링 요청과 다르면 같은 파일을 다시 프로파일링한다.
+    /// 로드가 진행 중이면 그 파일을 대상으로 한다(이전 파일로 되돌아가지 않는다).
+    fn reprofile_if_needed(&mut self, ctx: &egui::Context) {
+        if let Some(path) = reprofile_path(self.data_source.as_deref(), self.sample_rows, self.loaded_k) {
+            self.spawn_load(path, ctx);
+        }
     }
 
     /// 컴파일 결과가 현재 입력과 같은지 비교하기 위한 키.
@@ -419,11 +437,12 @@ impl StudioApp {
         self.status = "컴파일 중...".into();
         self.status_err = false;
         self.result_key = self.input_key();
-        let (tx, ctx) = (self.ctx_tx.clone(), ctx.clone());
+        self.compile_gen += 1;
+        let (tx, ctx, generation) = (self.ctx_tx.clone(), ctx.clone(), self.compile_gen);
         std::thread::spawn(move || {
             let msg = match std::panic::catch_unwind(|| pipeline::compile(&req)) {
-                Ok(r) => CompileMsg::Done(Box::new(r)),
-                Err(e) => CompileMsg::Failed(panic_text(e)),
+                Ok(r) => CompileMsg::Done(generation, Box::new(r)),
+                Err(e) => CompileMsg::Failed(generation, panic_text(e)),
             };
             let _ = tx.send(msg);
             ctx.request_repaint();
@@ -448,9 +467,15 @@ impl StudioApp {
             }
         }
         while let Ok(msg) = self.ctx_rx.try_recv() {
+            let generation = match &msg {
+                CompileMsg::Done(g, _) | CompileMsg::Failed(g, _) => *g,
+            };
+            if generation != self.compile_gen {
+                continue;
+            }
             self.compiling = false;
             match msg {
-                CompileMsg::Done(r) => {
+                CompileMsg::Done(_, r) => {
                     self.status = "컴파일 완료".into();
                     self.status_err = false;
                     self.result = Some(*r);
@@ -459,7 +484,7 @@ impl StudioApp {
                     self.llm_running = false;
                     self.llm_gen += 1;
                 }
-                CompileMsg::Failed(e) => {
+                CompileMsg::Failed(_, e) => {
                     self.status = format!("컴파일 실패: {e}");
                     self.status_err = true;
                     self.result_key.clear(); // 남아 있는 이전 결과를 "입력이 바뀜"으로 표시
@@ -490,13 +515,9 @@ impl StudioApp {
             .filter_map(|k| Some((k.fixed_name()?.to_string(), self.canvas.pos_of(*k).map(|p| [p.x, p.y])?)))
             .collect();
         // 데이터가 블루프린트와 같은 폴더(또는 하위)에 있으면 상대 경로로 저장해 폴더째 옮겨도 동작하게 한다.
-        let data_path = self.loaded.as_ref().map(|d| {
-            save_to
-                .and_then(Path::parent)
-                .and_then(|dir| d.path.strip_prefix(dir).ok())
-                .unwrap_or(&d.path)
-                .display()
-                .to_string()
+        let data_path = self.data_source.as_deref().map(|d| match save_to {
+            Some(bp_file) => Blueprint::portable_data_path(d, bp_file),
+            None => d.display().to_string(),
         });
         Blueprint {
             version: blueprint::VERSION,
@@ -571,22 +592,19 @@ impl StudioApp {
         self.llm_gen += 1;
         self.llm_running = false;
         clear_text_undo(ctx);
+        // 진행 중인 컴파일 결과는 이 블루프린트와 맞지 않으므로 버린다.
+        self.compile_gen += 1;
+        self.compiling = false;
         if keep_data {
-            let reload = self
-                .loaded
-                .as_ref()
-                .map(|d| d.path.clone())
-                .filter(|_| self.sample_rows != self.loaded_k);
-            if let Some(path) = reload {
-                self.spawn_load(path, ctx);
-            }
+            self.reprofile_if_needed(ctx);
             return None;
         }
         // 이전 데이터와 진행 중인 로드를 버린다.
         self.loaded = None;
         self.loading = false;
         self.load_gen += 1;
-        match bp.data_path_from(source) {
+        self.data_source = bp.data_path_from(source);
+        match self.data_source.clone() {
             Some(dp) if dp.is_file() => {
                 self.spawn_load(dp, ctx);
                 None
@@ -596,9 +614,23 @@ impl StudioApp {
         }
     }
 
+    /// 작업 폴더의 steering 규칙 중 블루프린트에 없는 것을 사용 상태로 덧붙인다.
+    fn with_steering(&self, mut bp: Blueprint) -> Blueprint {
+        for rule in &self.steering_rules {
+            if !bp.goals.iter().any(|g| g.text.trim() == rule.trim()) {
+                bp.goals.push(GoalSpec {
+                    text: rule.clone(),
+                    on: true,
+                    pos: None,
+                });
+            }
+        }
+        bp
+    }
+
     fn open_blueprint(&mut self, path: &Path, ctx: &egui::Context) {
         let bp = match Blueprint::load(path) {
-            Ok(b) => b,
+            Ok(b) => self.with_steering(b),
             Err(e) => {
                 self.status = format!("블루프린트 열기 실패: {e}");
                 self.status_err = true;
@@ -645,7 +677,7 @@ impl StudioApp {
 
     fn load_project(&mut self, ctx: &egui::Context) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("Sugar-Coat 블루프린트", &["kiro", "json"])
+            .add_filter("Sugar-Coat 블루프린트", &["kiro"])
             .pick_file()
         else {
             return;
@@ -686,17 +718,7 @@ impl StudioApp {
     /// 내장 블루프린트 적용. 현재 데이터는 유지하고, 편집 내용은 실행 취소할 수 있다.
     fn apply_preset(&mut self, i: usize, ctx: &egui::Context) {
         let Some(preset) = PRESETS.get(i) else { return };
-        let mut bp = preset.to_blueprint();
-        // steering 규칙은 블루프린트와 별개로 유지한다.
-        for rule in &self.steering_rules {
-            if !bp.goals.iter().any(|g| g.text == *rule) {
-                bp.goals.push(GoalSpec {
-                    text: rule.clone(),
-                    on: true,
-                    pos: None,
-                });
-            }
-        }
+        let mut bp = self.with_steering(preset.to_blueprint());
         bp.llm_models = Provider::ALL
             .iter()
             .copied()
@@ -738,16 +760,7 @@ impl StudioApp {
                         self.start_llm(ctx)
                     }
                 }
-                Action::ReloadSample => {
-                    let reload = self
-                        .loaded
-                        .as_ref()
-                        .map(|d| d.path.clone())
-                        .filter(|_| self.sample_rows != self.loaded_k);
-                    if let Some(path) = reload {
-                        self.spawn_load(path, ctx);
-                    }
-                }
+                Action::ReloadSample => self.reprofile_if_needed(ctx),
                 Action::SaveProject => self.dialog = Some(Dialog::SaveProject),
                 Action::LoadProject => self.dialog = Some(Dialog::LoadProject),
                 Action::SaveOutput => self.dialog = Some(Dialog::SaveOutput),
@@ -759,7 +772,7 @@ impl StudioApp {
 
     fn left_pane(&mut self, ui: &mut egui::Ui, p: &Palette) {
         theme::section_title(ui, p, "I", "데이터 소스");
-        let mut reload = None;
+        let mut reload = false;
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(!self.loading, egui::Button::new("📂 CSV/JSON 로드"))
@@ -773,13 +786,11 @@ impl StudioApp {
         });
         ui.horizontal(|ui| {
             ui.label("샘플 행 수");
-            let r = ui.add(egui::DragValue::new(&mut self.sample_rows).range(0..=50));
-            if (r.drag_stopped() || r.lost_focus()) && self.sample_rows != self.loaded_k {
-                reload = self.loaded.as_ref().map(|d| d.path.clone());
-            }
+            let r = ui.add(egui::DragValue::new(&mut self.sample_rows).range(0..=blueprint::MAX_SAMPLE_ROWS));
+            reload = r.drag_stopped() || r.lost_focus();
         });
-        if let Some(path) = reload {
-            self.spawn_load(path, ui.ctx());
+        if reload {
+            self.reprofile_if_needed(ui.ctx());
         }
         match &self.loaded {
             Some(d) => {
@@ -856,7 +867,7 @@ impl StudioApp {
         ui.add_space(2.0);
         match self.tab {
             Tab::Canvas => {
-                let stale = self.result.is_some() && self.result_key != self.input_key();
+                let stale = self.stale;
                 let provider = provider_for(self.result.as_ref().map_or(self.target, |r| r.ast.target_model));
                 let verdict = self.llm_out.as_ref().map(|o| match o {
                     Ok(c) if c.ok => (true, "✔ 출력 형식·필수 필드 통과".to_string()),
@@ -1052,6 +1063,7 @@ impl StudioApp {
         theme::section_title(ui, p, "VIII", "LLM 실행 결과");
         let provider = provider_for(target);
         let has_key = api_key(provider).is_some();
+        let stale = self.stale;
         let mut run = false;
         ui.horizontal(|ui| {
             ui.label(provider.label());
@@ -1065,7 +1077,7 @@ impl StudioApp {
             } else {
                 "▶ 실제 실행"
             };
-            let btn = theme::primary_button(ui, p, label, has_key && !self.llm_running);
+            let btn = theme::primary_button(ui, p, label, has_key && !stale && !self.llm_running);
             // 키가 없을 때만 안내한다(실행 중 비활성 상태에는 붙이지 않는다).
             let btn = if has_key {
                 btn
@@ -1080,7 +1092,8 @@ impl StudioApp {
                 ui.spinner();
             }
         });
-        let note = match (has_key, has_data) {
+        let note = match (has_key && !stale, has_data) {
+            _ if has_key && stale => "입력이 바뀌었습니다. 다시 컴파일한 뒤 실행하세요".to_string(),
             (true, true) => format!(
                 "실행하면 최종 출력 전체(파일 이름, 컬럼 통계, 이상치, 샘플 행 포함)가 {}로 전송됩니다",
                 provider.label()
@@ -1147,6 +1160,7 @@ impl eframe::App for StudioApp {
             theme::apply(&ctx, &THEMES[self.theme_idx]);
             self.applied_theme = self.theme_idx;
         }
+        self.stale = self.result.is_some() && self.result_key != self.input_key();
         let p = self.palette();
         theme::paint_backdrop(ui.painter(), ctx.content_rect(), &p);
         theme::paint_fog(&ctx, &p);
@@ -1242,7 +1256,7 @@ impl eframe::App for StudioApp {
                         if ui
                             .add_enabled(self.history.can_undo(), egui::Button::new("실행 취소"))
                             .on_hover_text(
-                                "Ctrl+Z · 대상: 역할, 제약, 출력 포맷·필드, 타겟\n(테마·데이터·노드 배치는 대상이 아닙니다. 글자 입력 중에는 입력칸 안에서 되돌립니다)",
+                                "Ctrl+Z · 대상: 역할, 제약, 출력 포맷·필드, 타겟\n(테마·데이터·샘플 행 수·프로젝트 이름·노드 배치는 대상이 아닙니다. 글자 입력 중에는 입력칸 안에서 되돌립니다)",
                             )
                             .clicked()
                         {
@@ -1270,7 +1284,7 @@ impl eframe::App for StudioApp {
                             r.on_hover_text(&self.status);
                         }
                     }
-                    if self.result.is_some() && !self.compiling && self.result_key != self.input_key() {
+                    if self.stale && !self.compiling {
                         ui.label(
                             RichText::new("● 입력이 바뀜: 다시 컴파일하세요")
                                 .small()
@@ -1327,5 +1341,45 @@ impl eframe::App for StudioApp {
         if let Some(d) = self.dialog.take() {
             self.run_dialog(d, &ctx);
         }
+    }
+}
+
+/// 다시 프로파일링할 파일. 샘플 행 수가 마지막 요청과 같거나 데이터가 없으면 None.
+fn reprofile_path(source: Option<&Path>, want_rows: usize, profiled_rows: usize) -> Option<PathBuf> {
+    if want_rows == profiled_rows {
+        return None;
+    }
+    source.filter(|p| p.is_file()).map(Path::to_path_buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reprofile_only_when_rows_change_and_file_exists() {
+        let file = std::env::temp_dir().join(format!("sc_reprofile_{}.csv", std::process::id()));
+        std::fs::write(&file, "a\n1\n").unwrap();
+        assert_eq!(reprofile_path(Some(&file), 12, 8), Some(file.clone()));
+        assert_eq!(reprofile_path(Some(&file), 8, 8), None);
+        assert_eq!(reprofile_path(None, 12, 8), None);
+        assert_eq!(reprofile_path(Some(Path::new("Z:/no/such.csv")), 12, 8), None);
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn provider_follows_target() {
+        assert_eq!(provider_for(TargetModel::Claude), Provider::Anthropic);
+        assert_eq!(provider_for(TargetModel::Gpt), Provider::OpenAi);
+        assert_eq!(provider_for(TargetModel::Gemini), Provider::Gemini);
+        for p in Provider::ALL {
+            assert_eq!(Provider::ALL[provider_index(p)], p);
+        }
+    }
+
+    #[test]
+    fn short_status_collapses_whitespace_and_truncates() {
+        assert_eq!(short("a\n  b", 10), "a b");
+        assert_eq!(short("가나다라마", 3), "가나다…");
     }
 }
