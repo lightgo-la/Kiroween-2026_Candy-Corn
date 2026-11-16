@@ -1,4 +1,4 @@
-﻿//! 단호박 할로윈 테마 7종 (디자인샘플 01~07). 상단 바에서 즉시 전환할 수 있다.
+//! 단호박 할로윈 테마 7종 (디자인샘플 01~07). 상단 바에서 즉시 전환할 수 있다.
 
 use eframe::egui::{
     self, Color32, CornerRadius, Frame, Margin, Mesh, Painter, Pos2, Rect, RichText, Stroke, Ui, epaint::Shadow,

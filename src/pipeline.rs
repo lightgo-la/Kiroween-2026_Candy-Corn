@@ -158,6 +158,8 @@ pub struct OutputCheck {
     pub pretty: String,
     pub ok: bool,
     pub missing: Vec<String>,
+    /// 키는 있지만 값이 null이거나 빈 문자열인 필수 필드 (경고용, ok에는 영향 없음)
+    pub nulls: Vec<String>,
     pub error: Option<String>,
 }
 
@@ -169,10 +171,19 @@ pub fn check_output(format: OutputFormat, fields: &[String], text: &str) -> Outp
         OutputFormat::StrictJson => match serde_json::from_str::<serde_json::Value>(body) {
             Ok(serde_json::Value::Object(map)) => {
                 let missing: Vec<String> = fields.iter().filter(|f| !map.contains_key(*f)).cloned().collect();
+                let nulls: Vec<String> = fields
+                    .iter()
+                    .filter(|f| {
+                        map.get(*f)
+                            .is_some_and(|v| v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty()))
+                    })
+                    .cloned()
+                    .collect();
                 OutputCheck {
                     pretty: serde_json::to_string_pretty(&map).unwrap_or_else(|_| body.to_string()),
                     ok: missing.is_empty(),
                     missing,
+                    nulls,
                     error: None,
                 }
             }
@@ -180,12 +191,14 @@ pub fn check_output(format: OutputFormat, fields: &[String], text: &str) -> Outp
                 pretty: body.to_string(),
                 ok: false,
                 missing: fields.to_vec(),
+                nulls: vec![],
                 error: Some("JSON 객체가 아닙니다".into()),
             },
             Err(e) => OutputCheck {
                 pretty: text.to_string(),
                 ok: false,
                 missing: fields.to_vec(),
+                nulls: vec![],
                 error: Some(format!("JSON 파싱 실패: {e}")),
             },
         },
@@ -198,6 +211,7 @@ pub fn check_output(format: OutputFormat, fields: &[String], text: &str) -> Outp
             OutputCheck {
                 pretty: body.to_string(),
                 ok: header.is_some() && missing.is_empty(),
+                nulls: vec![],
                 error: header.is_none().then(|| "Markdown 표를 찾지 못했습니다".to_string()),
                 missing,
             }
@@ -205,12 +219,24 @@ pub fn check_output(format: OutputFormat, fields: &[String], text: &str) -> Outp
     }
 }
 
+/// ```json ... ``` 코드 펜스를 벗긴다. 여러 줄과 한 줄(```{"a":1}```, ```json {"a":1}```) 모두 처리한다.
 fn strip_fence(s: &str) -> &str {
     let Some(rest) = s.strip_prefix("```") else {
         return s;
     };
-    let rest = rest.split_once('\n').map_or("", |(_, r)| r); // ```json 같은 언어 표시 줄 제거
-    rest.trim_end().strip_suffix("```").unwrap_or(rest).trim()
+    let rest = rest.trim_end();
+    let rest = rest.strip_suffix("```").unwrap_or(rest);
+    let starts_body = |t: &str| t.trim_start().starts_with(['{', '[', '|']);
+    let body = match rest.split_once('\n') {
+        // 첫 줄이 언어 표시(json, markdown 등)면 그 줄을 버린다
+        Some((first, after)) if !starts_body(first) => after,
+        _ if starts_body(rest) => rest,
+        // 한 줄: 앞의 언어 표시 단어만 떼어 낸다
+        _ => rest
+            .trim_start()
+            .trim_start_matches(|c: char| c.is_ascii_alphanumeric()),
+    };
+    body.trim()
 }
 
 #[cfg(test)]
@@ -237,6 +263,23 @@ mod tests {
         assert!(!bad.ok && bad.error.is_some());
         let arr = check_output(OutputFormat::StrictJson, &f(&["a"]), "[1,2]");
         assert!(!arr.ok && arr.error.is_some());
+    }
+
+    #[test]
+    fn single_line_fences_and_nulls() {
+        for t in [
+            "```{\"a\":1}```",
+            "```json {\"a\":1}```",
+            "```json\n{\"a\":1}\n```",
+            "```\n{\"a\":1}```",
+        ] {
+            assert!(check_output(OutputFormat::StrictJson, &f(&["a"]), t).ok, "{t}");
+        }
+        let multi = "```\n{\n\"a\": 1\n}\n```";
+        assert!(check_output(OutputFormat::StrictJson, &f(&["a"]), multi).ok);
+        let c = check_output(OutputFormat::StrictJson, &f(&["a", "b"]), r#"{"a":null,"b":" "}"#);
+        assert!(c.ok);
+        assert_eq!(c.nulls, f(&["a", "b"]));
     }
 
     #[test]

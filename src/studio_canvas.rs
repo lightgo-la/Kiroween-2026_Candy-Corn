@@ -1,4 +1,4 @@
-﻿//! 노드 캔버스: 데이터/역할/제약/출력 블록을 끌어 배치하고 컴파일러 노드로 연결해 결과까지 한 화면에서 본다.
+//! 노드 캔버스: 데이터/역할/제약/출력 블록을 끌어 배치하고 컴파일러 노드로 연결해 결과까지 한 화면에서 본다.
 //! 이동(드래그)·확대(Ctrl+휠, 핀치)는 egui::Scene이 처리한다.
 
 use crate::ast::{ConstraintNode, ConstraintType, OutputFormat, OutputSchemaAst, TargetModel};

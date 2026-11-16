@@ -1,4 +1,4 @@
-﻿//! Sugar-Coat Studio: 인자 없으면 GUI, `--cli` 는 터미널 린터, `--mcp` 는 stdio MCP 서버.
+//! Sugar-Coat Studio: 인자 없으면 GUI, `--cli` 는 터미널 린터, `--mcp` 는 stdio MCP 서버.
 
 mod app;
 mod ast;

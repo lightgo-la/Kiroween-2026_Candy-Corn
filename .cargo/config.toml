@@ -1,4 +1,4 @@
-﻿# OneDrive 동기화 폴더 안에서 빌드 산출물(수 GB)이 동기화/잠금 충돌을 일으키지 않도록
+# OneDrive 동기화 폴더 안에서 빌드 산출물(수 GB)이 동기화/잠금 충돌을 일으키지 않도록
 # 빌드 캐시를 로컬 경로로 분리한다. 필요 시 경로를 수정할 것.
 [build]
 target-dir = "C:/cargo-target/sugar-coat-studio"

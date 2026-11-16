@@ -50,8 +50,28 @@ fn provider_index(p: Provider) -> usize {
 }
 
 /// 환경 변수에서 API 키를 읽는다. 키는 화면·파일·로그에 남기지 않는다.
+/// 실행 중인 프로세스는 나중에 설정한 환경 변수를 보지 못하므로 설정 후 앱을 다시 시작해야 한다.
 fn api_key(p: Provider) -> Option<String> {
-    std::env::var(p.default_key_env()).ok().filter(|k| !k.trim().is_empty())
+    std::env::var(p.default_key_env())
+        .ok()
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+}
+
+/// 입력칸마다 남아 있는 egui 자체 실행 취소 기록을 지운다.
+/// 앱이 글자를 바꾼 뒤(실행 취소, 프로젝트 불러오기, 블루프린트 적용) 옛 글자가 되살아나는 것을 막는다.
+fn clear_text_undo(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove_by_type::<egui::text_edit::TextEditState>());
+}
+
+/// 상태 줄에 넣을 짧은 문구. 긴 오류 본문은 마우스를 올렸을 때만 보여 준다.
+fn short(s: &str, n: usize) -> String {
+    let one_line = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.chars().count() <= n {
+        one_line
+    } else {
+        format!("{}…", one_line.chars().take(n).collect::<String>())
+    }
 }
 
 /// 파일 대화상자는 UI 패스 안에서 열면 프레임이 멈추고 입력이 꼬이므로 프레임 끝에서 실행한다.
@@ -289,16 +309,22 @@ impl StudioApp {
         self.status_err = false;
     }
 
-    fn undo(&mut self) {
+    fn undo(&mut self, ctx: &egui::Context) {
         match self.history.undo() {
-            Some(s) => self.restore(s, "실행 취소"),
+            Some(s) => {
+                self.restore(s, "실행 취소");
+                clear_text_undo(ctx);
+            }
             None => self.status = "되돌릴 작업이 없습니다".into(),
         }
     }
 
-    fn redo(&mut self) {
+    fn redo(&mut self, ctx: &egui::Context) {
         match self.history.redo() {
-            Some(s) => self.restore(s, "다시 실행"),
+            Some(s) => {
+                self.restore(s, "다시 실행");
+                clear_text_undo(ctx);
+            }
             None => self.status = "다시 실행할 작업이 없습니다".into(),
         }
     }
@@ -340,9 +366,10 @@ impl StudioApp {
                 max_tokens: 2048,
                 temperature: None,
             };
-            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| llm::call(&req)))
-                .unwrap_or_else(|e| Err(format!("LLM 호출 내부 오류: {}", panic_text(e))))
-                .map(|text| pipeline::check_output(format, &fields, &text));
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                llm::call(&req).map(|text| pipeline::check_output(format, &fields, &text))
+            }))
+            .unwrap_or_else(|e| Err(format!("LLM 호출 내부 오류: {}", panic_text(e))));
             let _ = tx.send(LlmMsg::Done(generation, out));
             ctx.request_repaint();
         });
@@ -473,9 +500,9 @@ impl StudioApp {
             }
             self.llm_running = false;
             match &out {
-                Ok(c) if c.ok => self.status = "LLM 응답 · 출력 스키마 검증 통과".into(),
-                Ok(_) => self.status = "LLM 응답 · 출력 스키마 위반".into(),
-                Err(e) => self.status = format!("LLM 실행 실패: {e}"),
+                Ok(c) if c.ok => self.status = "LLM 응답 · 출력 형식·필수 필드 검증 통과".into(),
+                Ok(_) => self.status = "LLM 응답 · 출력 형식 위반 (오른쪽 VIII 참고)".into(),
+                Err(_) => self.status = "LLM 실행 실패 (오른쪽 VIII에 자세한 내용)".into(),
             }
             self.status_err = !matches!(&out, Ok(c) if c.ok);
             self.llm_out = Some(out);
@@ -601,6 +628,7 @@ impl StudioApp {
         self.llm_gen += 1;
         self.llm_running = false;
         self.history.reset(self.snapshot()); // 다른 프로젝트로 되돌아가지 않게 기록을 비운다
+        clear_text_undo(ctx);
     }
 
     fn save_output(&mut self) {
@@ -764,9 +792,6 @@ impl StudioApp {
                 let t = self.new_goal.trim().to_string();
                 self.add_goal(t, true);
                 self.new_goal.clear();
-                if enter {
-                    resp.request_focus(); // 연속 입력
-                }
             }
         });
 
@@ -951,7 +976,11 @@ impl StudioApp {
     }
 
     fn llm_section(&mut self, ui: &mut egui::Ui, p: &Palette) {
-        let Some((target, preview)) = self.result.as_ref().map(|r| (r.ast.target_model, r.preview.clone())) else {
+        let Some((target, preview, has_data)) = self
+            .result
+            .as_ref()
+            .map(|r| (r.ast.target_model, r.preview.clone(), r.ast.data_sub_ast.is_some()))
+        else {
             return;
         };
         theme::section_title(ui, p, "VIII", "LLM 실행 결과");
@@ -970,26 +999,31 @@ impl StudioApp {
             } else {
                 "▶ 실제 실행"
             };
-            run = theme::primary_button(ui, p, label, has_key && !self.llm_running)
-                .on_disabled_hover_text(format!(
-                    "환경 변수 {}에 API 키를 설정하세요",
+            let btn = theme::primary_button(ui, p, label, has_key && !self.llm_running);
+            // 키가 없을 때만 안내한다(실행 중 비활성 상태에는 붙이지 않는다).
+            let btn = if has_key {
+                btn
+            } else {
+                btn.on_disabled_hover_text(format!(
+                    "환경 변수 {}에 API 키를 설정한 뒤 앱을 다시 시작하세요",
                     provider.default_key_env()
                 ))
-                .clicked();
+            };
+            run = btn.clicked();
             if self.llm_running {
                 ui.spinner();
             }
         });
-        let note = if has_key {
-            format!(
-                "실행하면 데이터 샘플이 포함된 프롬프트가 {}로 전송됩니다",
+        let note = match (has_key, has_data) {
+            (true, true) => format!(
+                "실행하면 최종 출력 전체(파일 이름, 컬럼 통계, 이상치, 샘플 행 포함)가 {}로 전송됩니다",
                 provider.label()
-            )
-        } else {
-            format!(
-                "{} 환경 변수가 없어 스키마 골격(모의 응답)만 보여 줍니다",
+            ),
+            (true, false) => format!("실행하면 최종 출력 프롬프트가 {}로 전송됩니다", provider.label()),
+            (false, _) => format!(
+                "{} 환경 변수가 없어 스키마 골격(모의 응답)만 보여 줍니다. 설정 후 앱을 다시 시작하세요",
                 provider.default_key_env()
-            )
+            ),
         };
         ui.label(RichText::new(note).small().color(p.sub));
         egui::ScrollArea::vertical()
@@ -1003,7 +1037,10 @@ impl StudioApp {
                 }
                 Some(Ok(c)) => {
                     if c.ok {
-                        ui.colored_label(theme::OK, "✔ 출력 스키마 검증 통과");
+                        ui.colored_label(theme::OK, "✔ 출력 형식·필수 필드 검증 통과");
+                        if !c.nulls.is_empty() {
+                            ui.colored_label(p.warn(), format!("⚠ 값이 비어 있는 필드: {}", c.nulls.join(", ")));
+                        }
                     } else {
                         if let Some(e) = &c.error {
                             ui.colored_label(theme::ERR, format!("✖ {e}"));
@@ -1055,15 +1092,15 @@ impl eframe::App for StudioApp {
             self.spawn_load(path, &ctx);
         }
         self.hovering_file = ctx.input(|i| !i.raw.hovered_files.is_empty());
-        if !ctx.egui_wants_keyboard_input() {
+        if !ctx.text_edit_focused() {
             let cmd = egui::Modifiers::COMMAND;
             // Ctrl+Shift+Z를 먼저 검사한다(Ctrl+Z 패턴은 Shift가 눌려도 일치한다).
             if ctx.input_mut(|i| {
                 i.consume_key(cmd | egui::Modifiers::SHIFT, egui::Key::Z) || i.consume_key(cmd, egui::Key::Y)
             }) {
-                self.redo();
+                self.redo(&ctx);
             } else if ctx.input_mut(|i| i.consume_key(cmd, egui::Key::Z)) {
-                self.undo();
+                self.undo(&ctx);
             }
         }
         // Ctrl+Enter로 컴파일
@@ -1133,14 +1170,16 @@ impl eframe::App for StudioApp {
                             .on_hover_text("Ctrl+Shift+Z / Ctrl+Y")
                             .clicked()
                         {
-                            self.redo();
+                            self.redo(&ctx);
                         }
                         if ui
                             .add_enabled(self.history.can_undo(), egui::Button::new("실행 취소"))
-                            .on_hover_text("Ctrl+Z (글자 입력 중에는 입력칸 안에서 되돌립니다)")
+                            .on_hover_text(
+                                "Ctrl+Z · 대상: 역할, 제약, 출력 포맷·필드, 타겟\n(테마·데이터·노드 배치는 대상이 아닙니다. 글자 입력 중에는 입력칸 안에서 되돌립니다)",
+                            )
                             .clicked()
                         {
-                            self.undo();
+                            self.undo(&ctx);
                         }
                     });
                 });
@@ -1159,7 +1198,10 @@ impl eframe::App for StudioApp {
                         ui.label(RichText::new("여기에 놓으면 데이터를 로드합니다").small().color(p.hi));
                     } else {
                         let color = if self.status_err { theme::ERR } else { p.sub };
-                        ui.label(RichText::new(&self.status).small().color(color));
+                        let r = ui.label(RichText::new(short(&self.status, 110)).small().color(color));
+                        if self.status.chars().count() > 110 {
+                            r.on_hover_text(&self.status);
+                        }
                     }
                     if self.result.is_some() && !self.compiling && self.result_key != self.input_key() {
                         ui.label(
