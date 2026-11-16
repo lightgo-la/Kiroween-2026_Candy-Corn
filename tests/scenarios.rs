@@ -1,7 +1,7 @@
 //! 시나리오 테스트 21개: 입력 파일 준비 → 실제 실행 파일 실행 → 출력 검증까지 한 번에 확인한다.
 //! 블루프린트 CLI, 데이터 경로 해석, 린트, 인코딩, MCP 서버 경로를 다룬다. `cargo test`에 포함된다.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -48,31 +48,50 @@ fn write(p: &Path, text: &str) {
 }
 
 /// 실행 파일을 돌리고 30초 안에 끝나지 않으면 종료시킨다(예: 옵션 검사가 깨져 GUI가 뜨는 경우).
-fn run_in(cwd: &Path, args: &[&str]) -> Run {
-    let mut child = Command::new(BIN)
-        .current_dir(cwd)
-        .args(args)
-        .stdin(Stdio::null())
+/// 출력은 별도 스레드에서 읽어 파이프가 가득 차 멈추지 않게 한다.
+fn run_cmd(mut cmd: Command, input: Option<&str>) -> Run {
+    let mut child = cmd
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    if let Some(text) = input {
+        // 쓰고 나서 닫아야(drop) 서버가 입력 끝을 본다
+        child.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+    }
+    let drain = |mut r: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = r.read_to_end(&mut buf);
+            String::from_utf8_lossy(&buf).into_owned()
+        })
+    };
+    let out = drain(Box::new(child.stdout.take().unwrap()));
+    let err = drain(Box::new(child.stderr.take().unwrap()));
     let start = Instant::now();
-    while child.try_wait().unwrap().is_none() {
+    let status = loop {
+        if let Some(st) = child.try_wait().unwrap() {
+            break st;
+        }
         if start.elapsed() > Duration::from_secs(30) {
             let _ = child.kill();
-            panic!("30초 안에 끝나지 않음: {args:?}");
+            panic!("30초 안에 끝나지 않음: {cmd:?}");
         }
         std::thread::sleep(Duration::from_millis(20));
-    }
-    let o = child.wait_with_output().unwrap();
+    };
     Run {
-        code: o.status.code().unwrap_or(-1),
-        out: String::from_utf8_lossy(&o.stdout).into_owned(),
-        err: String::from_utf8_lossy(&o.stderr).into_owned(),
+        code: status.code().unwrap_or(-1),
+        out: out.join().unwrap(),
+        err: err.join().unwrap(),
     }
 }
 
+fn run_in(cwd: &Path, args: &[&str]) -> Run {
+    let mut cmd = Command::new(BIN);
+    cmd.current_dir(cwd).args(args);
+    run_cmd(cmd, None)
+}
 fn s(p: &Path) -> &str {
     p.to_str().unwrap()
 }
@@ -341,18 +360,11 @@ fn s21_mcp_compress_prompt_with_data() {
             "data_path": csv.display().to_string()
         }}
     });
-    let mut child = Command::new(BIN)
-        .arg("--mcp")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    writeln!(child.stdin.as_mut().unwrap(), "{call}").unwrap();
-    drop(child.stdin.take());
-    let out = child.wait_with_output().unwrap();
-    let line = String::from_utf8_lossy(&out.stdout);
-    let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    let mut cmd = Command::new(BIN);
+    cmd.arg("--mcp");
+    let r = run_cmd(cmd, Some(&format!("{call}\n")));
+    ok(&r);
+    let v: serde_json::Value = serde_json::from_str(r.out.trim()).unwrap();
     assert_eq!(v["id"], 7);
     let text = v["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("# Role") && text.contains("rows: 3"));

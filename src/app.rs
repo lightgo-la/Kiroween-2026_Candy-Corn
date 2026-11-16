@@ -460,8 +460,14 @@ impl StudioApp {
                 Err(e) => {
                     self.status = format!("로드 실패: {e}");
                     self.status_err = true;
-                    // 화면에 이전 데이터가 남아 있으면 저장·다시 프로파일링도 그 데이터를 가리킨다.
-                    self.data_ref.failed();
+                    // 화면에 이전 데이터가 남아 있으면 저장·다시 프로파일링도 그 데이터를 가리키고,
+                    // 샘플 행 수도 그 데이터에 맞춘다(폼과 실제 데이터가 어긋나지 않게).
+                    if let Some(rows) = self.data_ref.failed()
+                        && rows != self.sample_rows
+                    {
+                        self.sample_rows = rows;
+                        self.status.push_str(&format!(" · 샘플 행 수를 {rows}로 되돌림"));
+                    }
                 }
             }
         }
@@ -1377,11 +1383,12 @@ impl DataRef {
         }
     }
 
-    /// 실패: 화면에 데이터가 있으면 그쪽으로 되돌리고, 없으면 요청한 파일을 참조로 남긴다.
-    fn failed(&mut self) {
-        if self.shown.is_some() {
-            self.pending = None;
-        }
+    /// 실패: 화면에 데이터가 있으면 그쪽으로 되돌리고(그 데이터의 샘플 행 수를 돌려준다),
+    /// 없으면 요청한 파일을 참조로 남긴다.
+    fn failed(&mut self) -> Option<usize> {
+        let (_, rows) = self.shown.as_ref()?;
+        self.pending = None;
+        Some(*rows)
     }
 
     fn current(&self) -> Option<&(PathBuf, usize)> {
@@ -1441,7 +1448,7 @@ mod tests {
         d.requested(a.clone(), 8);
         d.succeeded();
         d.requested(b.clone(), 12);
-        d.failed(); // B가 깨진 파일
+        assert_eq!(d.failed(), Some(8)); // B가 깨진 파일: 화면의 A(8행)로 되돌린다
         assert_eq!(d.source(), Some(a.as_path()));
         assert_eq!(d.reprofile_target(12), Some(a.clone())); // A를 12행으로 다시
         assert_eq!(d.reprofile_target(8), None); // A는 이미 8행
@@ -1453,7 +1460,7 @@ mod tests {
         let b = temp_csv("b3");
         let mut d = DataRef::default();
         d.requested(b.clone(), 8);
-        d.failed();
+        assert_eq!(d.failed(), None); // 되돌릴 데이터가 없다
         assert_eq!(d.source(), Some(b.as_path()));
         let _ = std::fs::remove_file(b);
     }
