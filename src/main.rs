@@ -1,8 +1,9 @@
-//! Sugar-Coat Studio: 인자 없으면 GUI, `--cli` 는 터미널 린터, `--mcp` 는 stdio MCP 서버.
+﻿//! Sugar-Coat Studio: 인자 없으면 GUI, `--cli` 는 터미널 린터, `--mcp` 는 stdio MCP 서버.
 
 mod app;
 mod ast;
 mod canvas;
+mod history;
 mod mcp_server;
 mod pipeline;
 mod profiler;
@@ -106,7 +107,7 @@ fn detach_console() {}
 /// 창 아이콘(제목 표시줄·작업 표시줄·Alt+Tab). exe 파일 아이콘은 build.rs가 assets/icon.ico로 넣는다.
 fn window_icon() -> eframe::egui::ViewportBuilder {
     let vb = eframe::egui::ViewportBuilder::default();
-    match eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png")) {
+    match eframe::icon_data::from_png_bytes(theme::ICON_PNG) {
         Ok(icon) => vb.with_icon(std::sync::Arc::new(icon)),
         Err(e) => {
             eprintln!("창 아이콘 로드 실패: {e}");

@@ -150,3 +150,101 @@ pub fn find_steering() -> Option<std::path::PathBuf> {
         .flatten()
         .find_map(|s| s.ancestors().map(|a| a.join(REL)).find(|p| p.is_file()))
 }
+
+/// 실제 LLM 응답을 출력 스키마로 검사한 결과.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutputCheck {
+    /// 화면 표시용 본문 (JSON이면 보기 좋게 정렬)
+    pub pretty: String,
+    pub ok: bool,
+    pub missing: Vec<String>,
+    pub error: Option<String>,
+}
+
+/// LLM 응답이 강제한 출력 포맷과 필수 필드를 지켰는지 검사한다.
+/// JSON은 ```json 코드 펜스를 벗겨 낸 뒤 파싱하고, 표는 첫 헤더 행의 열 이름을 본다.
+pub fn check_output(format: OutputFormat, fields: &[String], text: &str) -> OutputCheck {
+    let body = strip_fence(text.trim());
+    match format {
+        OutputFormat::StrictJson => match serde_json::from_str::<serde_json::Value>(body) {
+            Ok(serde_json::Value::Object(map)) => {
+                let missing: Vec<String> = fields.iter().filter(|f| !map.contains_key(*f)).cloned().collect();
+                OutputCheck {
+                    pretty: serde_json::to_string_pretty(&map).unwrap_or_else(|_| body.to_string()),
+                    ok: missing.is_empty(),
+                    missing,
+                    error: None,
+                }
+            }
+            Ok(_) => OutputCheck {
+                pretty: body.to_string(),
+                ok: false,
+                missing: fields.to_vec(),
+                error: Some("JSON 객체가 아닙니다".into()),
+            },
+            Err(e) => OutputCheck {
+                pretty: text.to_string(),
+                ok: false,
+                missing: fields.to_vec(),
+                error: Some(format!("JSON 파싱 실패: {e}")),
+            },
+        },
+        OutputFormat::MarkdownTable => {
+            let header = body.lines().map(str::trim).find(|l| l.starts_with('|'));
+            let cols: Vec<String> = header
+                .map(|h| h.trim_matches('|').split('|').map(|c| c.trim().to_string()).collect())
+                .unwrap_or_default();
+            let missing: Vec<String> = fields.iter().filter(|f| !cols.contains(f)).cloned().collect();
+            OutputCheck {
+                pretty: body.to_string(),
+                ok: header.is_some() && missing.is_empty(),
+                error: header.is_none().then(|| "Markdown 표를 찾지 못했습니다".to_string()),
+                missing,
+            }
+        }
+    }
+}
+
+fn strip_fence(s: &str) -> &str {
+    let Some(rest) = s.strip_prefix("```") else {
+        return s;
+    };
+    let rest = rest.split_once('\n').map_or("", |(_, r)| r); // ```json 같은 언어 표시 줄 제거
+    rest.trim_end().strip_suffix("```").unwrap_or(rest).trim()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn f(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn json_with_fence_and_missing_field() {
+        let c = check_output(OutputFormat::StrictJson, &f(&["a", "b"]), "```json\n{\"a\": 1}\n```");
+        assert!(!c.ok);
+        assert_eq!(c.missing, f(&["b"]));
+        assert!(c.error.is_none());
+        assert!(c.pretty.contains("\"a\": 1"));
+    }
+
+    #[test]
+    fn json_ok_and_invalid() {
+        assert!(check_output(OutputFormat::StrictJson, &f(&["a"]), r#"{"a":null,"x":2}"#).ok);
+        let bad = check_output(OutputFormat::StrictJson, &f(&["a"]), "분석 결과: a는 1입니다");
+        assert!(!bad.ok && bad.error.is_some());
+        let arr = check_output(OutputFormat::StrictJson, &f(&["a"]), "[1,2]");
+        assert!(!arr.ok && arr.error.is_some());
+    }
+
+    #[test]
+    fn markdown_table_header() {
+        let t = "설명\n| a | b |\n|---|---|\n| 1 | 2 |";
+        assert!(check_output(OutputFormat::MarkdownTable, &f(&["a", "b"]), t).ok);
+        let c = check_output(OutputFormat::MarkdownTable, &f(&["a", "c"]), t);
+        assert_eq!(c.missing, f(&["c"]));
+        assert!(!check_output(OutputFormat::MarkdownTable, &f(&["a"]), "표 없음").ok);
+    }
+}

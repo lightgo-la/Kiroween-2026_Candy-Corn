@@ -1,4 +1,4 @@
-//! 노드 캔버스: 데이터/역할/제약/출력 블록을 끌어 배치하고 컴파일러 노드로 연결해 결과까지 한 화면에서 본다.
+﻿//! 노드 캔버스: 데이터/역할/제약/출력 블록을 끌어 배치하고 컴파일러 노드로 연결해 결과까지 한 화면에서 본다.
 //! 이동(드래그)·확대(Ctrl+휠, 핀치)는 egui::Scene이 처리한다.
 
 use crate::ast::{ConstraintNode, ConstraintType, OutputFormat, OutputSchemaAst, TargetModel};
@@ -42,7 +42,7 @@ impl NodeKey {
 }
 
 /// 제약 한 줄. 캔버스 노드와 왼쪽 폼이 같은 목록을 편집한다.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Goal {
     pub id: u64,
     pub text: String,
@@ -207,8 +207,8 @@ impl Canvas {
     }
 
     /// 삭제된 노드의 위치·선택 상태를 정리한다.
+    /// 위치(pos)는 남겨 두어 실행 취소로 되살리면 같은 자리에 나타난다.
     pub fn forget(&mut self, key: NodeKey) {
-        self.pos.remove(&key);
         self.rects.remove(&key);
         if self.selected == Some(key) {
             self.selected = None;

@@ -1,4 +1,4 @@
-//! 단호박 할로윈 테마 7종 (디자인샘플 01~07). 상단 바에서 즉시 전환할 수 있다.
+﻿//! 단호박 할로윈 테마 7종 (디자인샘플 01~07). 상단 바에서 즉시 전환할 수 있다.
 
 use eframe::egui::{
     self, Color32, CornerRadius, Frame, Margin, Mesh, Painter, Pos2, Rect, RichText, Stroke, Ui, epaint::Shadow,
@@ -140,6 +140,9 @@ pub const THEMES: [Palette; 7] = [
         on_accent: c(0x1a, 0x09, 0x00),
     },
 ];
+
+/// 앱 아이콘 원본(pumpkin_premium.png를 256px로 줄인 것). 창 아이콘과 헤더 로고에 쓴다.
+pub const ICON_PNG: &[u8] = include_bytes!("../assets/icon-256.png");
 
 pub const OK: Color32 = c(0x8f, 0xd1, 0x9e);
 pub const ERR: Color32 = c(0xef, 0x7b, 0x72);
