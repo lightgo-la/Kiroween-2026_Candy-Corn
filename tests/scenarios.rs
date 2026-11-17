@@ -1,11 +1,13 @@
-//! 시나리오 테스트 33개: 입력 파일 준비 → 실제 실행 파일 실행 → 출력 검증까지 한 번에 확인한다.
-//! 블루프린트 CLI, 데이터 경로 해석, 린트, 인코딩·구분자·바이너리 데이터, MCP 서버 경로, 영어 모드(`--lang en`)를 다룬다.
-//! `cargo test`에 포함된다.
+//! 33 scenario tests: each one prepares input files, runs the real executable and checks the output.
+//! Covers the blueprint CLI, data path resolution, lint, encodings/delimiters/binary data, the MCP server paths and
+//! Korean mode (`--lang ko`; English is the default). Part of `cargo test`.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+include!(concat!(env!("OUT_DIR"), "/ko_fixture.rs"));
 
 const BIN: &str = env!("CARGO_BIN_EXE_Candy-Corn");
 const GRAPH_SAMPLE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/samples/flow.canvas.json");
@@ -16,7 +18,7 @@ struct Run {
     err: String,
 }
 
-/// 시나리오마다 독립된 작업 폴더 (병렬 실행 대비). 테스트가 끝나면 지운다.
+/// A separate work folder per scenario (tests run in parallel). Removed when the test ends.
 struct Work(PathBuf);
 
 impl std::ops::Deref for Work {
@@ -48,13 +50,13 @@ fn write(p: &Path, text: &str) {
     std::fs::write(p, text).unwrap();
 }
 
-/// 실행 파일을 돌리고 30초 안에 끝나지 않으면 종료시킨다(예: 옵션 검사가 깨져 GUI가 뜨는 경우).
-/// 출력은 별도 스레드에서 읽어 파이프가 가득 차 멈추지 않게 한다.
+/// Runs the executable and kills it if it does not finish within 30 seconds (e.g. a broken option check opens the
+/// GUI). Output is read on separate threads so a full pipe cannot block the process.
 fn run_cmd(cmd: Command, input: Option<&str>) -> Run {
     run_cmd_bytes(cmd, input.map(str::as_bytes))
 }
 
-/// `run_cmd`와 같지만 표준 입력을 바이트로 준다(UTF-8이 아닌 입력 시험용).
+/// Like `run_cmd`, but stdin is given as bytes (for testing input that is not UTF-8).
 fn run_cmd_bytes(mut cmd: Command, input: Option<&[u8]>) -> Run {
     let mut child = cmd
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
@@ -63,7 +65,7 @@ fn run_cmd_bytes(mut cmd: Command, input: Option<&[u8]>) -> Run {
         .spawn()
         .unwrap();
     if let Some(bytes) = input {
-        // 쓰고 나서 닫아야(drop) 서버가 입력 끝을 본다
+        // Close (drop) stdin after writing so the server sees the end of the input
         child.stdin.take().unwrap().write_all(bytes).unwrap();
     }
     let drain = |mut r: Box<dyn Read + Send>| {
@@ -82,7 +84,7 @@ fn run_cmd_bytes(mut cmd: Command, input: Option<&[u8]>) -> Run {
         }
         if start.elapsed() > Duration::from_secs(30) {
             let _ = child.kill();
-            panic!("30초 안에 끝나지 않음: {cmd:?}");
+            panic!("did not finish within 30 seconds: {cmd:?}");
         }
         std::thread::sleep(Duration::from_millis(20));
     };
@@ -102,10 +104,11 @@ fn s(p: &Path) -> &str {
     p.to_str().unwrap()
 }
 
-/// GPT + 표 형식 블루프린트 본문
+/// GPT + table blueprint body
 fn gpt_bp(extra: &str) -> String {
     format!(
-        r#"{{"version":2,"target":"Gpt","format":"MarkdownTable","role":"품질 감사관","fields":"column,issue"{extra}}}"#
+        r#"{{"version":2,"target":"Gpt","format":"MarkdownTable","role":"{}","fields":"column,issue"{extra}}}"#,
+        ko_fixture!("scenarios.role_quality_auditor")
     )
 }
 
@@ -117,16 +120,20 @@ fn ok(r: &Run) {
 fn s01_relative_data_path_loads_next_to_blueprint() {
     let w = work("s01");
     let bp = w.join("proj/rel.kiro");
+    let (check, off) = (
+        ko_fixture!("scenarios.goal_check_duplicate_rows"),
+        ko_fixture!("scenarios.goal_disabled"),
+    );
     write(
         &bp,
-        &gpt_bp(
-            r#","sample_rows":2,"data_path":"d.csv","goals":[{"text":"중복 행 여부를 확인","on":true},{"text":"꺼진 제약","on":false}]"#,
-        ),
+        &gpt_bp(&format!(
+            r#","sample_rows":2,"data_path":"d.csv","goals":[{{"text":"{check}","on":true}},{{"text":"{off}","on":false}}]"#
+        )),
     );
     let r = run_in(&w.join("cwd"), &["--cli", "--blueprint", s(&bp)]);
     ok(&r);
     assert!(r.out.contains("rows: 3") && r.out.contains("| column | issue |"));
-    assert!(r.out.contains("중복 행 여부를 확인") && !r.out.contains("꺼진 제약"));
+    assert!(r.out.contains(check) && !r.out.contains(off));
 }
 
 #[test]
@@ -157,7 +164,7 @@ fn s04_missing_data_file_fails() {
     write(&bp, &gpt_bp(r#","data_path":"d.csv""#));
     let r = run_in(&w.join("cwd"), &["--cli", "--blueprint", s(&bp)]);
     assert_eq!(r.code, 1);
-    assert!(r.err.contains("데이터 로드 실패"));
+    assert!(r.err.contains("failed to load data"), "{}", r.err);
 }
 
 #[test]
@@ -174,13 +181,12 @@ fn s05_data_flag_overrides_blueprint_data() {
 fn s06_constraint_flag_appends() {
     let w = work("s06");
     let bp = w.join("proj/rel.kiro");
-    write(&bp, &gpt_bp(r#","goals":[{"text":"중복 행 여부를 확인","on":true}]"#));
-    let r = run_in(
-        &w.join("cwd"),
-        &["--cli", "--blueprint", s(&bp), "--constraint", "추가 제약"],
-    );
+    let check = ko_fixture!("scenarios.goal_check_duplicate_rows");
+    let extra = ko_fixture!("scenarios.extra_constraint");
+    write(&bp, &gpt_bp(&format!(r#","goals":[{{"text":"{check}","on":true}}]"#)));
+    let r = run_in(&w.join("cwd"), &["--cli", "--blueprint", s(&bp), "--constraint", extra]);
     ok(&r);
-    assert!(r.out.contains("추가 제약") && r.out.contains("중복 행 여부를 확인"));
+    assert!(r.out.contains(extra) && r.out.contains(check));
 }
 
 #[test]
@@ -189,30 +195,41 @@ fn s07_steering_flag_appends_rules() {
     let bp = w.join("proj/rel.kiro");
     write(&bp, &gpt_bp(""));
     let steering = w.join("proj/rules.md");
+    let (dash, star, plain) = (
+        ko_fixture!("scenarios.steering_dash_rule"),
+        ko_fixture!("scenarios.steering_star_rule"),
+        ko_fixture!("scenarios.steering_plain_line"),
+    );
     write(
         &steering,
-        "# 규칙\n- 숫자는 소수점 둘째 자리까지\n* 근거 컬럼을 함께 표기\n설명 줄은 무시\n",
+        &format!(
+            "# {}\n- {dash}\n* {star}\n{plain}\n",
+            ko_fixture!("scenarios.steering_heading")
+        ),
     );
     let r = run_in(
         &w.join("cwd"),
         &["--cli", "--blueprint", s(&bp), "--steering", s(&steering)],
     );
     ok(&r);
-    assert!(r.out.contains("숫자는 소수점 둘째 자리까지") && r.out.contains("근거 컬럼을 함께 표기"));
-    assert!(!r.out.contains("설명 줄은 무시"));
+    assert!(r.out.contains(dash) && r.out.contains(star));
+    assert!(!r.out.contains(plain));
 }
 
 #[test]
 fn s08_v1_project_file_loads() {
     let w = work("s08");
     let bp = w.join("proj/v1.kiro");
+    let goal = ko_fixture!("scenarios.goal_outliers_first");
     write(
         &bp,
-        r#"{"version":1,"project":"old.kiro","target":"Claude","role":"r","goals":[{"text":"이상치 우선 탐지","on":true,"pos":[1.0,2.0]}],"format":"StrictJson","fields":"a,b","sample_rows":8,"theme":3,"data_path":"d.csv","positions":[["root",[1.0,2.0]]]}"#,
+        &format!(
+            r#"{{"version":1,"project":"old.kiro","target":"Claude","role":"r","goals":[{{"text":"{goal}","on":true,"pos":[1.0,2.0]}}],"format":"StrictJson","fields":"a,b","sample_rows":8,"theme":3,"data_path":"d.csv","positions":[["root",[1.0,2.0]]]}}"#
+        ),
     );
     let r = run_in(&w.join("cwd"), &["--cli", "--blueprint", s(&bp)]);
     ok(&r);
-    assert!(r.out.contains(r#"rows="3""#) && r.out.contains("이상치 우선 탐지"));
+    assert!(r.out.contains(r#"rows="3""#) && r.out.contains(goal));
 }
 
 #[test]
@@ -240,7 +257,7 @@ fn s11_malformed_json_rejected() {
     write(&bp, r#"{"version":2,"#);
     let r = run_in(&w.join("cwd"), &["--cli", "--blueprint", s(&bp)]);
     assert_eq!(r.code, 1);
-    assert!(r.err.contains("형식 오류"));
+    assert!(r.err.contains("invalid format"), "{}", r.err);
 }
 
 #[test]
@@ -248,7 +265,7 @@ fn s12_canvas_graph_json_is_not_a_blueprint() {
     let w = work("s12");
     let r = run_in(&w.join("cwd"), &["--cli", "--blueprint", GRAPH_SAMPLE]);
     assert_eq!(r.code, 1);
-    assert!(r.err.contains("블루프린트 파일이 아닙니다"), "{}", r.err);
+    assert!(r.err.contains("not a blueprint file"), "{}", r.err);
 }
 
 #[test]
@@ -305,13 +322,15 @@ fn s16_empty_fields_is_lint_error() {
 fn s17_multiline_goal_whitespace_collapsed() {
     let w = work("s17");
     let bp = w.join("proj/multi.kiro");
+    // JSON-encoded, so the newline in the goal text becomes `\n` in the file
+    let goal = serde_json::Value::from(ko_fixture!("scenarios.goal_multiline"));
     write(
         &bp,
-        r#"{"version":2,"target":"Claude","role":"r","fields":"a","goals":[{"text":"이상치는   z-score 3 기준으로\n    판단","on":true}]}"#,
+        &format!(r#"{{"version":2,"target":"Claude","role":"r","fields":"a","goals":[{{"text":{goal},"on":true}}]}}"#),
     );
     let r = run_in(&w.join("cwd"), &["--cli", "--blueprint", s(&bp)]);
     ok(&r);
-    assert!(r.out.contains("z-score 3 기준으로 판단"));
+    assert!(r.out.contains(ko_fixture!("scenarios.goal_multiline_collapsed")));
 }
 
 #[test]
@@ -327,20 +346,27 @@ fn s18_relative_blueprint_path_from_other_cwd() {
 fn s19_contradiction_removed_end_to_end() {
     let w = work("s19");
     let bp = w.join("proj/conflict.kiro");
+    let (exclude, include) = (
+        ko_fixture!("scenarios.goal_exclude_missing"),
+        ko_fixture!("scenarios.goal_include_missing"),
+    );
     write(
         &bp,
-        r#"{"version":2,"target":"Claude","role":"r","fields":"a","goals":[{"text":"결측치 제외","on":true},{"text":"결측치 포함","on":true}]}"#,
+        &format!(
+            r#"{{"version":2,"target":"Claude","role":"r","fields":"a","goals":[{{"text":"{exclude}","on":true}},{{"text":"{include}","on":true}}]}}"#
+        ),
     );
     let r = run_in(&w.join("cwd"), &["--cli", "--blueprint", s(&bp)]);
     ok(&r);
-    assert!(r.err.contains("모순 지시 자동제거"));
-    assert!(r.out.contains("결측치 포함") && !r.out.contains(">결측치 제외<"));
+    assert!(r.err.contains("Removed contradicting instruction"), "{}", r.err);
+    assert!(r.out.contains(include) && !r.out.contains(&format!(">{exclude}<")));
 }
 
 #[test]
 fn s20_cp949_csv_through_blueprint() {
     let w = work("s20");
-    // "id,이름\n1,가\n2,나\n" 의 CP949 바이트
+    // CP949 bytes of "id,{name}\n1,{ga}\n2,{na}\n" (the scenarios.col_name, scenarios.cell_ga and scenarios.cell_na
+    // fixtures)
     let bytes: &[u8] = b"id,\xc0\xcc\xb8\xa7\n1,\xb0\xa1\n2,\xb3\xaa\n";
     std::fs::write(w.join("proj/k.csv"), bytes).unwrap();
     let bp = w.join("proj/k.kiro");
@@ -351,7 +377,12 @@ fn s20_cp949_csv_through_blueprint() {
     let r = run_in(&w.join("cwd"), &["--cli", "--blueprint", s(&bp)]);
     ok(&r);
     assert!(r.out.starts_with("=== ROLE ==="));
-    assert!(r.out.contains("* 이름 [text]"), "{}", r.out);
+    assert!(
+        r.out
+            .contains(&format!("* {} [text]", ko_fixture!("scenarios.col_name"))),
+        "{}",
+        r.out
+    );
 }
 
 #[test]
@@ -374,11 +405,11 @@ fn s21_mcp_compress_prompt_with_data() {
     assert_eq!(v["id"], 7);
     let text = v["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("# Role") && text.contains("rows: 3"));
-    assert!(text.contains("모순 지시 자동제거"));
+    assert!(text.contains("Removed contradicting instruction"), "{text}");
     assert_eq!(v["result"]["isError"], false);
 }
 
-/// MCP 서버에 입력 바이트를 보내고, 정상 종료를 확인한 뒤 응답 줄들을 JSON으로 읽는다.
+/// Sends input bytes to the MCP server, checks that it exits normally and parses the response lines as JSON.
 fn mcp(input: &[u8]) -> Vec<serde_json::Value> {
     let mut cmd = Command::new(BIN);
     cmd.arg("--mcp");
@@ -386,7 +417,7 @@ fn mcp(input: &[u8]) -> Vec<serde_json::Value> {
     ok(&r);
     r.out
         .lines()
-        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("JSON 아님: {l} ({e})")))
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("not JSON: {l} ({e})")))
         .collect()
 }
 
@@ -400,7 +431,8 @@ fn tool_call(id: u32, args: serde_json::Value) -> String {
 
 #[test]
 fn s22_mcp_invalid_utf8_line_then_request_answered() {
-    // CP949 바이트("한")가 섞인 줄: 예전에는 서버가 종료 코드 1로 끝나 뒤의 요청에 답하지 못했다
+    // A line with CP949 bytes (one Hangul syllable): the server used to exit with code 1 and not answer the later
+    // request
     let mut input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"x\":\"\xc7\xd1\"}\n".to_vec();
     input.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n");
     let lines = mcp(&input);
@@ -508,28 +540,25 @@ fn s27_cli_rejects_binary_and_blueprint_data() {
     let png = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon-256.png");
     let r = run_in(&w.join("cwd"), &["--cli", "--data", png]);
     assert_eq!(r.code, 1, "{}", r.out);
-    assert!(r.err.contains("바이너리 파일은 프로파일링할 수 없습니다"), "{}", r.err);
+    assert!(r.err.contains("cannot profile a binary file"), "{}", r.err);
     let bp = w.join("proj/plan.kiro");
     write(&bp, &gpt_bp(""));
     let r = run_in(&w.join("cwd"), &["--cli", "--data", s(&bp)]);
     assert_eq!(r.code, 1, "{}", r.out);
-    assert!(
-        r.err.contains("블루프린트(.kiro) 파일은 데이터가 아닙니다"),
-        "{}",
-        r.err
-    );
+    assert!(r.err.contains("a blueprint (.kiro) file is not data"), "{}", r.err);
 }
 
 #[test]
 fn s28_cli_late_cp949_rows_and_utf16_csv() {
     let w = work("s28");
-    // 64KiB가 넘는 ASCII 행 뒤에 처음 나오는 CP949 행
+    // CP949 rows that first appear after more than 64 KiB of ASCII rows
+    let memo = ko_fixture!("scenarios.memo_value");
     let mut csv = String::from("id,memo\n");
     for i in 1..=70 {
         csv += &format!("{i},{}\n", "a".repeat(1000));
     }
     for i in 71..=170 {
-        csv += &format!("{i},홍길동\n");
+        csv += &format!("{i},{memo}\n");
     }
     std::fs::write(w.join("proj/late.csv"), encoding_rs::EUC_KR.encode(&csv).0).unwrap();
     let late = w.join("proj/late.csv");
@@ -538,14 +567,14 @@ fn s28_cli_late_cp949_rows_and_utf16_csv() {
         &["--cli", "--target", "gemini", "--sample-rows", "50", "--data", s(&late)],
     );
     ok(&r);
-    assert!(r.out.contains("170 rows") && r.out.contains("홍길동"), "{}", r.out);
+    assert!(r.out.contains("170 rows") && r.out.contains(memo), "{}", r.out);
     assert!(!r.out.contains('\u{FFFD}'), "{}", r.out);
-    // NDJSON: 예전에는 "stream did not contain valid UTF-8"로 실패했다
+    // NDJSON: used to fail with "stream did not contain valid UTF-8"
     let mut nd = String::new();
     for i in 0..1200 {
         nd += &format!("{{\"id\":{i},\"t\":\"{}\"}}\n", "b".repeat(60));
     }
-    nd += "{\"id\":9999,\"t\":\"김철수\"}\n";
+    nd += &format!("{{\"id\":9999,\"t\":\"{}\"}}\n", ko_fixture!("scenarios.ndjson_value"));
     std::fs::write(w.join("proj/late.ndjson"), encoding_rs::EUC_KR.encode(&nd).0).unwrap();
     let r = run_in(
         &w.join("cwd"),
@@ -553,11 +582,13 @@ fn s28_cli_late_cp949_rows_and_utf16_csv() {
     );
     ok(&r);
     assert!(r.out.contains("1201 rows"), "{}", r.out);
-    // UTF-16LE(BOM) CSV: 예전에는 컬럼 이름이 깨졌다
+    // UTF-16LE (BOM) CSV: the column names used to be garbled
+    let (name, amount) = (ko_fixture!("scenarios.col_name"), ko_fixture!("scenarios.col_amount"));
+    let (ga, na) = (ko_fixture!("scenarios.cell_ga"), ko_fixture!("scenarios.cell_na"));
     let utf16: Vec<u8> = [0xFF, 0xFE]
         .into_iter()
         .chain(
-            "이름,금액\r\n가,1\r\n나,2\r\n"
+            format!("{name},{amount}\r\n{ga},1\r\n{na},2\r\n")
                 .encode_utf16()
                 .flat_map(u16::to_le_bytes),
         )
@@ -569,7 +600,7 @@ fn s28_cli_late_cp949_rows_and_utf16_csv() {
     );
     ok(&r);
     assert!(
-        r.out.contains("* 이름 [text]") && r.out.contains("* 금액 [numeric]"),
+        r.out.contains(&format!("* {name} [text]")) && r.out.contains(&format!("* {amount} [numeric]")),
         "{}",
         r.out
     );
@@ -578,7 +609,8 @@ fn s28_cli_late_cp949_rows_and_utf16_csv() {
 #[test]
 fn s29_cli_semicolon_and_tab_delimited_numbers() {
     let w = work("s29");
-    // 세미콜론 구분 + 소수점 쉼표: "1,5"는 천 단위 구분이 아니므로 숫자로 읽지 않는다(15가 되면 안 된다)
+    // Semicolon-delimited with decimal commas: "1,5" is not a thousands separator, so it is not read as a number (it
+    // must not become 15)
     write(
         &w.join("proj/eu.csv"),
         "id;amount;rate;city\n1;10;1,5;Seoul\n2;20;2,25;Busan\n3;30;0,75;Daegu\n",
@@ -614,54 +646,75 @@ fn s29_cli_semicolon_and_tab_delimited_numbers() {
 }
 
 fn has_hangul(s: &str) -> bool {
-    s.chars().any(|c| ('가'..='힣').contains(&c))
+    s.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c))
 }
 
-/// 큰따옴표로 인용한 사용자 문장을 뺀 나머지에 한글이 있는가 (영어 모드 진단 검사용)
+/// Whether the text has Hangul outside double-quoted user text (checks the language of diagnostics)
 fn hangul_outside_quotes(s: &str) -> bool {
     s.split('"').step_by(2).any(has_hangul)
 }
 
+/// stderr lines that start with `tag`
+fn tagged<'a>(err: &'a str, tag: &str) -> Vec<&'a str> {
+    err.lines().filter(|l| l.starts_with(tag)).collect()
+}
+
 #[test]
-fn s30_cli_lang_en_contradiction_warning_keeps_quoted_text() {
+fn s30_cli_lang_ko_contradiction_warning_keeps_quoted_text() {
     let w = work("s30");
     let csv = w.join("proj/d.csv");
+    let (exclude, include) = (
+        ko_fixture!("scenarios.goal_exclude_missing"),
+        ko_fixture!("scenarios.goal_include_missing"),
+    );
     let base = [
         "--cli",
         "--data",
         s(&csv),
         "--constraint",
-        "결측치 제외",
+        exclude,
         "--constraint",
-        "결측치 포함",
+        include,
         "--constraint",
         "Detect outliers",
         "--constraint",
         "You must not detect outliers",
     ];
-    let en = run_in(&w.join("cwd"), &[&base[..], &["--lang", "en"]].concat());
+    let pairs = [
+        format!("\"{exclude}\" ↔ \"{include}\""),
+        "\"Detect outliers\" ↔ \"You must not detect outliers\"".to_string(),
+    ];
+    // Without --lang the messages are English and keep the quoted user text as is
+    let en = run_in(&w.join("cwd"), &base);
     ok(&en);
-    for want in [
-        "[WARN] Removed contradicting instruction: \"결측치 제외\" ↔ \"결측치 포함\" (kept the later one)",
-        "[WARN] Removed contradicting instruction: \"Detect outliers\" ↔ \"You must not detect outliers\" (kept the later one)",
-        "[INFO] Schema integrity check passed",
-    ] {
-        assert!(en.err.contains(want), "{want}\n{}", en.err);
+    for pair in &pairs {
+        let want = format!("[WARN] Removed contradicting instruction: {pair} (kept the later one)");
+        assert!(en.err.contains(&want), "{want}\n{}", en.err);
     }
+    assert!(en.err.contains("[INFO] Schema integrity check passed"), "{}", en.err);
     assert!(!hangul_outside_quotes(&en.err), "{}", en.err);
-    // --lang이 없으면 한국어다. 프롬프트(stdout)와 토큰 줄은 언어와 관계없이 바이트까지 같다.
-    let ko = run_in(&w.join("cwd"), &base);
+    // --lang ko: the same diagnostics in Korean. The prompt (stdout) and the token line are byte-identical in both
+    // languages.
+    let ko = run_in(&w.join("cwd"), &[&base[..], &["--lang", "ko"]].concat());
     ok(&ko);
-    assert!(
-        ko.err
-            .contains("[WARN] 모순 지시 자동제거: \"결측치 제외\" ↔ \"결측치 포함\" (뒤의 지시 유지)")
-            && ko.err.contains("[INFO] 스키마 무결성 검증 통과"),
-        "{}",
-        ko.err
-    );
+    let warns = tagged(&ko.err, "[WARN] ");
+    assert_eq!(warns.len(), tagged(&en.err, "[WARN] ").len(), "{}", ko.err);
+    for pair in &pairs {
+        assert!(
+            warns
+                .iter()
+                .any(|l| l.contains(pair.as_str()) && hangul_outside_quotes(l)),
+            "{pair}\n{}",
+            ko.err
+        );
+    }
+    let info = tagged(&ko.err, "[INFO] ");
+    assert!(info.len() == 1 && has_hangul(info[0]), "{}", ko.err);
     assert_eq!(ko.out, en.out);
     assert!(
-        en.out.contains("rows=\"3\"") && en.out.contains(">결측치 포함</rule>") && !en.out.contains(">결측치 제외<"),
+        en.out.contains("rows=\"3\"")
+            && en.out.contains(&format!(">{include}</rule>"))
+            && !en.out.contains(&format!(">{exclude}<")),
         "{}",
         en.out
     );
@@ -671,9 +724,9 @@ fn s30_cli_lang_en_contradiction_warning_keeps_quoted_text() {
 }
 
 #[test]
-fn s31_cli_lang_en_empty_fields_is_english_error() {
+fn s31_cli_lang_ko_empty_fields_error() {
     let w = work("s31");
-    let en = run_in(&w.join("cwd"), &["--cli", "--lang", "en", "--fields", " , "]);
+    let en = run_in(&w.join("cwd"), &["--cli", "--fields", " , "]);
     assert_eq!(en.code, 1, "{}", en.err);
     assert!(
         en.err.contains("[ERROR] Output schema has no required fields"),
@@ -681,40 +734,43 @@ fn s31_cli_lang_en_empty_fields_is_english_error() {
         en.err
     );
     assert!(!has_hangul(&en.err), "{}", en.err);
-    let ko = run_in(&w.join("cwd"), &["--cli", "--fields", " , "]);
+    let ko = run_in(&w.join("cwd"), &["--cli", "--lang", "ko", "--fields", " , "]);
     assert_eq!(ko.code, 1, "{}", ko.err);
-    assert!(ko.err.contains("[ERROR] 출력 스키마에 필수 필드가 없음"), "{}", ko.err);
+    let errors = tagged(&ko.err, "[ERROR] ");
+    assert!(errors.len() == 1 && has_hangul(errors[0]), "{}", ko.err);
     assert_eq!(ko.out, en.out);
 }
 
 #[test]
-fn s32_cli_lang_en_data_load_errors_are_english() {
+fn s32_cli_lang_ko_data_load_errors() {
     let w = work("s32");
-    // 앞부분은 main.rs, 뒷부분은 프로파일러 문구다. 한국어 Windows의 운영체제 문구도 영어로 바뀐다.
-    let en = run_in(&w.join("cwd"), &["--cli", "--lang", "en", "--data", "missing.csv"]);
+    // The first part is main.rs text, the rest is profiler text. In English even the OS text of a Korean Windows is
+    // English.
+    let en = run_in(&w.join("cwd"), &["--cli", "--data", "missing.csv"]);
     assert_eq!(en.code, 1, "{}", en.out);
     assert_eq!(
         en.err.trim_end(),
         "failed to load data: cannot open file: no such file or directory (os error 2)"
     );
     let png = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon-256.png");
-    let bin = run_in(&w.join("cwd"), &["--cli", "--lang", "en", "--data", png]);
+    let bin = run_in(&w.join("cwd"), &["--cli", "--data", png]);
     assert_eq!(bin.code, 1, "{}", bin.out);
     assert_eq!(
         bin.err.trim_end(),
         "failed to load data: cannot profile a binary file (contains NUL bytes; only CSV/TSV/JSON/NDJSON text files are supported)"
     );
-    // 기본은 한국어
-    let ko = run_in(&w.join("cwd"), &["--cli", "--data", "missing.csv"]);
+    // --lang ko: the main.rs and profiler parts are Korean (the OS text follows the Windows language)
+    let ko = run_in(&w.join("cwd"), &["--cli", "--lang", "ko", "--data", "missing.csv"]);
     assert_eq!(ko.code, 1, "{}", ko.out);
+    let parts: Vec<&str> = ko.err.trim_end().splitn(3, ": ").collect();
     assert!(
-        ko.err.starts_with("데이터 로드 실패: 파일을 열 수 없음: "),
+        parts.len() == 3 && has_hangul(parts[0]) && has_hangul(parts[1]) && parts[2].ends_with("(os error 2)"),
         "{}",
         ko.err
     );
 }
 
-/// `mcp`와 같지만 실행 인자를 직접 준다(예: `--mcp --lang en`).
+/// Like `mcp`, but with explicit arguments (e.g. `--mcp --lang ko`).
 fn mcp_args(args: &[&str], input: &[u8]) -> Vec<serde_json::Value> {
     let mut cmd = Command::new(BIN);
     cmd.args(args);
@@ -722,12 +778,12 @@ fn mcp_args(args: &[&str], input: &[u8]) -> Vec<serde_json::Value> {
     ok(&r);
     r.out
         .lines()
-        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("JSON 아님: {l} ({e})")))
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("not JSON: {l} ({e})")))
         .collect()
 }
 
 #[test]
-fn s33_mcp_lang_en_bad_target_and_tool_text() {
+fn s33_mcp_lang_ko_bad_target_and_tool_text() {
     let w = work("s33");
     let csv = w.join("proj/d.csv");
     let input = format!(
@@ -744,22 +800,31 @@ fn s33_mcp_lang_en_bad_target_and_tool_text() {
         ),
         "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/list\"}",
     );
-    let en = mcp_args(&["--mcp", "--lang", "en"], input.as_bytes());
-    let ko = mcp(input.as_bytes());
-    assert_eq!((en.len(), ko.len()), (4, 4), "{en:?}");
+    let en = mcp(input.as_bytes());
+    let ko = mcp_args(&["--mcp", "--lang", "ko"], input.as_bytes());
+    assert_eq!((en.len(), ko.len()), (4, 4), "{ko:?}");
     assert_eq!(en[0]["error"]["code"], -32602, "{}", en[0]);
     assert_eq!(
         en[0]["error"]["message"],
         "Invalid target: \"llama\" (expected one of claude/anthropic, gpt/openai, gemini/google)"
     );
     assert_eq!(en[1]["error"]["message"], "Method not found: no/such");
-    // 기본(--lang 없음)은 한국어 메시지
+    // --lang ko: Korean messages with the same error codes; the quoted value stays as is
+    assert_eq!(
+        (&ko[0]["error"]["code"], &ko[1]["error"]["code"]),
+        (&en[0]["error"]["code"], &en[1]["error"]["code"])
+    );
     let ko_msg = ko[0]["error"]["message"].as_str().unwrap();
     assert!(
-        ko_msg.starts_with("target 인자 값이 올바르지 않습니다") && ko_msg.contains("\"llama\""),
+        hangul_outside_quotes(ko_msg) && ko_msg.contains("\"llama\""),
         "{ko_msg}"
     );
-    // 도구 결과: 프롬프트는 같고 lint 줄만 영어
+    let ko_missing = ko[1]["error"]["message"].as_str().unwrap();
+    assert!(
+        has_hangul(ko_missing) && ko_missing.ends_with("no/such"),
+        "{ko_missing}"
+    );
+    // Tool result: the prompt is the same; only the lint lines change language
     let text = |v: &serde_json::Value| v["result"]["content"][0]["text"].as_str().unwrap().to_string();
     let (en_text, ko_text) = (text(&en[2]), text(&ko[2]));
     let (en_prompt, en_lint) = en_text.split_once("\n\n--- lint ---\n").unwrap();
@@ -775,12 +840,17 @@ fn s33_mcp_lang_en_bad_target_and_tool_text() {
         ),
         "{en_lint}"
     );
+    assert!(!has_hangul(en_lint), "{en_lint}");
+    let ko_warn = tagged(ko_lint, "[WARN] ");
     assert!(
-        !has_hangul(en_lint) && ko_lint.contains("모순 지시 자동제거"),
-        "{en_lint}"
+        ko_warn.len() == 1
+            && hangul_outside_quotes(ko_warn[0])
+            && ko_warn[0].contains("\"Detect outliers\" ↔ \"You must not detect outliers\""),
+        "{ko_lint}"
     );
     assert_eq!(en[2]["result"]["isError"], false);
-    // tools/list(영어 설명)는 언어와 관계없다
+    assert_eq!(ko[2]["result"]["isError"], false);
+    // tools/list (English descriptions) does not depend on the language
     assert_eq!(en[3], ko[3]);
     let desc = en[3]["result"]["tools"][0]["description"].as_str().unwrap();
     assert!(desc.starts_with("Lint and compress"), "{desc}");

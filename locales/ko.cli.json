@@ -1,0 +1,23 @@
+{
+  "_note": "Korean CLI help (src/main.rs KO_HELP). Keys are the English help from the clap doc comments.",
+  "CSV/JSON file to load when the GUI starts (a .kiro file opens as a blueprint). With --canvas it is a canvas graph JSON file": "GUI 시작 시 바로 불러올 CSV/JSON 파일 (.kiro 파일이면 블루프린트로 연다). --canvas와 함께 쓰면 캔버스 그래프 JSON 파일이다",
+  "Blueprint (.kiro) that applies every setting at once. Without --cli it opens the GUI with those settings; with --cli it compiles with them (--data replaces the blueprint's data path, --constraint/--steering add constraints)": "블루프린트(.kiro): 전체 설정을 한 번에 적용한다. --cli 없이 쓰면 GUI를 그 설정으로 열고, --cli와 함께 쓰면 그 설정으로 컴파일한다 (--data는 블루프린트의 데이터 경로를 대신하고, --constraint/--steering은 제약을 추가한다)",
+  "GUI theme number 1-7 (design samples 01-07)": "GUI 테마 번호 1~7 (디자인샘플 01~07)",
+  "Terminal linter mode": "터미널 린터 모드",
+  "stdio JSON-RPC MCP server mode": "stdio JSON-RPC MCP 서버 모드",
+  "Node canvas GUI (connect and test prompt/LLM/MCP nodes). Open a graph file with the positional argument or --graph": "노드 캔버스 GUI (프롬프트/LLM/MCP 연결·테스트). 그래프 파일은 위치 인자나 --graph 로 함께 열 수 있다",
+  "--canvas: canvas graph JSON file to open (the positional argument also works)": "--canvas: 열 캔버스 그래프 JSON 파일 (위치 인자로 줘도 된다)",
+  "Run a graph headless and write the final output to stdout": "그래프를 헤드리스로 실행하고 최종 출력을 stdout에 쓴다",
+  "--run-graph: test input that replaces the value of the test input node (the graph's saved test_node, else the first Text node; may start with '-')": "--run-graph: 테스트 입력 노드(그래프에 저장된 test_node, 없으면 첫 Text 노드)의 값을 대체할 테스트 입력 (`-`로 시작해도 된다)",
+  "--run-graph: allow MCP nodes to start local processes": "--run-graph: MCP 노드의 로컬 프로세스 실행 허용",
+  "--run-graph: allow custom LLM Base URLs (the API key is sent there; https or localhost only)": "--run-graph: LLM 노드의 사용자 지정 Base URL 허용 (API 키가 그 주소로 전송된다. https 또는 localhost만)",
+  "CSV/TSV/JSON/NDJSON data file": "CSV/TSV/JSON/NDJSON 데이터 파일",
+  "Role instruction": "역할 지시문",
+  "Constraint (repeatable)": "제약 조건 (여러 번 지정 가능)",
+  "Steering markdown (`- ` bullets are read as constraints)": "steering 마크다운 (`- ` 불릿을 제약으로 읽음)",
+  "Target model": "타겟 모델",
+  "Output format": "출력 포맷",
+  "Required output fields (comma separated)": "필수 출력 필드 (쉼표 구분)",
+  "Sample rows (max 50; larger values are capped with a warning)": "샘플 행 수 (최대 50, 넘으면 50으로 줄이고 경고)",
+  "UI and message language: en (English) or ko (Korean). The GUI defaults to the saved setting (else en); --cli/--mcp/--run-graph default to en so script output does not depend on settings": "화면·메시지 언어: en(English) 또는 ko(한국어). GUI는 생략하면 저장된 설정(없으면 en), --cli/--mcp/--run-graph는 생략하면 en(스크립트 출력이 설정에 따라 바뀌지 않게)"
+}

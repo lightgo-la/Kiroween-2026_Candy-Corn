@@ -1,20 +1,209 @@
-//! Windows exe 파일 아이콘과 버전 정보를 리소스로 넣는다.
-//! 아이콘 원본: pumpkin_premium.png -> assets/icon.ico (16~256px 다중 크기)
+//! Build script:
+//! - embeds the Windows exe icon and version info (icon source: pumpkin_premium.png -> assets/icon.ico),
+//! - generates the `ko_text!` macro from `locales/ko.json` plus optional `locales/ko.*.json` fragments
+//!   (English UI text -> Korean translation),
+//! - generates Korean linguistic constants from `locales/lexicon.ko.json` (word lists used by the linter and the
+//!   profiler; they are data about the Korean language, not UI text).
+//!
+//! `ko_text!("English")` expands to the Korean string literal at compile time, so `tr!`/`trf!` call sites keep
+//! compile-time checked `format!` arguments in both languages, and a missing translation is a compile error.
+
+use std::fmt::Write as _;
+use std::path::Path;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=assets/icon.ico");
+    println!("cargo:rerun-if-changed=locales");
+    println!("cargo:rerun-if-changed=tests/fixtures");
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
+    let out = Path::new(&out_dir);
+    generate_ko_text(out);
+    generate_lexicon(out);
+    generate_ko_fixture(out);
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
     let mut res = winresource::WindowsResource::new();
     res.set_icon("assets/icon.ico");
     res.set("ProductName", "Candy-Corn");
-    res.set("FileDescription", "Candy-Corn 프롬프트 컴파일러 스튜디오");
+    res.set("FileDescription", "Candy-Corn prompt compiler studio");
     res.set("OriginalFilename", "Candy-Corn.exe");
     res.set("InternalName", "Candy-Corn");
-    // rc.exe(Windows SDK)가 없는 PC에서도 빌드는 되도록 실패는 경고로만 남긴다.
+    // Keep the build working on machines without rc.exe (Windows SDK): only warn.
     if let Err(e) = res.compile() {
-        println!("cargo:warning=exe 아이콘을 넣지 못했습니다 (Windows SDK의 rc.exe 필요): {e}");
+        println!("cargo:warning=could not embed the exe icon (needs rc.exe from the Windows SDK): {e}");
     }
+}
+
+/// Rust string literal for `s`, written the same way the source call sites write it
+/// (macro_rules compares literal tokens by their spelling).
+fn lit(s: &str) -> String {
+    let mut o = String::from("\"");
+    for ch in s.chars() {
+        match ch {
+            '\\' => o.push_str("\\\\"),
+            '"' => o.push_str("\\\""),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                let _ = write!(o, "\\u{{{:x}}}", c as u32);
+            }
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+fn read_object(path: &Path) -> serde_json::Map<String, serde_json::Value> {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_json::from_str(text.trim_start_matches('\u{feff}'))
+        .unwrap_or_else(|e| panic!("{} must be a JSON object: {e}", path.display()))
+}
+
+/// `locales/ko.json` and `locales/ko.<name>.json` fragments, merged. The same key with two different
+/// translations is an error.
+fn korean_catalog() -> Vec<(String, String)> {
+    merged_objects("locales", "ko.", Some("ko.json"))
+}
+
+/// Merges `dir/<first>` (if given) and every `dir/<prefix>*.json` into one sorted key -> string map.
+/// The same key with two different values is an error.
+fn merged_objects(dir: &str, prefix: &str, first: Option<&str>) -> Vec<(String, String)> {
+    let mut files = vec![];
+    if let Some(f) = first {
+        files.push(Path::new(dir).join(f));
+    }
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        let mut extra: Vec<_> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                name.starts_with(prefix) && name.ends_with(".json") && Some(name) != first
+            })
+            .collect();
+        extra.sort();
+        files.extend(extra);
+    }
+    let mut map: std::collections::BTreeMap<String, (String, String)> = Default::default();
+    for f in &files {
+        for (key, value) in read_object(f) {
+            if key.starts_with('_') {
+                continue;
+            }
+            let value = value
+                .as_str()
+                .unwrap_or_else(|| panic!("{}: value for {key:?} must be a string", f.display()))
+                .to_string();
+            let src = f.display().to_string();
+            if let Some((old, from)) = map.get(&key)
+                && *old != value
+            {
+                panic!("{key:?} has two values: {old:?} ({from}) and {value:?} ({src})");
+            }
+            map.insert(key, (value, src));
+        }
+    }
+    map.into_iter().map(|(k, (v, _))| (k, v)).collect()
+}
+
+fn generate_ko_text(out: &Path) {
+    let mut code = String::from(
+        "// Generated by build.rs from locales/ko*.json. Do not edit.\n\
+         #[allow(unused_macros)]\n\
+         macro_rules! ko_text {\n",
+    );
+    for (en, ko) in korean_catalog() {
+        let _ = writeln!(code, "    ({}) => {{ {} }};", lit(&en), lit(&ko));
+    }
+    code.push_str(
+        "    ($other:tt) => { compile_error!(concat!(\"missing Korean translation in locales/ko.json: \", $other)) };\n}\n",
+    );
+    std::fs::write(out.join("ko_text.rs"), code).expect("write ko_text.rs");
+}
+/// One JSON value as a Rust expression: a string -> `"..."`, an array of strings -> `&["...", ...]`.
+fn value_expr(file: &Path, key: &str, value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => lit(s),
+        serde_json::Value::Array(items) => {
+            let items: Vec<String> = items
+                .iter()
+                .map(|v| {
+                    lit(v
+                        .as_str()
+                        .unwrap_or_else(|| panic!("{}: {key}: array items must be strings", file.display())))
+                })
+                .collect();
+            format!("&[{}]", items.join(", "))
+        }
+        other => panic!(
+            "{}: {key}: expected a string or an array of strings, got {other}",
+            file.display()
+        ),
+    }
+}
+
+/// Every `dir/<prefix>*.json` object merged into key -> (Rust expression, is_array). Keys starting with `_` are
+/// notes. The same key in two files is an error (each area keeps its own fragment).
+fn merged_values(dir: &str, prefix: &str) -> Vec<(String, String, bool)> {
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    files.retain(|p: &std::path::PathBuf| {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        name.starts_with(prefix) && name.ends_with(".json")
+    });
+    files.sort();
+    let mut map: std::collections::BTreeMap<String, (String, bool, String)> = Default::default();
+    for f in &files {
+        for (key, value) in read_object(f) {
+            if key.starts_with('_') {
+                continue;
+            }
+            let src = f.display().to_string();
+            if let Some((_, _, from)) = map.get(&key) {
+                panic!("{key:?} is defined in both {from} and {src}");
+            }
+            let expr = value_expr(f, &key, &value);
+            map.insert(key, (expr, value.is_array(), src));
+        }
+    }
+    map.into_iter().map(|(k, (e, a, _))| (k, e, a)).collect()
+}
+
+/// `ko_fixture!("key")` -> Korean test input (a string, or `&[..]` for an array) from `tests/fixtures/ko.*.json`,
+/// so the Rust test code itself stays English.
+fn generate_ko_fixture(out: &Path) {
+    let mut code = String::from(
+        "// Generated by build.rs from tests/fixtures/ko.*.json. Do not edit.\n\
+         #[allow(unused_macros)]\n\
+         macro_rules! ko_fixture {\n",
+    );
+    for (key, expr, _) in merged_values("tests/fixtures", "ko.") {
+        let _ = writeln!(code, "    ({}) => {{ {expr} }};", lit(&key));
+    }
+    code.push_str(
+        "    ($other:tt) => { compile_error!(concat!(\"missing Korean test fixture in tests/fixtures/ko.*.json: \", $other)) };\n}\n",
+    );
+    std::fs::write(out.join("ko_fixture.rs"), code).expect("write ko_fixture.rs");
+}
+
+/// `locales/lexicon.ko*.json`: `{"NAME": "text"}` -> `pub const NAME: &str`, `{"NAME": ["a", "b"]}` ->
+/// `pub const NAME: &[&str]` (order is kept: some lists must stay longest-first). Each area may keep its own
+/// fragment (`lexicon.ko.linter.json`, ...); a constant name defined twice is an error.
+fn generate_lexicon(out: &Path) {
+    let mut code = String::from("// Generated by build.rs from locales/lexicon.ko*.json. Do not edit.\n");
+    for (name, expr, is_array) in merged_values("locales", "lexicon.ko") {
+        assert!(
+            name.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'),
+            "lexicon key {name:?} must be an UPPER_SNAKE_CASE constant name"
+        );
+        let ty = if is_array { "&[&str]" } else { "&str" };
+        let _ = writeln!(code, "#[allow(dead_code)]\npub const {name}: {ty} = {expr};");
+    }
+    std::fs::write(out.join("lexicon_ko.rs"), code).expect("write lexicon_ko.rs");
 }

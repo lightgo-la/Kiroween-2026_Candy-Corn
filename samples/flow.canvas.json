@@ -7,8 +7,8 @@
       "pos": [280, 0],
       "kind": {
         "type": "prompt",
-        "role": "분석: {{input}}",
-        "constraints": "추론 금지",
+        "role": "Analyze: {{input}}",
+        "constraints": "Do not infer",
         "fields": "summary",
         "target": "claude",
         "format": "json"
@@ -28,8 +28,8 @@
     { "from": 3, "to": 4 }
   ],
   "tests": [
-    { "name": "기본", "input": "3분기 매출이 급감한 원인을 분석해줘", "expect": "dry-run" },
-    { "name": "영문 입력", "input": "Why did Q3 revenue drop?", "expect": "" }
+    { "name": "Basic", "input": "Analyze why Q3 revenue dropped sharply", "expect": "dry-run" },
+    { "name": "Short question", "input": "Why did Q3 revenue drop?", "expect": "" }
   ],
   "test_node": 1
 }

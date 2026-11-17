@@ -8,7 +8,7 @@
 - [x] egui 3-pane UI with Korean font and mpsc workers (generation counters, worker panic handling)
 - [x] Blueprint canvas: settings, data, role, constraints, output, compiler, result, LLM nodes
 - [x] Blueprint files (.kiro): save/open, 5 built-in blueprints, portable data paths, CLI `--blueprint`
-- [x] 7 themes from 디자인샘플
+- [x] 7 themes from the design samples 01-07
 - [x] Undo/redo (Ctrl+Z / Ctrl+Shift+Z) for role, constraints, output, target
 - [x] Real LLM run with output format / required field check (API key from env only)
 - [x] CLI (`--cli`) and MCP (`--mcp`) modes, MCP batch requests
@@ -29,6 +29,12 @@
 
 ## Round 6 (language)
 - [x] Korean/English UI: tr!/trf!/Tr, language switcher in studio and canvas (saved to settings.json), `--lang` for every mode, English `--help`, bilingual presets/templates/themes/defaults, translation coverage test, English-mode QC 1,000, scenarios s30–s33
+
+## Round 7 (English source)
+- [x] English is the default language (Korean selectable with the language picker or `--lang ko`); English call-site text with `tr!`/`trf!`/`trp!`, Korean text in `locales/ko*.json` (build.rs `ko_text!`, a missing key is a compile error), Korean help from `locales/ko.cli.json`
+- [x] Rust sources without Hangul: Korean linguistic data in `locales/lexicon.ko*.json` (`crate::lexicon`), Korean test inputs in `tests/fixtures/ko*.json` (`ko_fixture!`), `no_hangul_in_rust_sources` check
+- [x] Tests under the English default: QC 13,000 (seeded streams unchanged), 33 scenarios (s30–s33 compare `--lang ko` with English), 16 graph e2e, QA 1,000
+- [x] English steering docs, specs and README
 
 ## Open
 - [ ] Windows Job Object for MCP child processes (survive a GUI crash today)

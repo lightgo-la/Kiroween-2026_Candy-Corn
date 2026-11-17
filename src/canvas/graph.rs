@@ -1,13 +1,13 @@
-//! 캔버스 그래프 데이터 모델. JSON(`.canvas.json`)으로 저장/로드한다.
-//! API 키는 저장하지 않고 환경 변수 이름만 저장한다.
+//! Canvas graph data model. Saved and loaded as JSON (`.canvas.json`).
+//! API keys are never saved, only the names of their environment variables.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 
-/// 자동 정렬 간격: 층(왼쪽→오른쪽) 사이의 가로 간격과 같은 층 안의 세로 간격.
+/// Auto layout spacing: the horizontal gap between layers (left→right) and the vertical gap within a layer.
 pub const LAYOUT_COL: f32 = 280.0;
 pub const LAYOUT_ROW: f32 = 100.0;
-/// 복제한 노드를 원본에서 띄우는 거리.
+/// How far a duplicated node is placed from the original.
 pub const DUPLICATE_OFFSET: [f32; 2] = [32.0, 32.0];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,7 +53,7 @@ impl Provider {
         }
     }
 
-    /// 제공자가 받는 temperature 상한. Anthropic은 0~1, 나머지는 0~2다.
+    /// Upper temperature limit the provider accepts. Anthropic takes 0~1, the others 0~2.
     pub fn temperature_max(self) -> f32 {
         match self {
             Provider::Anthropic => 1.0,
@@ -61,7 +61,7 @@ impl Provider {
         }
     }
 
-    /// 제공자가 받는 범위로 temperature를 맞춘다.
+    /// Fits the temperature into the range the provider accepts.
     pub fn clamp_temperature(self, t: f32) -> f32 {
         if t.is_nan() {
             0.0
@@ -90,14 +90,15 @@ fn yes() -> bool {
     true
 }
 
-/// 노드 종류별 설정. `type` 필드로 구분한다.
+/// Settings per node kind, told apart by the `type` field.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NodeKind {
-    /// 고정 텍스트 입력
+    /// Fixed text input
     Text { text: String },
-    /// 프롬프트 컴파일러(린트 + 모델별 직렬화). 지시문 안의 `{{input}}`은 업스트림 출력으로 치환된다.
-    /// `data_path`가 상대 경로면 그래프 파일이 있는 폴더 기준이다.
+    /// Prompt compiler (lint + per-model serialization). `{{input}}` in the instruction is replaced with the
+    /// upstream output.
+    /// A relative `data_path` starts from the folder that contains the graph file.
     Prompt {
         role: String,
         constraints: String,
@@ -107,7 +108,7 @@ pub enum NodeKind {
         #[serde(default)]
         data_path: String,
     },
-    /// LLM API 호출
+    /// LLM API call
     Llm {
         provider: Provider,
         model: String,
@@ -119,11 +120,11 @@ pub enum NodeKind {
         max_tokens: u32,
         #[serde(default)]
         temperature: Option<f32>,
-        /// true면 네트워크 호출 없이 요청 요약만 반환한다(비용 방지).
+        /// If true, only a summary of the request is returned, without a network call (avoids charges).
         #[serde(default = "yes")]
         dry_run: bool,
     },
-    /// MCP 서버(stdio) 도구 호출. `arguments`는 JSON 템플릿이며 `{{input}}`이 치환된다.
+    /// MCP server (stdio) tool call. `arguments` is a JSON template in which `{{input}}` is replaced.
     Mcp {
         command: String,
         #[serde(default)]
@@ -131,7 +132,7 @@ pub enum NodeKind {
         tool: String,
         arguments: String,
     },
-    /// 최종 결과 수집
+    /// Collects the final result
     Output,
 }
 
@@ -158,15 +159,12 @@ impl NodeKind {
         NodeKind::Text { text: String::new() }
     }
 
-    /// 기본 지시문·제약은 노드를 만들 때의 언어로 쓴다. 만든 뒤에는 사용자 글자라 언어를 바꿔도 그대로다.
+    /// The default instruction and constraint are written in the language in use when the node is created. After
+    /// that they are user text, so they stay the same when the language changes.
     pub fn new_prompt() -> Self {
         NodeKind::Prompt {
-            role: tr!("다음 내용을 분석해줘:\n{{input}}", "Analyze the following:\n{{input}}").into(),
-            constraints: tr!(
-                "데이터에 없는 내용은 추론하지 마",
-                "Do not infer anything that is not in the data"
-            )
-            .into(),
+            role: tr!("Analyze the following:\n{{input}}").into(),
+            constraints: tr!("Do not infer anything that is not in the data").into(),
             fields: "summary,recommendations".into(),
             target: PromptTarget::Claude,
             format: PromptFormat::Json,
@@ -212,14 +210,14 @@ pub struct Edge {
     pub to: u32,
 }
 
-/// 저장되는 프롬프트 테스트 케이스. 실행 결과는 저장하지 않는다.
+/// A saved prompt test case. Run results are not saved.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestSpec {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub input: String,
-    /// 비어 있지 않으면 최종 출력에 이 문자열이 포함되어야 통과
+    /// If not empty, the final output must contain this string to pass
     #[serde(default)]
     pub expect: String,
 }
@@ -228,10 +226,10 @@ pub struct TestSpec {
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
-    /// 프롬프트 테스트 케이스. 이 항목이 없는 옛 파일도 열린다.
+    /// Prompt test cases. Old files without this entry still open.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tests: Vec<TestSpec>,
-    /// 테스트 입력을 넣을 Text 노드 id
+    /// Id of the Text node that receives the test input
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_node: Option<u32>,
 }
@@ -241,13 +239,13 @@ impl Graph {
         self.nodes.iter().find(|n| n.id == id)
     }
 
-    /// 다음 노드 id. 가장 큰 id가 u32 한계면 오류를 돌려준다(덧셈이 넘치지 않게 검사한다).
+    /// Next node id. Returns an error if the largest id is at the u32 limit (checked so the addition cannot
+    /// overflow).
     fn next_id(&self) -> Result<u32, String> {
         match self.nodes.iter().map(|n| n.id).max() {
             None => Ok(1),
             Some(m) => m.checked_add(1).ok_or_else(|| {
                 trf!(
-                    "노드 id가 한계({})에 도달해 더 추가할 수 없습니다",
                     "Node ids have reached the limit ({}); no more nodes can be added",
                     u32::MAX
                 )
@@ -264,18 +262,17 @@ impl Graph {
 
     #[cfg(test)]
     pub fn add(&mut self, kind: NodeKind, pos: [f32; 2]) -> u32 {
-        self.add_node(kind, pos).expect("테스트용 노드 추가")
+        self.add_node(kind, pos).expect("add a test node")
     }
 
-    /// 노드를 복제한다: 새 id, 원본 옆으로 띄운 위치, 같은 설정. 연결은 복사하지 않는다.
+    /// Duplicates a node: a new id, a position offset from the original, the same settings. Connections are not
+    /// copied.
     pub fn duplicate_node(&mut self, id: u32) -> Result<u32, String> {
-        let src = self
-            .node(id)
-            .ok_or_else(|| tr!("존재하지 않는 노드", "No such node").to_string())?;
+        let src = self.node(id).ok_or_else(|| tr!("No such node").to_string())?;
         let (kind, title, pos) = (src.kind.clone(), src.title.clone(), src.pos);
         let new_id = self.next_id()?;
-        // 복제본 이름은 복제할 때의 언어로 붙인다.
-        let title = self.unique_title(&trf!("{title} 복사", "{title} copy"));
+        // The copy is named in the language in use when duplicating.
+        let title = self.unique_title(&trf!("{title} copy", title = title));
         let pos = [pos[0] + DUPLICATE_OFFSET[0], pos[1] + DUPLICATE_OFFSET[1]];
         self.nodes.push(Node {
             id: new_id,
@@ -286,7 +283,7 @@ impl Graph {
         Ok(new_id)
     }
 
-    /// 같은 이름의 노드가 있으면 뒤에 번호를 붙여 겹치지 않는 이름을 만든다.
+    /// If a node with the same name exists, appends a number to make a name that is not taken.
     fn unique_title(&self, base: &str) -> String {
         let taken = |t: &str| self.nodes.iter().any(|n| n.title == t);
         if !taken(base) {
@@ -310,51 +307,39 @@ impl Graph {
         }
     }
 
-    /// 간선을 추가한다. 포트가 없거나, 중복이거나, 순환을 만들면 사유를 반환한다.
+    /// Adds an edge. Returns the reason if a port is missing, the edge is a duplicate or it would create a cycle.
     pub fn connect(&mut self, from: u32, to: u32) -> Result<(), String> {
         if from == to {
-            return Err(tr!(
-                "자기 자신에는 연결할 수 없습니다",
-                "A node cannot be connected to itself"
-            )
-            .into());
+            return Err(tr!("A node cannot be connected to itself").into());
         }
         let (Some(a), Some(b)) = (self.node(from), self.node(to)) else {
-            return Err(tr!("존재하지 않는 노드", "No such node").into());
+            return Err(tr!("No such node").into());
         };
         if !a.kind.has_output() {
-            return Err(trf!(
-                "{} 노드에는 출력 포트가 없습니다",
-                "The {} node has no output port",
-                a.kind.label()
-            ));
+            return Err(trf!("The {} node has no output port", a.kind.label()));
         }
         if !b.kind.has_input() {
-            return Err(trf!(
-                "{} 노드에는 입력 포트가 없습니다",
-                "The {} node has no input port",
-                b.kind.label()
-            ));
+            return Err(trf!("The {} node has no input port", b.kind.label()));
         }
         let e = Edge { from, to };
         if self.edges.contains(&e) {
-            return Err(tr!("이미 연결되어 있습니다", "Already connected").into());
+            return Err(tr!("Already connected").into());
         }
         self.edges.push(e);
         if self.topo_order().is_err() {
             self.edges.pop();
-            return Err(tr!("순환 연결은 허용되지 않습니다", "Cyclic connections are not allowed").into());
+            return Err(tr!("Cyclic connections are not allowed").into());
         }
         Ok(())
     }
 
-    /// 입력 간선 순서(추가된 순서)대로 업스트림 노드 id.
+    /// Upstream node ids in input edge order (the order the edges were added).
     pub fn upstream(&self, id: u32) -> Vec<u32> {
         self.edges.iter().filter(|e| e.to == id).map(|e| e.from).collect()
     }
 
-    /// Kahn 알고리즘. 순환이면 Err. 같은 단계에서는 노드 목록 순서를 유지한다.
-    /// 간선 수가 많아도 느려지지 않게 나가는 간선을 미리 모아 둔다(O(노드+간선)).
+    /// Kahn's algorithm. Err if there is a cycle. Within the same step the node list order is kept.
+    /// Outgoing edges are collected up front so that many edges do not slow it down (O(nodes + edges)).
     pub fn topo_order(&self) -> Result<Vec<u32>, String> {
         let ids: HashSet<u32> = self.nodes.iter().map(|n| n.id).collect();
         let mut indeg: HashMap<u32, usize> = self.nodes.iter().map(|n| (n.id, 0)).collect();
@@ -381,13 +366,14 @@ impl Graph {
         if order.len() == self.nodes.len() {
             Ok(order)
         } else {
-            Err(tr!("그래프에 순환이 있습니다", "The graph has a cycle").into())
+            Err(tr!("The graph has a cycle").into())
         }
     }
 
-    /// 왼쪽에서 오른쪽으로 층을 나눠 노드를 다시 배치한다.
-    /// 층은 가장 긴 업스트림 경로의 길이이고, 같은 층 안에서는 업스트림 노드의 평균 높이에 맞춰
-    /// 위아래 순서를 정한다(겹치면 아래로 민다). 위상 정렬이 되지 않는 그래프(순환)는 Err.
+    /// Rearranges the nodes in layers from left to right.
+    /// A node's layer is the length of its longest upstream path; within a layer the top-to-bottom order follows
+    /// the average height of the upstream nodes (overlapping nodes are pushed down). A graph that cannot be sorted
+    /// topologically (a cycle) is an Err.
     pub fn auto_layout(&mut self) -> Result<(), String> {
         let order = self.topo_order()?;
         let mut layer: HashMap<u32, usize> = HashMap::new();
@@ -404,7 +390,7 @@ impl Graph {
         let mut ys: HashMap<u32, f32> = HashMap::new();
         let mut placed: HashMap<u32, [f32; 2]> = HashMap::new();
         for l in 0..=last {
-            // 목표 높이: 업스트림 노드 높이의 평균. 첫 층은 목록 순서대로 쌓는다.
+            // Target height: the average height of the upstream nodes. The first layer is stacked in list order.
             let mut members: Vec<(u32, Option<f32>)> = self
                 .nodes
                 .iter()
@@ -416,7 +402,7 @@ impl Graph {
                     (n.id, want)
                 })
                 .collect();
-            // 안정 정렬이라 목표가 같거나 없으면 목록 순서가 유지된다.
+            // The sort is stable, so the list order is kept when the targets are equal or missing.
             members.sort_by(|a, b| match (a.1, b.1) {
                 (Some(x), Some(y)) => x.total_cmp(&y),
                 _ => std::cmp::Ordering::Equal,
@@ -440,17 +426,16 @@ impl Graph {
         Ok(())
     }
 
-    /// 구조 검사: 중복 노드 id, 없는 노드를 가리키는 간선, 포트 규칙 위반(Output에서 나가는 간선,
-    /// Text로 들어오는 간선), 자기 연결, 중복 간선, 순환.
+    /// Structure check: duplicate node ids, edges to missing nodes, port rule violations (edges leaving Output,
+    /// edges entering Text), self-connections, duplicate edges, cycles.
     pub fn validate(&self) -> Result<(), String> {
         let mut seen = HashSet::new();
         if let Some(n) = self.nodes.iter().find(|n| !seen.insert(n.id)) {
-            return Err(trf!("중복된 노드 id {}", "Duplicate node id {}", n.id));
+            return Err(trf!("Duplicate node id {}", n.id));
         }
         let index: HashMap<u32, &Node> = self.nodes.iter().map(|n| (n.id, n)).collect();
         if let Some(n) = self.nodes.iter().find(|n| !n.pos.iter().all(|v| v.is_finite())) {
             return Err(trf!(
-                "노드 {}의 위치 값이 올바르지 않습니다 (유한한 숫자여야 합니다)",
                 "Node {} has an invalid position (coordinates must be finite numbers)",
                 n.id
             ));
@@ -461,16 +446,10 @@ impl Graph {
                 return Err(missing_node_edge(e));
             };
             if e.from == e.to {
-                return Err(trf!(
-                    "자기 자신에 연결된 간선 {}->{}",
-                    "Edge {}->{} connects a node to itself",
-                    e.from,
-                    e.to
-                ));
+                return Err(trf!("Edge {}->{} connects a node to itself", e.from, e.to));
             }
             if !a.kind.has_output() {
                 return Err(trf!(
-                    "{} 노드(id {})에는 출력 포트가 없어 간선 {}->{}을 둘 수 없습니다",
                     "The {} node (id {}) has no output port, so edge {}->{} is not allowed",
                     a.kind.label(),
                     a.id,
@@ -480,7 +459,6 @@ impl Graph {
             }
             if !b.kind.has_input() {
                 return Err(trf!(
-                    "{} 노드(id {})에는 입력 포트가 없어 간선 {}->{}을 둘 수 없습니다",
                     "The {} node (id {}) has no input port, so edge {}->{} is not allowed",
                     b.kind.label(),
                     b.id,
@@ -489,7 +467,7 @@ impl Graph {
                 ));
             }
             if !edges.insert((e.from, e.to)) {
-                return Err(trf!("중복된 간선 {}->{}", "Duplicate edge {}->{}", e.from, e.to));
+                return Err(trf!("Duplicate edge {}->{}", e.from, e.to));
             }
         }
         self.topo_order()?;
@@ -501,21 +479,17 @@ impl Graph {
     }
 
     pub fn from_json(s: &str) -> Result<Graph, String> {
-        let g: Graph = serde_json::from_str(s.trim_start_matches('\u{feff}'))
-            .map_err(|e| trf!("그래프 JSON 오류: {e}", "Graph JSON error: {e}"))?;
+        let g: Graph =
+            serde_json::from_str(s.trim_start_matches('\u{feff}')).map_err(|e| trf!("Graph JSON error: {e}", e = e))?;
         g.validate()?;
         Ok(g)
     }
 }
 
-/// 없는 노드를 가리키는 간선의 오류 문구(위상 정렬과 구조 검사가 같이 쓴다).
+/// Error message for an edge that points to a missing node (shared by the topological sort and the structure
+/// check).
 fn missing_node_edge(e: &Edge) -> String {
-    trf!(
-        "존재하지 않는 노드를 가리키는 간선 {}->{}",
-        "Edge {}->{} points to a node that does not exist",
-        e.from,
-        e.to
-    )
+    trf!("Edge {}->{} points to a node that does not exist", e.from, e.to)
 }
 
 #[cfg(test)]
@@ -531,7 +505,7 @@ mod tests {
         (g, a, b, c)
     }
 
-    /// 검사 없이 만든(저장 가능한) 그래프를 JSON으로 거쳐 로드해 본다.
+    /// Loads a graph built without checks (it can still be saved) by going through JSON.
     fn load(g: &Graph) -> Result<Graph, String> {
         Graph::from_json(&g.to_json().unwrap())
     }
@@ -540,10 +514,10 @@ mod tests {
     fn connect_rules() {
         let (mut g, a, b, c) = chain();
         assert!(g.connect(a, b).is_ok());
-        assert!(g.connect(a, b).is_err(), "중복");
-        assert!(g.connect(b, b).is_err(), "자기 연결");
-        assert!(g.connect(b, a).is_err(), "Text는 입력 포트 없음");
-        assert!(g.connect(c, b).is_err(), "Output은 출력 포트 없음");
+        assert!(g.connect(a, b).is_err(), "duplicate");
+        assert!(g.connect(b, b).is_err(), "self-connection");
+        assert!(g.connect(b, a).is_err(), "Text has no input port");
+        assert!(g.connect(c, b).is_err(), "Output has no output port");
         assert!(g.connect(b, c).is_ok());
         assert_eq!(g.topo_order().unwrap(), vec![a, b, c]);
     }
@@ -589,22 +563,22 @@ mod tests {
         };
         assert!(with_edges(&[(a, b), (b, c)]).is_ok());
         let err = with_edges(&[(a, b), (a, b)]).unwrap_err();
-        assert!(err.contains("중복된 간선"), "{err}");
+        assert!(err.contains("Duplicate edge"), "{err}");
         let err = with_edges(&[(c, b)]).unwrap_err();
-        assert!(err.contains("Output") && err.contains("출력 포트"), "{err}");
+        assert!(err.contains("Output") && err.contains("output port"), "{err}");
         let err = with_edges(&[(b, a)]).unwrap_err();
-        assert!(err.contains("Text") && err.contains("입력 포트"), "{err}");
+        assert!(err.contains("Text") && err.contains("input port"), "{err}");
         let err = with_edges(&[(b, b)]).unwrap_err();
-        assert!(err.contains("자기 자신"), "{err}");
+        assert!(err.contains("itself"), "{err}");
         let err = with_edges(&[(a, 99)]).unwrap_err();
-        assert!(err.contains("존재하지 않는"), "{err}");
+        assert!(err.contains("does not exist"), "{err}");
         let mut g2 = g.clone();
         let extra = g2.add(NodeKind::new_prompt(), [0.0, 0.0]);
         g2.edges = vec![Edge { from: b, to: extra }, Edge { from: extra, to: b }];
-        assert!(load(&g2).unwrap_err().contains("순환"));
+        assert!(load(&g2).unwrap_err().contains("cycle"));
         let mut dup = g.clone();
         dup.nodes[1].id = dup.nodes[0].id;
-        assert!(load(&dup).unwrap_err().contains("중복된 노드 id"));
+        assert!(load(&dup).unwrap_err().contains("Duplicate node id"));
     }
 
     #[test]
@@ -612,19 +586,19 @@ mod tests {
         let mut g = Graph::default();
         g.nodes.push(Node {
             id: u32::MAX,
-            title: "끝".into(),
+            title: "end".into(),
             pos: [0.0, 0.0],
             kind: NodeKind::new_text(),
         });
-        let mut g = load(&g).expect("id가 u32::MAX여도 로드는 된다");
-        assert!(g.add_node(NodeKind::Output, [0.0, 0.0]).unwrap_err().contains("한계"));
+        let mut g = load(&g).expect("a graph with id u32::MAX still loads");
+        assert!(g.add_node(NodeKind::Output, [0.0, 0.0]).unwrap_err().contains("limit"));
         assert!(g.duplicate_node(u32::MAX).is_err());
-        assert_eq!(g.nodes.len(), 1, "실패하면 아무것도 추가되지 않는다");
+        assert_eq!(g.nodes.len(), 1, "nothing is added on failure");
 
         let mut near = Graph::default();
         near.nodes.push(Node {
             id: u32::MAX - 1,
-            title: "직전".into(),
+            title: "almost".into(),
             pos: [0.0, 0.0],
             kind: NodeKind::new_text(),
         });
@@ -638,18 +612,18 @@ mod tests {
         g.connect(a, b).unwrap();
         g.connect(b, c).unwrap();
         g.nodes[1].pos = [100.0, 50.0];
-        g.nodes[1].title = "요약기".into();
+        g.nodes[1].title = "Summarizer".into();
         let copy = g.duplicate_node(b).unwrap();
-        assert!(copy > c, "새 id");
-        assert_eq!(g.edges.len(), 2, "연결은 복사하지 않는다");
+        assert!(copy > c, "new id");
+        assert_eq!(g.edges.len(), 2, "connections are not copied");
         assert!(g.upstream(copy).is_empty() && !g.edges.iter().any(|e| e.from == copy));
         let (orig, dup) = (g.node(b).unwrap(), g.node(copy).unwrap());
         assert_eq!(dup.pos, [100.0 + DUPLICATE_OFFSET[0], 50.0 + DUPLICATE_OFFSET[1]]);
-        assert_eq!(dup.title, "요약기 복사");
+        assert_eq!(dup.title, "Summarizer copy");
         assert_eq!(format!("{:?}", orig.kind), format!("{:?}", dup.kind));
-        // 또 복제하면 이름이 겹치지 않는다.
+        // Duplicating again does not repeat the name.
         let again = g.duplicate_node(b).unwrap();
-        assert_eq!(g.node(again).unwrap().title, "요약기 복사 2");
+        assert_eq!(g.node(again).unwrap().title, "Summarizer copy 2");
         assert!(g.duplicate_node(999).is_err());
         g.validate().unwrap();
     }
@@ -672,7 +646,7 @@ mod tests {
         }
         g.auto_layout().unwrap();
         for (i, id) in ids.iter().enumerate() {
-            assert_eq!(pos_of(&g, *id), [i as f32 * LAYOUT_COL, 0.0], "노드 {id}");
+            assert_eq!(pos_of(&g, *id), [i as f32 * LAYOUT_COL, 0.0], "node {id}");
         }
     }
 
@@ -718,10 +692,10 @@ mod tests {
         let y = cyc.add(NodeKind::new_prompt(), [3.0, 4.0]);
         cyc.edges = vec![Edge { from: x, to: y }, Edge { from: y, to: x }];
         assert!(cyc.auto_layout().is_err());
-        assert_eq!(pos_of(&cyc, x), [1.0, 2.0], "실패하면 위치를 건드리지 않는다");
+        assert_eq!(pos_of(&cyc, x), [1.0, 2.0], "positions are untouched on failure");
     }
 
-    /// 무작위 DAG에서도 간선은 항상 오른쪽으로 향하고 노드끼리 겹치지 않는다.
+    /// Even in random DAGs, edges always point to the right and nodes never overlap.
     #[test]
     fn auto_layout_never_overlaps_nodes() {
         let mut seed = 0x2545_F491_4F6C_DD1Du64;
@@ -743,12 +717,12 @@ mod tests {
             }
             g.auto_layout().unwrap();
             for e in &g.edges {
-                assert!(pos_of(&g, e.to)[0] > pos_of(&g, e.from)[0], "라운드 {round}: {e:?}");
+                assert!(pos_of(&g, e.to)[0] > pos_of(&g, e.from)[0], "round {round}: {e:?}");
             }
             for (i, a) in g.nodes.iter().enumerate() {
                 for b in &g.nodes[i + 1..] {
                     let apart = (a.pos[0] - b.pos[0]).abs() >= LAYOUT_COL || (a.pos[1] - b.pos[1]).abs() >= LAYOUT_ROW;
-                    assert!(apart, "라운드 {round}: {} 와 {} 가 겹침", a.id, b.id);
+                    assert!(apart, "round {round}: {} and {} overlap", a.id, b.id);
                 }
             }
         }
@@ -759,7 +733,7 @@ mod tests {
         let old = r#"{"nodes":[{"id":1,"title":"in","pos":[0,0],"kind":{"type":"text","text":"x"}}],"edges":[]}"#;
         let g = Graph::from_json(old).unwrap();
         assert!(g.tests.is_empty() && g.test_node.is_none());
-        // 테스트가 없으면 파일에도 적지 않아 옛 형식 그대로 저장된다.
+        // Without tests nothing is written to the file either, so it is saved in the old format.
         let json = g.to_json().unwrap();
         assert!(!json.contains("tests") && !json.contains("test_node"), "{json}");
     }
@@ -770,19 +744,19 @@ mod tests {
         g.test_node = Some(a);
         g.tests = vec![
             TestSpec {
-                name: "기본".into(),
-                input: "줄1\n줄2 <b> & \"따옴표\"".into(),
+                name: "basic".into(),
+                input: ko_fixture!("graph.model.saved_test_input").into(),
                 expect: "dry-run".into(),
             },
             TestSpec {
-                name: "비어 있음".into(),
+                name: "empty".into(),
                 ..TestSpec::default()
             },
         ];
         let back = load(&g).unwrap();
         assert_eq!(back.tests, g.tests);
         assert_eq!(back.test_node, Some(a));
-        // 일부 항목만 있는 케이스도 열린다.
+        // Cases with only some of the fields open too.
         let partial = r#"{"nodes":[],"edges":[],"tests":[{"name":"n"},{"input":"i"}]}"#;
         let g = Graph::from_json(partial).unwrap();
         assert_eq!(g.tests[0].name, "n");
@@ -797,21 +771,21 @@ mod tests {
             let (a, b) = (g.node(e.from).unwrap(), g.node(e.to).unwrap());
             assert!(
                 b.pos[0] >= a.pos[0] + 200.0 + 40.0,
-                "{} -> {} 가로 간격이 좁음",
+                "{} -> {}: the horizontal gap is too small",
                 a.title,
                 b.title
             );
         }
         for (i, a) in g.nodes.iter().enumerate() {
             for b in &g.nodes[i + 1..] {
-                assert_ne!(a.pos, b.pos, "{} 와 {} 의 위치가 같음", a.title, b.title);
+                assert_ne!(a.pos, b.pos, "{} and {} have the same position", a.title, b.title);
             }
         }
     }
 
     #[test]
     fn large_graphs_load_quickly() {
-        // 간선 하나마다 노드 목록을 훑는 O(N^2) 처리라면 수 초가 걸리는 크기다.
+        // At this size, O(N^2) work that scans the node list for every edge would take seconds.
         let mut g = Graph::default();
         let mut prev = None;
         for i in 0..20_000u32 {
@@ -829,7 +803,7 @@ mod tests {
         let json = g.to_json().unwrap();
         let t = std::time::Instant::now();
         let back = Graph::from_json(&json).unwrap();
-        assert!(t.elapsed().as_secs_f32() < 3.0, "로드 {:?}", t.elapsed());
+        assert!(t.elapsed().as_secs_f32() < 3.0, "load {:?}", t.elapsed());
         assert_eq!(back.topo_order().unwrap().len(), 20_000);
     }
 
@@ -839,9 +813,9 @@ mod tests {
             format!(r#"{{"nodes":[{{"id":1,"title":"t","pos":{pos},"kind":{{"type":"output"}}}}],"edges":[]}}"#)
         };
         assert!(Graph::from_json(&one("[1.5, -2]")).is_ok());
-        // f32 범위를 넘는 숫자는 무한대가 된다. 캔버스가 그릴 수 없으므로 읽을 때 거절한다.
+        // Numbers beyond the f32 range become infinite. The canvas cannot draw them, so they are rejected on load.
         let err = Graph::from_json(&one("[1e39, 0]")).unwrap_err();
-        assert!(err.contains("위치 값"), "{err}");
+        assert!(err.contains("invalid position"), "{err}");
     }
 
     #[test]
@@ -856,7 +830,7 @@ mod tests {
         }
     }
 
-    // ---------- 영어 ----------
+    // ---------- English ----------
 
     #[test]
     fn validation_and_connect_errors_in_english() {
@@ -944,20 +918,20 @@ mod tests {
         assert_eq!(
             prompt_text(&with_lang(Lang::Ko, NodeKind::new_prompt)),
             (
-                "다음 내용을 분석해줘:\n{{input}}".to_string(),
-                "데이터에 없는 내용은 추론하지 마".to_string()
+                ko_text!("Analyze the following:\n{{input}}").to_string(),
+                ko_text!("Do not infer anything that is not in the data").to_string()
             )
         );
-        // 한국어로 만들어 저장한 노드는 영어로 열어도 글자가 그대로다(사용자 내용).
+        // A node created and saved in Korean keeps its text when opened in English (user content).
         let mut g = Graph::default();
         let p = with_lang(Lang::Ko, || g.add(NodeKind::new_prompt(), [0.0, 0.0]));
         let json = g.to_json().unwrap();
         let back = with_lang(Lang::En, || Graph::from_json(&json)).unwrap();
         assert_eq!(
             prompt_text(&back.node(p).unwrap().kind).0,
-            "다음 내용을 분석해줘:\n{{input}}"
+            ko_text!("Analyze the following:\n{{input}}")
         );
-        // 복제본 이름은 복제할 때의 언어로 붙는다.
+        // The copy is named in the language in use when duplicating.
         g.nodes[0].title = "Summarizer".into();
         let copy = with_lang(Lang::En, || g.duplicate_node(p)).unwrap();
         assert_eq!(g.node(copy).unwrap().title, "Summarizer copy");

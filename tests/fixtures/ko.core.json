@@ -1,0 +1,178 @@
+{
+  "_note": "Korean test inputs of the core area (linter, AST, codegen, profiler, pipeline, tokenizer, MCP server). build.rs turns each key into ko_fixture!(key): string -> &str, array -> &[&str]. Arrays named *_pairs (and *_pair) hold (first, second) items, two per line.",
+
+  "core.detect_outliers_first": "이상치 우선 탐지",
+  "core.dont_detect_outliers": "이상치 탐지하지 마",
+  "core.detect_outliers": "이상치 탐지해",
+  "core.exclude_missing": "결측치 제외",
+  "core.include_missing": "결측치 포함",
+  "core.exclude_missing_02pct": "결측치 0.2% 제외",
+  "core.compute_value": "값을 계산해",
+  "core.dont_compute_value": "값은 계산하지 마",
+  "core.no_inference_outside_data": "데이터에 없는 내용은 추론하지 마",
+
+  "core.col.name": "이름",
+  "core.col.amount": "금액",
+  "core.col.memo": "메모",
+  "core.col.value": "값",
+  "core.col.region": "지역",
+  "core.col.customer_no": "고객번호",
+
+  "core.linter.clash_pairs": [
+    "이상치 탐지해", "이상치는 탐지 말 것",
+    "결측치 제외", "결측치 포함",
+    "결측치를 평균으로 대체해", "평균으로 결측치를 대체하지 마",
+    "결측치를 포함해", "결측치는 포함하지 않는다",
+    "id 커럼 사용", "id 커럼 사용금지",
+    "날짜순 오름차순 정렬", "날짜순 내림차순 정렬"
+  ],
+  "core.linter.unrelated_pairs": [
+    "주문금액 평균을 계산해", "주문수량 평균은 계산하지 마",
+    "매출액 합계를 보고해", "매출원가 합계는 보고하지 마",
+    "결측치 제외", "결측치 포함하지 마",
+    "결측치 0.2% 제외", "결측치 포함"
+  ],
+  "core.linter.not_negative": ["하지만 합계는 보고해", "끝까지 마지막 행 포함"],
+  "core.linter.negative": [
+    "이상치 탐지하지 마",
+    "이상치 탐지하지마라",
+    "이상치는 탐지 말 것",
+    "커럼 이름을 바꾸지 마세요",
+    "결측치는 포함하지 않는다",
+    "외부 데이터 사용금지"
+  ],
+  "core.linter.stem_pairs": [
+    "탐지해", "탐지",
+    "탐지하지", "탐지",
+    "탐지하지는", "탐지",
+    "이상치는", "이상치",
+    "데이터에서는", "데이터",
+    "평균으로", "평균",
+    "주문금액", "주문금액",
+    "매출액", "매출액",
+    "포함", "포함",
+    "원가", "원가",
+    "증가를", "증가",
+    "미만", "미만",
+    "10만", "10만"
+  ],
+  "core.linter.exclude_missing_2pct": "결측치 2% 제외",
+  "core.linter.zscore_basis_pair": ["z-score 3 기준", "z score 3 기준"],
+  "core.linter.filler_quote_pairs": [
+    "'매우 만족' 응답 비율을 계산해", "'매우 만족' 응답 비율을 계산해",
+    "매우 중요: '매우 만족'을 선택한 비율", "중요: '매우 만족'을 선택한 비율",
+    "이상치는   z-score 3 기준으로\n    판단", "이상치는 z-score 3 기준으로 판단",
+    "라벨 \"a\nb\" 제외", "라벨 \"a b\" 제외"
+  ],
+  "core.linter.role_input": "  Please analyze\r\n  very   carefully\n\n\n\n- 매우 짧게 \t 답해\n'very  quoted'\n",
+  "core.linter.role_expected": "analyze\ncarefully\n\n- 짧게 답해\n'very  quoted'",
+  "core.linter.quote_then_particle": "'매우 만족'을 ‘don’t’ “a”",
+  "core.linter.quoted_very_satisfied": "'매우 만족'",
+  "core.linter.exception_suspect_pairs": [
+    "평균 대신 중앙값을 사용해", "평균은 사용하지 마",
+    "취소 건은 제외하고 주문 수를 집계해", "취소 건은 집계하지 마",
+    "매출 증가 원인을 분석해", "매출 감소 원인을 분석해",
+    "할인가는 표시하지 마", "할인 금액을 표시해"
+  ],
+  "core.linter.description_pairs": [
+    "1천만 원 이상 거래는 표시하지 마", "1천 원 이상 거래를 표시해",
+    "구매하지 않은 고객을 표시해", "구매한 고객을 표시해",
+    "보험금지급 내역을 요약해", "보험 내역을 요약해"
+  ],
+  "core.linter.description_not_negative": ["구매하지 않은 고객을 표시해", "보험금지급 내역을 요약해", "금지어 목록을 출력해"],
+  "core.linter.ban_negative": ["추측은 지양", "외부 링크 사용 자제", "id 컬럼 사용금지", "결측치는 포함하지 않는다"],
+  "core.linter.increase_decrease_pair": ["매출을 증가시켜라", "매출을 감소시켜라"],
+  "core.linter.descriptive_pairs": [
+    "재고 증가", "재고 감소",
+    "증가 추세 설명", "감소 추세 설명",
+    "고객이 이탈하지 않도록 할 방안을 제시해", "고객 이탈 방안을 제시해",
+    "고객이 이탈하지 않게 하는 방법을 제시해", "고객 이탈 방법을 제시해"
+  ],
+  "core.linter.purpose_not_negative": [
+    "고객이 이탈하지 않도록 할 방안을 제시해",
+    "누락되지 않도록 하는 방법을 설명해",
+    "결측치가 섞이지 않게 할 방안",
+    "이상치가 누락되지 않도록 검토해"
+  ],
+  "core.linter.purpose_negative": [
+    "결측치가 포함되지 않도록 해",
+    "결측치가 포함되지 않도록 하라",
+    "결측치가 포함되지 않도록 하세요",
+    "결측치가 포함되지 않도록 해줘",
+    "결측치가 포함되지 않도록 해 주세요",
+    "결측치가 포함되지 않도록 할 것",
+    "결측치가 포함되지 않도록 주의해",
+    "결측치가 포함되지 않도록 꼭 해",
+    "결측치가 포함되지 않도록",
+    "결측치가 포함되지않도록해",
+    "중복되지 않게 해",
+    "중복되지 않게끔 하세요"
+  ],
+  "core.linter.include_vs_purpose_ban_pair": ["결측치를 포함해", "결측치를 포함하지 않도록 해"],
+  "core.linter.bracket_quoted_fillers": ["「매우 만족」 응답 비율", "『아주 좋음』 비율", "〈매우〉 표시"],
+
+  "core.ast.factuality": [
+    "데이터에 없는 내용은 추론하지 마",
+    "데이터 외 추론 금지",
+    "추측하지 말 것",
+    "원인을 추론하지 않는다",
+    "추론 없이 데이터만 사용해",
+    "임의 추측 배제",
+    "추측은 지양"
+  ],
+  "core.ast.ordinary_inference": ["추론 과정을 단계별로 설명해", "추측치와 실측치를 비교해"],
+
+  "core.codegen.first_line": "첫 줄",
+  "core.codegen.hashtag": "#해시태그",
+  "core.codegen.list_item": "- 목록",
+  "core.codegen.plain_lines": ["- 목록", "**굵게**", "-1 이하", "2024. 결과", "#해시태그"],
+
+  "core.profiler.hong": "홍길동",
+  "core.profiler.kim": "김철수",
+  "core.profiler.name_and_letter": "홍길동 황",
+  "core.profiler.ga": "가",
+  "core.profiler.na": "나",
+  "core.profiler.gana": "가나",
+  "core.profiler.ganadara": "가나다라",
+  "core.profiler.quality_check": "데이터 품질 점검",
+  "core.profiler.cp949_sentence": "가나다 이상치 탐지",
+  "core.profiler.seoul": "서울",
+  "core.profiler.busan": "부산",
+  "core.profiler.normal": "정상",
+  "core.profiler.id_names": ["고객번호", "고객ID", "상품코드", "순번"],
+  "core.profiler.not_id_names": ["금액"],
+
+  "core.korean_csv.header": "id,지역,금액,메모",
+  "core.korean_csv.columns": ["id", "지역", "금액", "메모"],
+  "core.korean_csv.region": "서울특별시 강남구",
+  "core.korean_csv.memo": "정상 거래 확인 완료 메모",
+
+  "core.pipeline.prose_reply": "분석 결과: a는 1입니다",
+  "core.pipeline.explanation": "설명",
+  "core.pipeline.no_table": "표 없음",
+  "core.pipeline.tables_without_outer_pipes": [
+    "root_causes | outliers\n--- | ---\n가격 인상 | 1건",
+    "root_causes | outliers |\n---|---|\n가격 인상 | 1건 |",
+    "| root_causes | outliers\n|:---|---:\n| 가격 인상 | 1건",
+    "분석 결과입니다.\r\n\r\nroot_causes | outliers\r\n:-: | -\r\n가격 인상 | 1건\r\n",
+    "```markdown\nroot_causes | outliers\n--- | ---\n가격 인상 | 1건\n```"
+  ],
+  "core.pipeline.body": "본문",
+  "core.pipeline.long_explanation": "긴 설명",
+  "core.pipeline.unfinished": "미완",
+  "core.pipeline.cut_syllable": "잘",
+  "core.pipeline.paragraph_row": "설명 문단 | 끝",
+  "core.pipeline.odd_fields": ["a|b", "root_causes", "x y", "따옴표\"키", "**굵게**", "줄\n바꿈"],
+  "core.pipeline.steering_md": "# 규칙\n- 첫 규칙\n```yaml\nsteps:\n  - rm -rf build\n```\n* 둘째 규칙\n~~~\n- 물결 펜스 안\n~~~\n````md\n```\n- 긴 펜스 안\n````\n  - 들여 쓴 규칙\n```한 줄 코드```\n- 마지막 규칙\n",
+  "core.pipeline.steering_rules": ["첫 규칙", "둘째 규칙", "들여 쓴 규칙", "마지막 규칙"],
+  "core.pipeline.missing_file": "없는 파일.md",
+  "core.pipeline.changed_csv": "id,amount,memo\n1,10,가나다라마바사\n2,20,아자차카타파하\n",
+  "core.pipeline.sales_analyst": "매출 분석가",
+  "core.pipeline.sales_file": "매출.csv",
+  "core.pipeline.unusual_trade": "이상 거래",
+  "core.pipeline.important_detect_first": "매우 중요: 이상치 우선 탐지",
+
+  "core.tokenizer.small_csv": "id,이름\n1,가나다\n2,라마바\n",
+
+  "core.mcp_server.one": "하나"
+}

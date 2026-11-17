@@ -1,10 +1,11 @@
-//! 옵션 도구: 노드 캔버스에서 프롬프트 · LLM API · MCP 도구를 연결하고 테스트한다.
-//! 실행: `--canvas [파일]`(GUI), `--run-graph 파일`(헤드리스).
+//! Optional tool: connect and test prompts, LLM APIs and MCP tools on a node canvas.
+//! Run: `--canvas [file]` (GUI), `--run-graph file` (headless).
 //!
-//! - `graph`: 그래프 데이터 모델과 검증, 자동 정렬, 복제. `.canvas.json`(노드·간선·테스트 케이스).
-//! - `exec`: 위상 순서 실행 엔진. 중지 신호, 신뢰 게이트(MCP 실행, 사용자 지정 엔드포인트, 키 환경 변수 이름).
-//! - `llm`: 제공자별 API 호출(스튜디오의 LLM 실행도 같이 쓴다).
-//! - `ui`: egui 캔버스(확대·이동), 인스펙터, 프롬프트 테스트 창.
+//! - `graph`: graph data model, validation, auto layout, duplication. `.canvas.json` (nodes, edges, test cases).
+//! - `exec`: execution engine in topological order. Stop signal, trust gates (MCP execution, custom endpoints, key
+//!   environment variable names).
+//! - `llm`: per-provider API calls (the studio's LLM run uses them too).
+//! - `ui`: egui canvas (zoom and pan), inspector, prompt test panel.
 
 pub mod exec;
 pub mod graph;

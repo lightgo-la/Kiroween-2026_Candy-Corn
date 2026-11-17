@@ -1,0 +1,42 @@
+{
+  "_note": "Korean inputs for tests/scenarios.rs, tests/qa.rs and the src/main.rs unit tests (ko_fixture!). qa.rules and qa.roles keep their original order (the seeded QA runs index into them).",
+  "cli.hyphen_input": "-5% 증가 --x",
+  "scenarios.role_quality_auditor": "품질 감사관",
+  "scenarios.goal_check_duplicate_rows": "중복 행 여부를 확인",
+  "scenarios.goal_disabled": "꺼진 제약",
+  "scenarios.extra_constraint": "추가 제약",
+  "scenarios.steering_heading": "규칙",
+  "scenarios.steering_dash_rule": "숫자는 소수점 둘째 자리까지",
+  "scenarios.steering_star_rule": "근거 컬럼을 함께 표기",
+  "scenarios.steering_plain_line": "설명 줄은 무시",
+  "scenarios.goal_outliers_first": "이상치 우선 탐지",
+  "scenarios.goal_multiline": "이상치는   z-score 3 기준으로\n    판단",
+  "scenarios.goal_multiline_collapsed": "z-score 3 기준으로 판단",
+  "scenarios.goal_exclude_missing": "결측치 제외",
+  "scenarios.goal_include_missing": "결측치 포함",
+  "scenarios.col_name": "이름",
+  "scenarios.col_amount": "금액",
+  "scenarios.cell_ga": "가",
+  "scenarios.cell_na": "나",
+  "scenarios.memo_value": "홍길동",
+  "scenarios.ndjson_value": "김철수",
+  "qa.rules": [
+    "결측치 0.2% 제외",
+    "결측치 포함",
+    "이상치 우선 탐지",
+    "이상치 탐지하지 마",
+    "Detect outliers",
+    "You must not detect outliers",
+    "very important: list causes",
+    "데이터 외 추론 금지",
+    "4M 기준 분류",
+    "Use <b>tags</b> & \"quotes\" | pipes",
+    ""
+  ],
+  "qa.roles": [
+    "Data analyst",
+    "Please analyze very carefully",
+    "매우 정확한 분석가"
+  ],
+  "qa.memo": "메모"
+}

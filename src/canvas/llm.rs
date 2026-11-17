@@ -1,4 +1,4 @@
-//! LLM API 클라이언트(Anthropic / OpenAI / Gemini). 키는 환경 변수에서만 읽는다.
+//! LLM API client (Anthropic / OpenAI / Gemini). Keys are read only from environment variables.
 
 use super::graph::Provider;
 use serde_json::{Value, json};
@@ -15,7 +15,7 @@ pub struct LlmRequest<'a> {
     pub temperature: Option<f32>,
 }
 
-/// 요청 URL, 헤더, 본문을 만든다. 네트워크 없이 단위 테스트할 수 있도록 분리했다.
+/// Builds the request URL, headers and body. Kept separate so it can be unit tested without a network.
 pub fn build_request(r: &LlmRequest) -> (String, Vec<(&'static str, String)>, Value) {
     let base = if r.base_url.trim().is_empty() {
         r.provider.default_base_url()
@@ -82,35 +82,37 @@ pub fn build_request(r: &LlmRequest) -> (String, Vec<(&'static str, String)>, Va
     }
 }
 
-/// 제공자가 보고한 토큰 사용량. Gemini의 output은 사고 토큰을 포함한다(출력 한도에 함께 잡힌다).
+/// Token usage reported by the provider. Gemini's output includes thinking tokens (they count toward the output
+/// limit).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Usage {
     pub input: u64,
     pub output: u64,
 }
 
-/// LLM 응답 본문과 제공자가 알려 준 종료 이유.
+/// LLM response text and the stop reason reported by the provider.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LlmReply {
     pub text: String,
-    /// 종료 이유 원문: Anthropic `stop_reason`, OpenAI `finish_reason`, Gemini `finishReason`. 응답에 없으면 None
+    /// Raw stop reason: Anthropic `stop_reason`, OpenAI `finish_reason`, Gemini `finishReason`. None if the
+    /// response has none
     pub stop_reason: Option<String>,
-    /// 제공자가 보고한 토큰 사용량 (응답에 없으면 None)
+    /// Token usage reported by the provider (None if the response has none)
     pub usage: Option<Usage>,
 }
 
-/// 종료 이유 분류. 제공자마다 값이 겹치지 않아 원문만으로 판별한다.
+/// Stop reason category. The values do not overlap between providers, so the raw text alone decides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Finish {
-    /// 정상 종료 (end_turn, stop_sequence, stop, STOP)
+    /// Finished normally (end_turn, stop_sequence, stop, STOP)
     Complete,
-    /// 출력 토큰 한도에서 잘림 (max_tokens, length, MAX_TOKENS, CONTINUATION)
+    /// Truncated at the output token limit (max_tokens, length, MAX_TOKENS, CONTINUATION)
     MaxTokens,
-    /// 모델 컨텍스트 창이 가득 차 잘림 (model_context_window_exceeded)
+    /// Truncated because the model's context window is full (model_context_window_exceeded)
     ContextWindow,
-    /// 거부·안전 필터 등 그 밖의 이유로 중단 (refusal, content_filter, SAFETY 등)
+    /// Stopped for another reason such as a refusal or a safety filter (refusal, content_filter, SAFETY, ...)
     Stopped,
-    /// 응답에 종료 이유가 없음
+    /// The response has no stop reason
     Unknown,
 }
 
@@ -126,9 +128,10 @@ impl LlmReply {
     }
 }
 
-/// 제공자별 응답에서 본문과 종료 이유를 꺼낸다.
-/// 본문 없이 잘리거나 중단된 응답(사고 토큰으로 한도를 다 쓴 Gemini 등)은 빈 본문과 종료 이유를 돌려주고,
-/// 정상 종료이거나 종료 이유를 모르는데 본문이 없으면 응답 원문을 담은 오류로 본다.
+/// Extracts the text and the stop reason from a provider's response.
+/// A response truncated or stopped without text (e.g. Gemini using up the limit on thinking tokens) returns an empty
+/// text and the stop reason; a response without text that finished normally or has an unknown stop reason is an
+/// error that contains the raw response.
 pub fn extract_reply(provider: Provider, v: &Value) -> Result<LlmReply, String> {
     let join = |blocks: &Value| {
         blocks
@@ -155,15 +158,13 @@ pub fn extract_reply(provider: Provider, v: &Value) -> Result<LlmReply, String> 
     match reply.finish() {
         _ if has_text => Ok(reply),
         Finish::MaxTokens | Finish::ContextWindow | Finish::Stopped => Ok(reply),
-        Finish::Complete | Finish::Unknown => Err(trf!(
-            "응답에서 텍스트를 찾지 못했습니다: {}",
-            "No text found in the response: {}",
-            truncate(&v.to_string(), 300)
-        )),
+        Finish::Complete | Finish::Unknown => {
+            Err(trf!("No text found in the response: {}", truncate(&v.to_string(), 300)))
+        }
     }
 }
 
-/// 제공자별 usage 필드를 읽는다. 입력·출력 중 하나도 없으면 None.
+/// Reads the provider's usage fields. None if neither the input nor the output count is present.
 fn extract_usage(provider: Provider, v: &Value) -> Option<Usage> {
     let n = |x: &Value| x.as_u64();
     let (input, output) = match provider {
@@ -184,34 +185,35 @@ fn extract_usage(provider: Provider, v: &Value) -> Option<Usage> {
     })
 }
 
-/// 잠시 뒤 다시 시도하면 될 수 있는 HTTP 상태 (요청 한도, 서버 과부하·일시 오류).
+/// HTTP statuses that may succeed when retried a little later (rate limit, server overload or transient error).
 fn retryable(status: u16) -> bool {
     matches!(status, 429 | 500 | 502 | 503 | 504 | 529)
 }
 
-/// 다시 시도하기 전 대기 시간. `retry-after`(초)가 있으면 따르되 10초를 넘기지 않는다.
+/// Wait before retrying. Follows `retry-after` (seconds) if present, but never longer than 10 seconds.
 fn retry_delay(retry_after: Option<&str>, attempt: u32) -> Duration {
-    let fallback = Duration::from_secs(1 << attempt.min(3)); // 1초, 2초, 4초...
+    let fallback = Duration::from_secs(1 << attempt.min(3)); // 1 s, 2 s, 4 s...
     retry_after
         .and_then(|s| s.trim().parse::<u64>().ok())
         .map_or(fallback, |s| Duration::from_secs(s.min(10)))
 }
 
-/// 일시 오류(429/5xx/529)는 최대 이만큼 다시 시도한다.
+/// Transient errors (429/5xx/529) are retried at most this many times.
 const MAX_RETRIES: u32 = 2;
 
-/// 요청 전체 제한 시간. 출력 한도가 클수록 생성이 오래 걸리므로 늘린다(2048 → 120초, 32000 → 약 14분).
+/// Timeout for the whole request. Larger output limits take longer to generate, so it grows (2048 → 120 s,
+/// 32000 → about 14 min).
 fn timeout_for(max_tokens: u32) -> Duration {
     Duration::from_secs((60 + u64::from(max_tokens) / 40).clamp(120, 900))
 }
 
 pub fn call(r: &LlmRequest) -> Result<LlmReply, String> {
     if r.api_key.is_empty() {
-        return Err(tr!("API 키가 비어 있습니다", "The API key is empty").into());
+        return Err(tr!("The API key is empty").into());
     }
     let (url, headers, body) = build_request(r);
-    // 리디렉션은 따라가지 않는다: ureq는 Authorization만 떼고 x-api-key·x-goog-api-key는
-    // 리디렉션 대상에게 그대로 보내므로, 3xx는 오류로 돌려준다.
+    // Redirects are not followed: ureq strips only Authorization and would send x-api-key and x-goog-api-key to
+    // the redirect target unchanged, so a 3xx is returned as an error.
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .max_redirects(0)
@@ -224,9 +226,7 @@ pub fn call(r: &LlmRequest) -> Result<LlmReply, String> {
         for (k, v) in &headers {
             req = req.header(*k, v);
         }
-        let mut resp = req
-            .send_json(&body)
-            .map_err(|e| trf!("네트워크 오류: {e}", "Network error: {e}"))?;
+        let mut resp = req.send_json(&body).map_err(|e| trf!("Network error: {e}", e = e))?;
         let status = resp.status().as_u16();
         let retry_after = resp
             .headers()
@@ -236,7 +236,7 @@ pub fn call(r: &LlmRequest) -> Result<LlmReply, String> {
         let text = resp
             .body_mut()
             .read_to_string()
-            .map_err(|e| trf!("응답 읽기 실패: {e}", "Failed to read the response: {e}"))?;
+            .map_err(|e| trf!("Failed to read the response: {e}", e = e))?;
         if retryable(status) && attempt < MAX_RETRIES {
             std::thread::sleep(retry_delay(retry_after.as_deref(), attempt));
             attempt += 1;
@@ -247,11 +247,12 @@ pub fn call(r: &LlmRequest) -> Result<LlmReply, String> {
     read_reply(r.provider, r.api_key, status, attempt, &text)
 }
 
-/// 마지막 HTTP 응답을 결과로 바꾼다(네트워크 없이 단위 테스트할 수 있도록 분리했다).
-/// 2xx가 아니면 상태 코드·재시도 횟수·본문 앞부분을 담은 오류, 2xx면 JSON에서 본문과 종료 이유를 꺼낸다.
+/// Turns the last HTTP response into the result (kept separate so it can be unit tested without a network).
+/// A non-2xx status is an error with the status code, the retry count and the start of the body; a 2xx response has
+/// its text and stop reason read from the JSON.
 fn read_reply(provider: Provider, api_key: &str, status: u16, retries: u32, text: &str) -> Result<LlmReply, String> {
     if !(200..300).contains(&status) {
-        // 응답 본문에 요청 키가 에코될 가능성에 대비해 키를 가린다.
+        // Mask the key in case the response body echoes the request key.
         let safe = if api_key.is_empty() {
             text.to_string()
         } else {
@@ -259,12 +260,12 @@ fn read_reply(provider: Provider, api_key: &str, status: u16, retries: u32, text
         };
         let retried = match retries {
             0 => String::new(),
-            1 => tr!(" (1회 다시 시도 후)", " (after 1 retry)").into(),
-            n => trf!(" ({n}회 다시 시도 후)", " (after {n} retries)"),
+            1 => tr!(" (after 1 retry)").into(),
+            n => trf!(" (after {n} retries)", n = n),
         };
         return Err(format!("HTTP {status}{retried}: {}", truncate(&safe, 500)));
     }
-    let v: Value = serde_json::from_str(text).map_err(|e| trf!("JSON 파싱 실패: {e}", "JSON parse error: {e}"))?;
+    let v: Value = serde_json::from_str(text).map_err(|e| trf!("JSON parse error: {e}", e = e))?;
     extract_reply(provider, &v)
 }
 
@@ -347,7 +348,7 @@ mod tests {
 
     #[test]
     fn reply_without_text_keeps_stop_reason() {
-        // 사고 토큰으로 한도를 다 써서 parts 없이 끝난 Gemini 응답
+        // A Gemini response that ended without parts after using up the limit on thinking tokens
         let g = json!({"candidates":[{"content":{"role":"model"},"finishReason":"MAX_TOKENS"}]});
         assert_eq!(
             reply_of(Provider::Gemini, g),
@@ -358,10 +359,14 @@ mod tests {
             reply_of(Provider::Gemini, blocked),
             owned("", "SAFETY", Finish::Stopped)
         );
-        // 정상 종료인데 본문이 없으면(거부 문구만 온 경우 등) 원문을 보여 주는 오류로 둔다
-        let refusal = json!({"choices":[{"message":{"content":null,"refusal":"거부"},"finish_reason":"stop"}]});
-        assert!(extract_reply(Provider::OpenAi, &refusal).unwrap_err().contains("거부"));
-        // 종료 이유가 없거나 빈 문자열이면 Unknown
+        // A normal finish without text (e.g. only a refusal message) stays an error that shows the raw response
+        let refusal = json!({"choices":[{"message":{"content":null,"refusal":"refused"},"finish_reason":"stop"}]});
+        assert!(
+            extract_reply(Provider::OpenAi, &refusal)
+                .unwrap_err()
+                .contains("refused")
+        );
+        // A missing or empty stop reason is Unknown
         let none = json!({"content":[{"type":"text","text":"t"}],"stop_reason":""});
         assert_eq!(
             reply_of(Provider::Anthropic, none),
@@ -403,7 +408,7 @@ mod tests {
         let o = json!({"choices":[{"message":{"content":"x"},"finish_reason":"stop"}],
                        "usage":{"prompt_tokens":7,"completion_tokens":2}});
         assert_eq!(u(Provider::OpenAi, o), Some(Usage { input: 7, output: 2 }));
-        // Gemini 출력 토큰 = 본문 + 사고 토큰
+        // Gemini output tokens = text + thinking tokens
         let g = json!({"candidates":[{"content":{"parts":[{"text":"y"}]},"finishReason":"STOP"}],
                        "usageMetadata":{"promptTokenCount":9,"candidatesTokenCount":4,"thoughtsTokenCount":40}});
         assert_eq!(u(Provider::Gemini, g), Some(Usage { input: 9, output: 44 }));
@@ -420,8 +425,8 @@ mod tests {
             assert!(!retryable(s), "{s}");
         }
         assert_eq!(retry_delay(Some("3"), 0), Duration::from_secs(3));
-        assert_eq!(retry_delay(Some("120"), 0), Duration::from_secs(10)); // 상한
-        assert_eq!(retry_delay(Some("Wed, 21 Oct"), 1), Duration::from_secs(2)); // 날짜 형식은 기본 간격
+        assert_eq!(retry_delay(Some("120"), 0), Duration::from_secs(10)); // cap
+        assert_eq!(retry_delay(Some("Wed, 21 Oct"), 1), Duration::from_secs(2)); // a date uses the default interval
         assert_eq!(retry_delay(None, 0), Duration::from_secs(1));
     }
 
@@ -436,26 +441,32 @@ mod tests {
 
     #[test]
     fn http_and_json_errors_keep_status_and_retry_count() {
-        let ok = r#"{"choices":[{"message":{"content":"x"},"finish_reason":"stop"}]}"#;
-        assert_eq!(read_reply(Provider::OpenAi, "K", 200, 2, ok).unwrap().text, "x");
-        // 본문에 에코된 키는 가린다.
-        assert_eq!(
-            read_reply(Provider::OpenAi, "K", 401, 0, "bad key K").unwrap_err(),
-            "HTTP 401: bad key ***"
-        );
-        assert_eq!(
-            read_reply(Provider::OpenAi, "K", 529, 1, "busy").unwrap_err(),
-            "HTTP 529 (1회 다시 시도 후): busy"
-        );
-        assert_eq!(
-            read_reply(Provider::OpenAi, "K", 503, 2, "busy").unwrap_err(),
-            "HTTP 503 (2회 다시 시도 후): busy"
-        );
-        let err = read_reply(Provider::OpenAi, "K", 200, 0, "not json").unwrap_err();
-        assert!(err.starts_with("JSON 파싱 실패: "), "{err}");
-        let mut r = req(Provider::Anthropic);
-        r.api_key = "";
-        assert_eq!(call(&r).unwrap_err(), "API 키가 비어 있습니다");
+        with_lang(Lang::Ko, || {
+            let ok = r#"{"choices":[{"message":{"content":"x"},"finish_reason":"stop"}]}"#;
+            assert_eq!(read_reply(Provider::OpenAi, "K", 200, 2, ok).unwrap().text, "x");
+            // A key echoed in the body is masked.
+            assert_eq!(
+                read_reply(Provider::OpenAi, "K", 401, 0, "bad key K").unwrap_err(),
+                "HTTP 401: bad key ***"
+            );
+            assert_eq!(
+                read_reply(Provider::OpenAi, "K", 529, 1, "busy").unwrap_err(),
+                format!("HTTP 529{}: busy", ko_text!(" (after 1 retry)"))
+            );
+            let retries = format!(ko_text!(" (after {n} retries)"), n = 2);
+            assert_eq!(
+                read_reply(Provider::OpenAi, "K", 503, 2, "busy").unwrap_err(),
+                format!("HTTP 503{retries}: busy")
+            );
+            let parse = serde_json::from_str::<Value>("not json").unwrap_err();
+            assert_eq!(
+                read_reply(Provider::OpenAi, "K", 200, 0, "not json").unwrap_err(),
+                format!(ko_text!("JSON parse error: {e}"), e = parse)
+            );
+            let mut r = req(Provider::Anthropic);
+            r.api_key = "";
+            assert_eq!(call(&r).unwrap_err(), ko_text!("The API key is empty"));
+        });
     }
 
     #[test]

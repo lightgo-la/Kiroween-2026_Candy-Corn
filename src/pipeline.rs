@@ -1,5 +1,6 @@
-//! GUI / CLI / MCP가 공유하는 컴파일 파이프라인: AST 구성 → 린트 → 직렬화 → 토큰 계산.
-//! 린트 진단·검사 결과 문구는 UI 언어를 따르고, 컴파일된 프롬프트와 토큰 수는 UI 언어와 관계없이 같다.
+//! The compile pipeline shared by the GUI, CLI and MCP: build the AST → lint → serialize → count tokens.
+//! Lint diagnostics and check messages follow the UI language; the compiled prompt and the token counts are the same
+//! in every UI language.
 
 use crate::ast::{
     ConstraintNode, DataSubAst, OutputFormat, OutputSchemaAst, RoleNode, RootPromptAst, TargetModel, codegen, linter,
@@ -51,14 +52,15 @@ pub fn load_data(path: &Path, sample_rows: usize) -> Result<LoadedData, String> 
     })
 }
 
-/// 원본 파일 토큰 추정치 캐시의 키: (정규화한 경로, 파일 길이, 수정 시각).
+/// Key of the raw file token estimate cache: (canonical path, file length, modification time).
 type RawTokenKey = (PathBuf, u64, SystemTime);
 static RAW_TOKENS: LazyLock<Mutex<HashMap<RawTokenKey, usize>>> = LazyLock::new(Default::default);
-/// 캐시 항목 수 상한. 넘으면 비우고 다시 쌓는다.
+/// Maximum number of cache entries. Past it, the cache is cleared and filled again.
 const RAW_TOKENS_MAX: usize = 64;
 
-/// 원본 파일의 토큰 수 추정치. 같은 파일(경로·길이·수정 시각이 같음)이면 다시 토크나이즈하지 않는다
-/// (샘플 행 수만 바꿔 다시 프로파일링할 때). 두 번째 값은 캐시 적중 여부.
+/// Token estimate of the raw file. The same file (same path, length and modification time) is not tokenized again
+/// (when it is profiled again with only a different sample row count). The second value tells whether the cache was
+/// hit.
 fn raw_file_tokens(path: &Path) -> Result<(usize, bool), String> {
     let key = std::fs::metadata(path).ok().and_then(|m| {
         let modified = m.modified().ok()?;
@@ -66,14 +68,14 @@ fn raw_file_tokens(path: &Path) -> Result<(usize, bool), String> {
         Some((canonical, m.len(), modified))
     });
     let Some(key) = key else {
-        // 수정 시각을 모르면 바뀐 파일을 구분할 수 없으므로 캐시하지 않는다.
+        // Without a modification time a changed file cannot be told apart, so nothing is cached.
         return tokenizer::estimate_file_tokens(path).map(|n| (n, false));
     };
     let cache = || RAW_TOKENS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(&n) = cache().get(&key) {
         return Ok((n, true));
     }
-    // 토크나이즈하는 동안에는 잠금을 잡지 않는다(다른 로드를 막지 않게).
+    // The lock is not held while tokenizing (so other loads are not blocked).
     let n = tokenizer::estimate_file_tokens(path)?;
     let mut c = cache();
     if c.len() >= RAW_TOKENS_MAX {
@@ -83,18 +85,12 @@ fn raw_file_tokens(path: &Path) -> Result<(usize, bool), String> {
     Ok((n, false))
 }
 
-/// 텍스트 파일을 읽고 인코딩을 자동으로 판별한다(프로파일러와 같은 `csv_profiler::detect_text_encoding`).
-/// BOM(UTF-8/UTF-16)이 있으면 그것을 따르고, 없으면 UTF-8로 해석되는지 보고(깨진 바이트가 조금 섞인 UTF-8은
-/// UTF-8로 본다) 아니면 CP949(EUC-KR)로 읽는다. steering 파일처럼 메모장에서 ANSI(CP949)로 저장한 한글 문서도
-/// 깨지지 않게 한다.
+/// Reads a text file and detects its encoding (`csv_profiler::detect_text_encoding`, the same as the profiler).
+/// A BOM (UTF-8/UTF-16) is followed; otherwise the file is UTF-8 if it decodes as UTF-8 (UTF-8 with a few broken
+/// bytes mixed in still counts as UTF-8), else it is read as CP949 (EUC-KR). This keeps Korean documents saved as
+/// ANSI (CP949) in Notepad, such as steering files, from being garbled.
 pub fn read_text_auto(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| {
-        trf!(
-            "파일을 읽을 수 없음: {}",
-            "cannot read file: {}",
-            csv_profiler::io_error_text(&e)
-        )
-    })?;
+    let bytes = std::fs::read(path).map_err(|e| trf!("cannot read file: {}", csv_profiler::io_error_text(&e)))?;
     Ok(decode_text_auto(&bytes))
 }
 
@@ -110,8 +106,9 @@ pub fn parse_fields(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// steering 마크다운의 `- `·`* ` 불릿 줄을 제약 문장으로 읽는다.
-/// 코드 펜스(``` 또는 ~~~) 안의 줄은 예시 코드이므로 건너뛴다 (yaml 블록의 `- rm -rf build`가 제약이 되지 않게).
+/// Reads the `- ` and `* ` bullet lines of a steering markdown file as constraint sentences.
+/// Lines inside code fences (``` or ~~~) are example code and are skipped (so `- rm -rf build` in a yaml block does
+/// not become a constraint).
 pub fn parse_steering_rules(md: &str) -> Vec<String> {
     let mut fence: Option<(char, usize)> = None;
     let mut rules = Vec::new();
@@ -139,15 +136,16 @@ pub fn parse_steering_rules(md: &str) -> Vec<String> {
     rules
 }
 
-/// 코드 펜스를 여는 줄이면 (펜스 글자, 길이). 백틱 펜스의 정보 문자열에는 백틱이 올 수 없으므로
-/// ```` ```한 줄 코드``` ```` 같은 인라인 코드는 펜스가 아니다.
+/// (fence character, length) when the line opens a code fence. The info string of a backtick fence cannot contain
+/// backticks, so inline code such as ```` ```one-line code``` ```` is not a fence.
 fn opens_fence(l: &str) -> Option<(char, usize)> {
     let ch = l.chars().next().filter(|c| matches!(c, '`' | '~'))?;
     let len = l.chars().take_while(|c| *c == ch).count();
     (len >= 3 && !(ch == '`' && l[len..].contains('`'))).then_some((ch, len))
 }
 
-/// 여는 펜스와 같은 글자로 같은 길이 이상이고 뒤에 공백만 있으면 닫는 줄이다.
+/// A closing line uses the same character as the opening fence, is at least as long, and has only whitespace after
+/// it.
 fn closes_fence(l: &str, ch: char, len: usize) -> bool {
     let run = l.chars().take_while(|c| *c == ch).count();
     run >= len && l[run..].trim().is_empty()
@@ -171,7 +169,7 @@ pub fn compile(req: &CompileRequest) -> CompileResult {
         lint_warnings: vec![],
     };
 
-    // 압축 전 기준선: 원문 지시문 + 원본 데이터 전체 + 스키마 설명
+    // Baseline before compression: the original instructions + the whole raw data + the schema description
     let baseline_text = format!(
         "{}\n{}\n{}",
         req.role,
@@ -181,9 +179,9 @@ pub fn compile(req: &CompileRequest) -> CompileResult {
     let orig_tokens = tokenizer::count(&baseline_text) + req.data.as_ref().map_or(0, |d| d.raw_tokens);
 
     linter::lint(&mut ast);
-    ast.constraints.sort_by_key(|c| c.priority); // 안정 정렬: 같은 우선순위는 입력 순서 유지
+    ast.constraints.sort_by_key(|c| c.priority); // Stable sort: equal priorities keep the input order
     for (i, c) in ast.constraints.iter_mut().enumerate() {
-        c.id = format!("C{}", i + 1); // 제거/정렬 뒤 ID를 연속 번호로 재부여
+        c.id = format!("C{}", i + 1); // Renumber the IDs consecutively after removal and sorting
     }
     let output = codegen::generate(&ast);
     let comp_tokens = tokenizer::count(&output);
@@ -207,8 +205,9 @@ pub fn compile(req: &CompileRequest) -> CompileResult {
     }
 }
 
-/// LLM을 호출하지 않는 로컬 모의 응답: 출력 스키마 골격만 보여 준다.
-/// 표 헤더는 프롬프트와 같은 규칙(codegen::md_cell)으로 이스케이프해 자기 검사(check_output)를 통과한다.
+/// Local mock reply that calls no LLM: shows only the output schema skeleton.
+/// The table header is escaped by the same rule as the prompt (codegen::md_cell), so it passes its own check
+/// (check_output).
 fn mock_preview(ast: &RootPromptAst) -> String {
     let fields = &ast.output_schema.required_fields;
     match ast.output_schema.format {
@@ -224,19 +223,19 @@ fn mock_preview(ast: &RootPromptAst) -> String {
     }
 }
 
-/// 같은 입력을 한 타겟으로 컴파일했을 때의 토큰 수와 추정 비용.
+/// Token counts and estimated cost of compiling the same input for one target.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TargetCost {
     pub target: TargetModel,
     pub orig_tokens: usize,
     pub comp_tokens: usize,
     pub saving_pct: f64,
-    /// 압축 프롬프트를 한 번 보낼 때의 입력 비용 추정치 (USD)
+    /// Estimated input cost of sending the compressed prompt once (USD)
     pub cost_usd: f64,
     pub saved_usd: f64,
 }
 
-/// 같은 요청을 Claude·GPT·Gemini로 각각 컴파일해 토큰과 비용을 비교한다 (워커 스레드에서 호출).
+/// Compiles the same request for Claude, GPT and Gemini to compare tokens and cost (called on a worker thread).
 pub fn compare_targets(req: &CompileRequest) -> Vec<TargetCost> {
     TargetModel::ALL
         .iter()
@@ -254,7 +253,7 @@ pub fn compare_targets(req: &CompileRequest) -> Vec<TargetCost> {
         .collect()
 }
 
-/// 작업 폴더와 실행 파일 위치에서 위로 올라가며 steering 파일을 찾는다.
+/// Looks for the steering file, walking up from the working folder and from the executable's folder.
 pub fn find_steering() -> Option<std::path::PathBuf> {
     const REL: &str = ".kiro/steering/compiler-rules.md";
     let starts = [
@@ -269,28 +268,31 @@ pub fn find_steering() -> Option<std::path::PathBuf> {
         .find_map(|s| s.ancestors().map(|a| a.join(REL)).find(|p| p.is_file()))
 }
 
-/// 실제 LLM 응답을 출력 스키마로 검사한 결과.
+/// Result of checking a real LLM reply against the output schema.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct OutputCheck {
-    /// 화면 표시용 본문 (JSON이면 보기 좋게 정렬)
+    /// Body for display (pretty-printed when it is JSON)
     pub pretty: String,
     pub ok: bool,
     pub missing: Vec<String>,
-    /// 키는 있지만 값이 null이거나 빈 문자열인 필수 필드 (경고용, ok에는 영향 없음)
+    /// Required fields whose key is present but whose value is null or an empty string (for warnings; does not affect
+    /// ok)
     pub nulls: Vec<String>,
     pub error: Option<String>,
-    /// 제공자가 알려 준 종료 이유 원문 (stop_reason / finish_reason / finishReason)
+    /// The stop reason exactly as the provider reported it (stop_reason / finish_reason / finishReason)
     pub stop_reason: Option<String>,
-    /// 응답이 끝까지 생성되지 않은 이유 (토큰 한도, 거부·필터). 있으면 형식이 맞아도 통과가 아니다
+    /// Why the reply was not generated to the end (token limit, refusal or filter). When set, the reply does not pass
+    /// even if its format is right
     pub cut_off: Option<String>,
-    /// 제공자가 보고한 토큰 사용량 (check_reply만 채운다)
+    /// Token usage reported by the provider (only check_reply fills it)
     pub usage: Option<Usage>,
-    /// 표 형식에서 찾은 표의 본문 행 수 (헤더·구분 행 제외). 0이면 경고용, ok에는 영향 없음
+    /// For the table format, the number of body rows of the table found (header and separator rows excluded). 0 is
+    /// for a warning and does not affect ok
     pub table_rows: Option<usize>,
 }
 
 impl OutputCheck {
-    /// 출력 토큰 한도에 걸려 잘린 응답인지 (한도를 늘려 다시 실행하면 나아질 수 있는 경우).
+    /// Whether the reply was cut off by the output token limit (a case that a rerun with a higher limit may fix).
     pub fn hit_max_tokens(&self) -> bool {
         let reply = LlmReply {
             stop_reason: self.stop_reason.clone(),
@@ -300,22 +302,24 @@ impl OutputCheck {
     }
 }
 
-/// LLM 응답을 검사한다. 출력 토큰 한도 등으로 잘린 응답은 형식 위반이 아니라 잘림으로 알리고 통과로 보지 않는다.
+/// Checks an LLM reply. A reply cut off by the output token limit or similar is reported as cut off, not as a format
+/// violation, and does not pass.
 pub fn check_reply(format: OutputFormat, fields: &[String], reply: &LlmReply, max_tokens: u32) -> OutputCheck {
     let mut c = check_output(format, fields, &reply.text);
     let reason = reply.stop_reason.as_deref().unwrap_or_default();
     c.cut_off = match reply.finish() {
         Finish::MaxTokens => Some(trf!(
-            "출력 토큰 한도({max_tokens})에 도달해 응답이 잘렸습니다 ({reason})",
-            "Reached the output token limit ({max_tokens}); the response was cut off ({reason})"
+            "Reached the output token limit ({max_tokens}); the response was cut off ({reason})",
+            max_tokens = max_tokens,
+            reason = reason
         )),
         Finish::ContextWindow => Some(trf!(
-            "모델 컨텍스트 창이 가득 차 응답이 잘렸습니다 ({reason})",
-            "The model's context window is full; the response was cut off ({reason})"
+            "The model's context window is full; the response was cut off ({reason})",
+            reason = reason
         )),
         Finish::Stopped => Some(trf!(
-            "응답이 끝까지 생성되지 않았습니다 (종료 이유: {reason})",
-            "The response did not finish (stop reason: {reason})"
+            "The response did not finish (stop reason: {reason})",
+            reason = reason
         )),
         Finish::Complete | Finish::Unknown => None,
     };
@@ -325,8 +329,8 @@ pub fn check_reply(format: OutputFormat, fields: &[String], reply: &LlmReply, ma
     c
 }
 
-/// LLM 응답이 강제한 출력 포맷과 필수 필드를 지켰는지 검사한다.
-/// JSON은 ```json 코드 펜스를 벗겨 낸 뒤 파싱하고, 표는 헤더 행의 열 이름을 본다.
+/// Checks whether an LLM reply kept the enforced output format and the required fields.
+/// JSON is parsed after stripping a ```json code fence; for tables, the column names of the header row are checked.
 pub fn check_output(format: OutputFormat, fields: &[String], text: &str) -> OutputCheck {
     let body = strip_fence(text.trim());
     match format {
@@ -353,14 +357,14 @@ pub fn check_output(format: OutputFormat, fields: &[String], text: &str) -> Outp
                 pretty: body.to_string(),
                 ok: false,
                 missing: fields.to_vec(),
-                error: Some(tr!("JSON 객체가 아닙니다", "Not a JSON object").into()),
+                error: Some(tr!("Not a JSON object").into()),
                 ..OutputCheck::default()
             },
             Err(e) => OutputCheck {
                 pretty: text.to_string(),
                 ok: false,
                 missing: fields.to_vec(),
-                error: Some(trf!("JSON 파싱 실패: {e}", "JSON parse error: {e}")),
+                error: Some(trf!("JSON parse error: {e}", e = e)),
                 ..OutputCheck::default()
             },
         },
@@ -371,9 +375,7 @@ pub fn check_output(format: OutputFormat, fields: &[String], text: &str) -> Outp
             OutputCheck {
                 pretty: body.to_string(),
                 ok: table.is_some() && missing.is_empty(),
-                error: table
-                    .is_none()
-                    .then(|| tr!("Markdown 표를 찾지 못했습니다", "No Markdown table found").to_string()),
+                error: table.is_none().then(|| tr!("No Markdown table found").to_string()),
                 missing,
                 table_rows: table.map(|t| t.rows),
                 ..OutputCheck::default()
@@ -382,8 +384,9 @@ pub fn check_output(format: OutputFormat, fields: &[String], text: &str) -> Outp
     }
 }
 
-/// 헤더 셀 중에 필드 이름과 같은 것이 있는지. 대소문자는 구분하고, 셀을 감싼 강조·코드 표시는 벗겨서도 비교한다.
-/// 필드 이름의 줄바꿈은 프롬프트의 표 헤더(codegen::md_cell)처럼 공백으로 본다.
+/// Whether a header cell equals the field name. Case-sensitive; emphasis and code marks around the cell are also
+/// stripped for the comparison. Line breaks in the field name count as spaces, as in the prompt's table header
+/// (codegen::md_cell).
 fn header_has(header: &[String], field: &str) -> bool {
     let want = field.replace(['\n', '\r'], " ");
     let want = want.trim();
@@ -392,8 +395,8 @@ fn header_has(header: &[String], field: &str) -> bool {
         .any(|c| c == field || c == want || strip_emphasis(c) == want)
 }
 
-/// 셀 전체를 감싼 Markdown 강조·코드 표시(`**x**`, `__x__`, `*x*`, `_x_`, `` `x` ``)를 벗긴다.
-/// `***x***`나 `` **`x`** ``처럼 겹친 표시도 벗기고, 안쪽의 밑줄(root_causes)은 그대로 둔다.
+/// Strips Markdown emphasis and code marks around the whole cell (`**x**`, `__x__`, `*x*`, `_x_`, `` `x` ``).
+/// Nested marks such as `***x***` or `` **`x`** `` are stripped too; underscores inside (root_causes) stay.
 fn strip_emphasis(cell: &str) -> &str {
     let mut s = cell.trim();
     'outer: loop {
@@ -407,16 +410,17 @@ fn strip_emphasis(cell: &str) -> &str {
     }
 }
 
-/// 응답에서 찾은 Markdown 표.
+/// A Markdown table found in a reply.
 struct Table {
     header: Vec<String>,
-    /// 본문 행 수 (헤더·구분 행 제외)
+    /// Number of body rows (header and separator rows excluded)
     rows: usize,
 }
 
-/// Markdown 표의 헤더 셀과 본문 행 수. GFM처럼 헤더 행 바로 아래의 구분 행(`---|:--:`)을 기준으로 찾으므로
-/// 앞뒤 파이프가 없는 표도 인식한다. 구분 행이 없으면 예전처럼 `|`로 시작하는 첫 줄을 헤더로 본다.
-/// 본문은 헤더 아래로 빈 줄이나 `|`가 없는 줄이 나오기 전까지다.
+/// The header cells and the number of body rows of a Markdown table. Like GFM it looks for the separator row
+/// (`---|:--:`) right under the header row, so tables without leading and trailing pipes are recognized too. Without a
+/// separator row, the first line starting with `|` is the header, as before.
+/// The body runs below the header until a blank line or a line without `|`.
 fn find_table(body: &str) -> Option<Table> {
     let lines: Vec<&str> = body.lines().map(str::trim).collect();
     let gfm = (0..lines.len().saturating_sub(1)).find_map(|i| {
@@ -443,8 +447,8 @@ fn find_table(body: &str) -> Option<Table> {
     })
 }
 
-/// 구분 행이면 열 수를 돌려준다. 셀마다 `-`가 하나 이상이고 양끝에만 `:`를 허용한다.
-/// 파이프가 없는 `---`는 구분선(또는 제목 밑줄)이므로 표로 보지 않는다.
+/// The column count when the line is a separator row: every cell has at least one `-`, and `:` is allowed only at the
+/// ends. `---` without a pipe is a horizontal rule (or a heading underline), not a table.
 fn delimiter_width(line: &str) -> Option<usize> {
     if !line.contains('|') {
         return None;
@@ -460,7 +464,7 @@ fn delimiter_width(line: &str) -> Option<usize> {
         .then_some(cells.len())
 }
 
-/// 표 한 줄을 셀로 나눈다. 앞뒤 파이프는 있어도 없어도 되고, `\|`는 셀 안의 `|` 글자로 본다.
+/// Splits a table line into cells. Leading and trailing pipes are optional, and `\|` is a `|` character inside a cell.
 fn table_cells(line: &str) -> Vec<String> {
     let mut cells = vec![String::new()];
     let mut chars = line.trim().chars().peekable();
@@ -468,13 +472,14 @@ fn table_cells(line: &str) -> Vec<String> {
         match ch {
             '\\' if chars.peek() == Some(&'|') => {
                 chars.next();
-                cells.last_mut().expect("시작 셀이 있다").push('|');
+                cells.last_mut().expect("there is always a current cell").push('|');
             }
             '|' => cells.push(String::new()),
-            _ => cells.last_mut().expect("시작 셀이 있다").push(ch),
+            _ => cells.last_mut().expect("there is always a current cell").push(ch),
         }
     }
-    // 여는·닫는 파이프가 만든 빈 셀을 뗀다. 셀 안의 공백은 떼기 전에 남겨 두어 `| |` 같은 빈 열과 구분한다.
+    // Drop the empty cells made by the opening and closing pipes. Spaces inside cells are kept until this point, which
+    // tells those apart from empty columns such as `| |`.
     if cells.len() > 1 && cells.first().is_some_and(String::is_empty) {
         cells.remove(0);
     }
@@ -484,7 +489,8 @@ fn table_cells(line: &str) -> Vec<String> {
     cells.into_iter().map(|c| c.trim().to_string()).collect()
 }
 
-/// ```json ... ``` 코드 펜스를 벗긴다. 여러 줄과 한 줄(```{"a":1}```, ```json {"a":1}```) 모두 처리한다.
+/// Strips a ```json ... ``` code fence. Handles both multi-line and one-line fences (```{"a":1}```,
+/// ```json {"a":1}```).
 fn strip_fence(s: &str) -> &str {
     let Some(rest) = s.strip_prefix("```") else {
         return s;
@@ -493,10 +499,10 @@ fn strip_fence(s: &str) -> &str {
     let rest = rest.strip_suffix("```").unwrap_or(rest);
     let starts_body = |t: &str| t.trim_start().starts_with(['{', '[', '|']);
     let body = match rest.split_once('\n') {
-        // 첫 줄이 언어 표시(json, markdown 등)면 그 줄을 버린다
+        // Drop the first line when it is a language tag (json, markdown etc.)
         Some((first, after)) if !starts_body(first) => after,
         _ if starts_body(rest) => rest,
-        // 한 줄: 앞의 언어 표시 단어만 떼어 낸다
+        // One line: strip only the leading language tag word
         _ => rest
             .trim_start()
             .trim_start_matches(|c: char| c.is_ascii_alphanumeric()),
@@ -524,7 +530,11 @@ mod tests {
     #[test]
     fn json_ok_and_invalid() {
         assert!(check_output(OutputFormat::StrictJson, &f(&["a"]), r#"{"a":null,"x":2}"#).ok);
-        let bad = check_output(OutputFormat::StrictJson, &f(&["a"]), "분석 결과: a는 1입니다");
+        let bad = check_output(
+            OutputFormat::StrictJson,
+            &f(&["a"]),
+            ko_fixture!("core.pipeline.prose_reply"),
+        );
         assert!(!bad.ok && bad.error.is_some());
         let arr = check_output(OutputFormat::StrictJson, &f(&["a"]), "[1,2]");
         assert!(!arr.ok && arr.error.is_some());
@@ -549,27 +559,31 @@ mod tests {
 
     #[test]
     fn markdown_table_header() {
-        let t = "설명\n| a | b |\n|---|---|\n| 1 | 2 |";
+        let t = &format!(
+            "{}\n| a | b |\n|---|---|\n| 1 | 2 |",
+            ko_fixture!("core.pipeline.explanation")
+        );
         assert!(check_output(OutputFormat::MarkdownTable, &f(&["a", "b"]), t).ok);
         let c = check_output(OutputFormat::MarkdownTable, &f(&["a", "c"]), t);
         assert_eq!(c.missing, f(&["c"]));
-        assert!(!check_output(OutputFormat::MarkdownTable, &f(&["a"]), "표 없음").ok);
+        assert!(
+            !check_output(
+                OutputFormat::MarkdownTable,
+                &f(&["a"]),
+                ko_fixture!("core.pipeline.no_table")
+            )
+            .ok
+        );
     }
 
     #[test]
     fn markdown_table_without_outer_pipes() {
         let fields = f(&["root_causes", "outliers"]);
-        for t in [
-            "root_causes | outliers\n--- | ---\n가격 인상 | 1건",
-            "root_causes | outliers |\n---|---|\n가격 인상 | 1건 |",
-            "| root_causes | outliers\n|:---|---:\n| 가격 인상 | 1건",
-            "분석 결과입니다.\r\n\r\nroot_causes | outliers\r\n:-: | -\r\n가격 인상 | 1건\r\n",
-            "```markdown\nroot_causes | outliers\n--- | ---\n가격 인상 | 1건\n```",
-        ] {
+        for t in ko_fixture!("core.pipeline.tables_without_outer_pipes") {
             let c = check_output(OutputFormat::MarkdownTable, &fields, t);
             assert!(c.ok, "{t:?} -> {c:?}");
         }
-        // 헤더 셀 안의 `\|`는 열 구분이 아니다
+        // A `\|` inside a header cell is not a column separator
         let c = check_output(
             OutputFormat::MarkdownTable,
             &f(&["a|b", "c"]),
@@ -581,21 +595,22 @@ mod tests {
     #[test]
     fn markdown_table_rejects_non_tables() {
         let fields = f(&["a", "b"]);
+        let setext = format!("a b\n---\n{}", ko_fixture!("core.pipeline.body"));
         for t in [
-            "a b\n---\n본문",              // 제목 밑줄(setext)
-            "a | b",                       // 구분 행도 앞 파이프도 없음
-            "a | b | c\n--- | ---\n1 | 2", // 헤더와 구분 행의 열 수가 다름
-            "a | b\n--- | x\n1 | 2",       // 구분 행에 `-` 아닌 글자
-            "a | b\n--- |   \n1 | 2",      // 빈 구분 셀
+            setext.as_str(),               // setext heading underline
+            "a | b",                       // neither a separator row nor a leading pipe
+            "a | b | c\n--- | ---\n1 | 2", // the header and the separator row have different column counts
+            "a | b\n--- | x\n1 | 2",       // a character other than `-` in the separator row
+            "a | b\n--- |   \n1 | 2",      // an empty separator cell
         ] {
             let c = check_output(OutputFormat::MarkdownTable, &fields, t);
             assert!(!c.ok, "{t:?}");
-            assert_eq!(c.error.as_deref(), Some("Markdown 표를 찾지 못했습니다"), "{t:?}");
+            assert_eq!(c.error.as_deref(), Some("No Markdown table found"), "{t:?}");
         }
-        // 구분 행이 없는 `|` 행은 예전처럼 헤더로 본다
+        // A `|` row without a separator row is the header, as before
         assert!(check_output(OutputFormat::MarkdownTable, &fields, "| a | b |\n| 1 | 2 |").ok);
-        // 구분 행으로 찾은 표가 앞쪽의 `|` 줄보다 우선한다
-        let t = "| 메모 |\n\na | b\n--- | ---\n1 | 2";
+        // A table found by its separator row wins over an earlier `|` line
+        let t = &format!("| {} |\n\na | b\n--- | ---\n1 | 2", ko_fixture!("core.col.memo"));
         assert!(check_output(OutputFormat::MarkdownTable, &fields, t).ok);
     }
 
@@ -625,25 +640,31 @@ mod tests {
         let c = check_reply(
             OutputFormat::StrictJson,
             &fields,
-            &reply("{\"a\": \"긴 설명", Some("max_tokens")),
+            &reply(
+                &format!("{{\"a\": \"{}", ko_fixture!("core.pipeline.long_explanation")),
+                Some("max_tokens"),
+            ),
             2048,
         );
         assert!(!c.ok);
         assert_eq!(
             c.cut_off.as_deref(),
-            Some("출력 토큰 한도(2048)에 도달해 응답이 잘렸습니다 (max_tokens)")
+            Some("Reached the output token limit (2048); the response was cut off (max_tokens)")
         );
         assert_eq!(c.stop_reason.as_deref(), Some("max_tokens"));
-        assert!(c.error.is_some_and(|e| e.starts_with("JSON 파싱 실패")));
+        assert!(c.error.is_some_and(|e| e.starts_with("JSON parse error")));
 
-        // 표는 헤더만 맞아도 형식 검사를 통과하지만 잘린 응답이면 통과가 아니다
-        let table = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 미완";
+        // A table passes the format check when the header is right, but a cut-off reply does not pass
+        let table = &format!(
+            "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | {}",
+            ko_fixture!("core.pipeline.unfinished")
+        );
         assert!(check_output(OutputFormat::MarkdownTable, &fields, table).ok);
         let c = check_reply(OutputFormat::MarkdownTable, &fields, &reply(table, Some("length")), 512);
         assert!(!c.ok && c.missing.is_empty() && c.error.is_none());
         assert!(c.cut_off.is_some_and(|m| m.contains("(512)") && m.contains("length")));
 
-        // 사고 토큰으로 한도를 다 써서 본문이 빈 Gemini 응답
+        // A Gemini reply whose thinking tokens used up the limit, leaving the body empty
         let c = check_reply(OutputFormat::StrictJson, &fields, &reply("", Some("MAX_TOKENS")), 2048);
         assert!(!c.ok && c.cut_off.is_some());
     }
@@ -668,7 +689,7 @@ mod tests {
             &reply(r#"{"a":1}"#, Some("model_context_window_exceeded")),
             2048,
         );
-        assert!(!ctx.ok && ctx.cut_off.is_some_and(|m| m.contains("컨텍스트 창")));
+        assert!(!ctx.ok && ctx.cut_off.is_some_and(|m| m.contains("context window")));
         let filtered = check_reply(
             OutputFormat::StrictJson,
             &fields,
@@ -678,14 +699,17 @@ mod tests {
         assert!(!filtered.ok);
         assert_eq!(
             filtered.cut_off.as_deref(),
-            Some("응답이 끝까지 생성되지 않았습니다 (종료 이유: content_filter)")
+            Some("The response did not finish (stop reason: content_filter)")
         );
     }
 
     #[test]
     fn usage_and_limit_hit_are_carried() {
         let fields = f(&["a"]);
-        let mut r = reply("{\"a\": \"잘", Some("max_tokens"));
+        let mut r = reply(
+            &format!("{{\"a\": \"{}", ko_fixture!("core.pipeline.cut_syllable")),
+            Some("max_tokens"),
+        );
         r.usage = Some(Usage {
             input: 812,
             output: 2048,
@@ -699,7 +723,7 @@ mod tests {
             })
         );
         assert!(c.hit_max_tokens());
-        // 필터로 중단된 응답이나 정상 응답은 한도를 늘려도 소용없다
+        // For a reply stopped by a filter or a normal reply, raising the limit does not help
         let filtered = check_reply(OutputFormat::StrictJson, &fields, &reply("", Some("SAFETY")), 2048);
         assert!(filtered.cut_off.is_some() && !filtered.hit_max_tokens());
         let ok = check_reply(
@@ -723,14 +747,14 @@ mod tests {
             assert!(c.ok, "{t:?} -> {c:?}");
             assert_eq!(c.table_rows, Some(1));
         }
-        // 대소문자는 구분하고, 안쪽 밑줄은 벗기지 않는다
+        // Case-sensitive, and underscores inside are not stripped
         let c = check_output(
             OutputFormat::MarkdownTable,
             &f(&["root_causes"]),
             "| **Root_Causes** |\n|---|\n| a |",
         );
         assert_eq!(c.missing, f(&["root_causes"]));
-        // 밑줄로 감싼 이름 자체가 필드면 그대로도 맞는다
+        // When the field name itself is wrapped in underscores, it also matches as is
         let c = check_output(
             OutputFormat::MarkdownTable,
             &f(&["__init__"]),
@@ -749,13 +773,19 @@ mod tests {
         let rows = |t: &str| check_output(OutputFormat::MarkdownTable, &fields, t).table_rows;
         assert_eq!(rows("| a | b |\n|---|---|"), Some(0));
         assert_eq!(
-            rows("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\n설명 문단 | 끝"),
+            rows(&format!(
+                "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\n{}",
+                ko_fixture!("core.pipeline.paragraph_row")
+            )),
             Some(2)
         );
-        assert_eq!(rows("a | b\n--- | ---\n1 | 2\n메모"), Some(1));
-        assert_eq!(rows("| a | b |\n| 1 | 2 |\n| 3 | 4 |"), Some(2)); // 구분 행 없는 예전 형식
-        assert_eq!(rows("표 없음"), None);
-        // 헤더만 있는 표도 형식 검사는 통과한다 (경고는 UI가 띄운다)
+        assert_eq!(
+            rows(&format!("a | b\n--- | ---\n1 | 2\n{}", ko_fixture!("core.col.memo"))),
+            Some(1)
+        );
+        assert_eq!(rows("| a | b |\n| 1 | 2 |\n| 3 | 4 |"), Some(2)); // the old format without a separator row
+        assert_eq!(rows(ko_fixture!("core.pipeline.no_table")), None);
+        // A table with only a header still passes the format check (the UI shows the warning)
         let c = check_output(OutputFormat::MarkdownTable, &fields, "| a | b |\n|---|---|");
         assert!(c.ok && c.table_rows == Some(0));
         assert_eq!(
@@ -766,7 +796,7 @@ mod tests {
 
     #[test]
     fn mock_preview_passes_its_own_check() {
-        let fields = f(&["a|b", "root_causes", "x y", "따옴표\"키", "**굵게**", "줄\n바꿈"]);
+        let fields = f(ko_fixture!("core.pipeline.odd_fields"));
         for format in [OutputFormat::StrictJson, OutputFormat::MarkdownTable] {
             let r = compile(&CompileRequest {
                 target: TargetModel::Gpt,
@@ -786,15 +816,11 @@ mod tests {
 
     #[test]
     fn steering_rules_skip_fenced_code() {
-        let md = "# 규칙\n- 첫 규칙\n```yaml\nsteps:\n  - rm -rf build\n```\n* 둘째 규칙\n~~~\n- 물결 펜스 안\n~~~\n\
-                  ````md\n```\n- 긴 펜스 안\n````\n  - 들여 쓴 규칙\n```한 줄 코드```\n- 마지막 규칙\n";
-        assert_eq!(
-            parse_steering_rules(md),
-            f(&["첫 규칙", "둘째 규칙", "들여 쓴 규칙", "마지막 규칙"])
-        );
-        // 닫히지 않은 펜스는 문서 끝까지 코드다
+        let md = ko_fixture!("core.pipeline.steering_md");
+        assert_eq!(parse_steering_rules(md), f(ko_fixture!("core.pipeline.steering_rules")));
+        // An unclosed fence is code up to the end of the document
         assert_eq!(parse_steering_rules("- a\n```\n- b\n- c"), f(&["a"]));
-        // BOM과 빈 불릿
+        // BOM and empty bullets
         assert_eq!(parse_steering_rules("\u{feff}- a\n- \n-  b "), f(&["a", "b"]));
     }
 
@@ -802,7 +828,11 @@ mod tests {
     fn read_text_auto_detects_encoding() {
         let dir = std::env::temp_dir().join(format!("cc_text_auto_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let text = "- 데이터에 없는 내용은 추론하지 마\n- 결측치 제외";
+        let (rule, exclude) = (
+            ko_fixture!("core.no_inference_outside_data"),
+            ko_fixture!("core.exclude_missing"),
+        );
+        let text: &str = &format!("- {rule}\n- {exclude}");
         let (cp949, _, _) = encoding_rs::EUC_KR.encode(text);
         let mut utf16 = vec![0xFF, 0xFE];
         utf16.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
@@ -819,20 +849,18 @@ mod tests {
             assert_eq!(parse_steering_rules(&read_text_auto(&p).unwrap()).len(), 2, "{name}");
         }
         assert!(
-            read_text_auto(&dir.join("없는 파일.md"))
+            read_text_auto(&dir.join(ko_fixture!("core.pipeline.missing_file")))
                 .unwrap_err()
-                .contains("읽을 수 없음")
+                .contains("cannot read file")
         );
-        // 리뷰 재현: UTF-8 문서에 깨진 바이트가 하나 섞이면 예전에는 전체를 CP949로 읽어 한글이 모두 깨졌다.
-        // 프로파일러와 같은 판정으로 UTF-8로 읽고 깨진 바이트만 U+FFFD가 된다.
+        // Review repro: one broken byte in a UTF-8 document used to make the whole file read as CP949, garbling all
+        // the Korean. With the same decision as the profiler it is read as UTF-8 and only the broken byte becomes
+        // U+FFFD.
         let damaged = dir.join("damaged.md");
         std::fs::write(&damaged, [text.as_bytes(), b"\n- \xff"].concat()).unwrap();
         let read = read_text_auto(&damaged).unwrap();
         assert_eq!(read, format!("{text}\n- \u{FFFD}"));
-        assert_eq!(
-            parse_steering_rules(&read)[..2],
-            f(&["데이터에 없는 내용은 추론하지 마", "결측치 제외"])
-        );
+        assert_eq!(parse_steering_rules(&read)[..2], f(&[rule, exclude]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -845,13 +873,13 @@ mod tests {
         let (n, hit) = raw_file_tokens(&p).unwrap();
         assert!(!hit && n > 0);
         assert_eq!(raw_file_tokens(&p).unwrap(), (n, true));
-        // 샘플 행 수만 바꿔 다시 프로파일링해도 같은 추정치를 캐시에서 쓴다
+        // Profiling again with only a different sample row count uses the same cached estimate
         let a = load_data(&p, 1).unwrap();
         let b = load_data(&p, 3).unwrap();
         assert_eq!((a.raw_tokens, b.raw_tokens), (n, n));
         assert!(raw_file_tokens(&p).unwrap().1);
-        // 파일이 바뀌면(길이·수정 시각) 다시 계산한다
-        std::fs::write(&p, "id,amount,memo\n1,10,가나다라마바사\n2,20,아자차카타파하\n").unwrap();
+        // When the file changes (length, modification time) it is computed again
+        std::fs::write(&p, ko_fixture!("core.pipeline.changed_csv")).unwrap();
         let (m, hit) = raw_file_tokens(&p).unwrap();
         assert!(!hit && m != n, "{n} -> {m}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -861,8 +889,11 @@ mod tests {
     fn compare_targets_matches_single_compiles() {
         let req = CompileRequest {
             target: TargetModel::Claude,
-            role: "매출 분석가".into(),
-            constraints: vec!["이상치 우선 탐지".into(), "데이터에 없는 내용은 추론하지 마".into()],
+            role: ko_fixture!("core.pipeline.sales_analyst").into(),
+            constraints: vec![
+                ko_fixture!("core.detect_outliers_first").into(),
+                ko_fixture!("core.no_inference_outside_data").into(),
+            ],
             format: OutputFormat::StrictJson,
             fields: f(&["root_causes", "outliers"]),
             data: None,
@@ -883,37 +914,39 @@ mod tests {
         }
     }
 
-    /// 큰따옴표로 인용한 사용자 문장을 뺀 나머지에 한글이 있는가
+    /// Whether there is Hangul outside the user sentences quoted in double quotes
     fn hangul_outside_quotes(s: &str) -> bool {
         s.split('"')
             .step_by(2)
-            .any(|part| part.chars().any(|c| ('가'..='힣').contains(&c)))
+            .any(|part| part.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c)))
     }
 
-    /// UI 언어는 사용자에게 보이는 문구만 바꾼다. 같은 요청(데이터 포함)을 한국어와 영어로 컴파일하면
-    /// 프롬프트(모델용 글: 프로파일 통계·이상치·샘플·스키마 포함), 토큰 수, 미리보기, 진단의 개수·심각도·위치가 같다.
+    /// The UI language only changes the text shown to the user. Compiling the same request (with data) in Korean and
+    /// in English gives the same prompt (model-facing text, including profile statistics, outliers, samples and the
+    /// schema), token counts, preview, and diagnostic count, severities and positions.
     #[test]
     fn compile_is_identical_in_both_languages_except_messages() {
         use crate::i18n::{Lang, with_lang};
         let dir = std::env::temp_dir().join(format!("cc_lang_compile_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("매출.csv");
-        let mut csv = String::from("order_id,지역,amount,메모\n");
+        let p = dir.join(ko_fixture!("core.pipeline.sales_file"));
+        let (region, memo) = (ko_fixture!("core.col.region"), ko_fixture!("core.col.memo"));
+        let mut csv = format!("order_id,{region},amount,{memo}\n");
         for i in 0..60 {
-            csv += &format!("{i},R{},{},\"메모, {i}\"\n", i % 4, 1000 + (i * 37) % 900);
+            csv += &format!("{i},R{},{},\"{memo}, {i}\"\n", i % 4, 1000 + (i * 37) % 900);
         }
-        csv += "60,R1,9000000,이상 거래\n";
+        csv += &format!("60,R1,9000000,{}\n", ko_fixture!("core.pipeline.unusual_trade"));
         std::fs::write(&p, csv).unwrap();
         let rules: Vec<String> = [
-            "매우 중요: 이상치 우선 탐지",
-            "이상치 탐지하지 마",
+            ko_fixture!("core.pipeline.important_detect_first"),
+            ko_fixture!("core.dont_detect_outliers"),
             "Detect outliers first",
             "detect outliers first.",
-            "결측치 제외",
-            "결측치 포함",
-            "값을 계산해",
-            "값은 계산하지 마",
-            "데이터에 없는 내용은 추론하지 마",
+            ko_fixture!("core.exclude_missing"),
+            ko_fixture!("core.include_missing"),
+            ko_fixture!("core.compute_value"),
+            ko_fixture!("core.dont_compute_value"),
+            ko_fixture!("core.no_inference_outside_data"),
         ]
         .map(String::from)
         .to_vec();
@@ -957,11 +990,11 @@ mod tests {
                     };
                     assert_eq!(shape(&ko), shape(&en), "{case}");
                     for (k, e) in ko.ast.lint_warnings.iter().zip(&en.ast.lint_warnings) {
-                        assert_ne!(k.message, e.message, "{case}: 번역되지 않음");
+                        assert_ne!(k.message, e.message, "{case}: not translated");
                         assert!(!hangul_outside_quotes(&e.message), "{case}: {}", e.message);
                         seen.insert(e.severity.clone());
                     }
-                    // 프롬프트에 프로파일 결과가 실제로 들어 있다(모델용 영어 표기 그대로)
+                    // The prompt really contains the profile (in the model-facing English wording)
                     assert!(
                         en.output.contains("amount") && en.output.contains("9000000 (z="),
                         "{case}"
@@ -978,12 +1011,21 @@ mod tests {
         use crate::i18n::{Lang, with_lang};
         let fields = f(&["a", "b"]);
         let replies = [
-            reply("{\"a\": \"긴 설명", Some("max_tokens")),
-            reply("| a | b |\n|---|---|\n| 1 | 미완", Some("length")),
+            reply(
+                &format!("{{\"a\": \"{}", ko_fixture!("core.pipeline.long_explanation")),
+                Some("max_tokens"),
+            ),
+            reply(
+                &format!(
+                    "| a | b |\n|---|---|\n| 1 | {}",
+                    ko_fixture!("core.pipeline.unfinished")
+                ),
+                Some("length"),
+            ),
             reply(r#"{"a":1}"#, Some("model_context_window_exceeded")),
             reply("", Some("content_filter")),
             reply("[1,2]", Some("stop")),
-            reply("표 없음", Some("stop")),
+            reply(ko_fixture!("core.pipeline.no_table"), Some("stop")),
             reply(r#"{"a":1,"b":null}"#, Some("end_turn")),
         ];
         let formats = [
@@ -1039,8 +1081,9 @@ mod tests {
         assert_eq!(en[4].error.as_deref(), Some("Not a JSON object"));
         assert_eq!(en[5].error.as_deref(), Some("No Markdown table found"));
         assert!(en[6].ok && en[6].error.is_none() && en[6].cut_off.is_none());
-        // 한국어 문구는 그대로이고, 판정(통과·누락·빈 값·종료 이유·표 행 수·한도 도달)은 언어와 관계없다
-        assert_eq!(ko[4].error.as_deref(), Some("JSON 객체가 아닙니다"));
+        // The Korean wording stays as it was, and the verdicts (pass, missing, blank values, stop reason, table rows,
+        // limit reached) do not depend on the language
+        assert_eq!(ko[4].error.as_deref(), Some(ko_text!("Not a JSON object")));
         for (k, e) in ko.iter().zip(&en) {
             assert_eq!(
                 (&k.pretty, k.ok, &k.missing, &k.nulls, &k.stop_reason, k.table_rows),
@@ -1050,7 +1093,7 @@ mod tests {
             assert_eq!(k.cut_off.is_some(), e.cut_off.is_some());
             assert_eq!(k.error.is_some(), e.error.is_some());
             for m in e.cut_off.iter().chain(&e.error) {
-                assert!(!m.chars().any(|c| ('가'..='힣').contains(&c)), "{m}");
+                assert!(!m.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c)), "{m}");
             }
         }
     }
@@ -1067,9 +1110,9 @@ mod tests {
         let os = std::fs::read(&p).unwrap_err();
         assert_eq!(
             with_lang(Lang::Ko, || read_text_auto(&p)),
-            Err(format!("파일을 읽을 수 없음: {os}"))
+            Err(format!(ko_text!("cannot read file: {}"), os))
         );
-        // 데이터 로드 오류는 프로파일러 문구가 그대로 올라온다
+        // Data load errors pass the profiler's message up unchanged
         let e = with_lang(Lang::En, || load_data(&p.with_extension("csv"), 2).unwrap_err());
         assert_eq!(e, "cannot open file: no such file or directory (os error 2)");
     }

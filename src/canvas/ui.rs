@@ -1,8 +1,9 @@
-//! 노드 캔버스 GUI: 중앙 캔버스(이동·확대) / 우측 인스펙터 / 하단 프롬프트 테스트 창.
-//! 그래프 실행은 워커 스레드에서 하고 mpsc 채널로 이벤트만 UI에 전달한다.
-//! 메시지에는 실행 세대 번호를 붙여, 새로 만들기·열기·다음 실행 뒤에 늦게 도착한 이벤트는 버린다.
-//! 그래서 중지를 누른 뒤에는 실행 중인 노드(LLM·MCP 호출)가 끝나기를 기다리지 않고 그래프를 바꿀 수 있다.
-//! 파일 대화상자는 위젯 처리가 끝난 프레임 끝에서 연다(app.rs와 같은 규칙).
+//! Node canvas GUI: central canvas (pan and zoom) / inspector on the right / prompt test panel at the bottom.
+//! Graphs run on a worker thread, and only events are passed to the UI through an mpsc channel.
+//! Messages carry the generation number of their run, so events that arrive late after New, Open or the next run
+//! are dropped. That is why, after Stop is pressed, the graph can be changed without waiting for the running node
+//! (an LLM or MCP call) to finish.
+//! File dialogs open at the end of the frame, after the widgets are processed (the same rule as app.rs).
 
 use super::exec::{self, Event, RunOptions, RunReport};
 use super::graph::{Edge, Graph, Node, NodeKind, PromptFormat, PromptTarget, Provider, TestSpec};
@@ -17,14 +18,14 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 const NODE_W: f32 = 200.0;
 const NODE_H: f32 = 78.0;
 const PORT_R: f32 = 6.0;
-/// 노드 카드의 보조 줄(LLM 메모, 오류)에 보여 줄 최대 글자 수. 전체는 마우스를 올리면 보인다.
+/// Maximum number of characters on the extra line of a node card (LLM note, error). The full text shows on hover.
 const DETAIL_CHARS: usize = 30;
 
 const AMBER: Color32 = Color32::from_rgb(230, 180, 60);
 const RED: Color32 = Color32::from_rgb(230, 80, 80);
 const GREEN: Color32 = Color32::from_rgb(80, 180, 100);
 
-/// 노드 추가 메뉴의 생성 함수 타입.
+/// Type of the constructor functions in the add node menu.
 type NodeCtor = fn() -> NodeKind;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -32,7 +33,7 @@ enum RunState {
     #[default]
     Idle,
     Running,
-    /// `note`: LLM 노드의 토큰 사용량·잘림 경고
+    /// `note`: token usage and truncation warnings of LLM nodes
     Done {
         ms: u128,
         note: Option<String>,
@@ -55,28 +56,29 @@ struct TestResult {
     ms: u128,
 }
 
-/// 워커가 UI로 보내는 메시지.
+/// Messages the worker sends to the UI.
 enum Msg {
     Node(Event),
     Test(usize, TestResult),
     Finished(Done),
 }
 
-/// 실행이 끝난 모습.
+/// How a run ended.
 enum Done {
     Flow(Box<RunReport>),
     Tests { cancelled: bool },
     Error(String),
 }
 
-/// 파일 대화상자나 그래프 교체, 언어 전환은 UI 패스 안에서 하지 않고 프레임 끝으로 미룬다.
+/// File dialogs, graph replacement and language switches are not done inside the UI pass but deferred to the end of
+/// the frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Deferred {
     New,
     Open,
     Save,
     SaveAs,
-    /// 화면 전체가 다음 프레임부터 한 언어로 그려지도록 프레임 끝에서 바꾼다.
+    /// Switched at the end of the frame so that the whole screen is drawn in one language from the next frame on.
     Language(Lang),
 }
 
@@ -114,22 +116,23 @@ fn apply_event(runs: &mut HashMap<u32, NodeRun>, e: Event) {
     runs.insert(id, run);
 }
 
-/// 실행 한 번의 진행 상태. 화면과 무관해서 단위 테스트할 수 있다.
-/// 모든 워커 메시지는 시작할 때 받은 세대 번호를 달고 오며, 지금 세대와 다르면 버린다.
+/// Progress of one run. It does not depend on the screen, so it can be unit tested.
+/// Every worker message carries the generation number received at the start, and is dropped if it differs from the
+/// current generation.
 #[derive(Default)]
 struct RunBoard {
     generation: u64,
     running: bool,
-    /// 중지를 눌렀고 아직 끝나지 않음
+    /// Stop was pressed and the run has not finished yet
     cancelling: bool,
     runs: HashMap<u32, NodeRun>,
     final_text: String,
-    /// 그래프의 테스트 케이스와 같은 길이
+    /// Same length as the graph's test cases
     test_results: Vec<Option<TestResult>>,
 }
 
 impl RunBoard {
-    /// 새 실행을 시작한다. 이미 실행 중이면 None.
+    /// Starts a new run. None if a run is already going.
     fn begin(&mut self) -> Option<u64> {
         if self.running {
             return None;
@@ -142,7 +145,8 @@ impl RunBoard {
         Some(self.generation)
     }
 
-    /// 새로 만들기·열기: 이전 그래프의 결과를 모두 지우고, 아직 오는 중인 메시지는 세대 번호로 버린다.
+    /// New or Open: clears all results of the previous graph; messages still on their way are dropped by their
+    /// generation number.
     fn reset(&mut self, tests: usize) {
         self.generation += 1;
         self.running = false;
@@ -152,7 +156,7 @@ impl RunBoard {
         self.test_results = vec![None; tests];
     }
 
-    /// 메시지를 반영한다. 실행이 끝났으면 상태 줄에 쓸 (문구, 오류 여부)를 돌려준다.
+    /// Applies a message. When the run has finished, returns (text, is error) for the status line.
     fn apply(&mut self, generation: u64, msg: Msg) -> Option<(String, bool)> {
         if generation != self.generation {
             return None;
@@ -184,30 +188,20 @@ impl RunBoard {
     }
 }
 
-/// 개수 앞뒤에 붙는 "노드". 영어는 1개면 단수형이다.
+/// The word "node" next to a count. English uses the singular for 1.
 fn nodes_word(n: usize) -> &'static str {
-    if n == 1 {
-        tr!("노드", "node")
-    } else {
-        tr!("노드", "nodes")
-    }
+    if n == 1 { tr!("node") } else { tr!("nodes") }
 }
 
 fn flow_status(rep: &RunReport) -> (String, bool) {
     let failed = rep.errors.len();
-    let failed_text = || {
-        trf!(
-            "{failed}개 {nodes} 실패",
-            "{failed} {nodes} failed",
-            nodes = nodes_word(failed)
-        )
-    };
+    let failed_text = || trf!("{failed} {nodes} failed", nodes = nodes_word(failed), failed = failed);
     if rep.cancelled {
         let skipped = rep.skipped.len();
         let mut s = trf!(
-            "중지됨 · {nodes} {skipped}개 건너뜀",
             "Stopped · {skipped} {nodes} skipped",
-            nodes = nodes_word(skipped)
+            nodes = nodes_word(skipped),
+            skipped = skipped
         );
         if failed > 0 {
             s += " · ";
@@ -221,20 +215,18 @@ fn flow_status(rep: &RunReport) -> (String, bool) {
     let warns = rep.notes.values().filter(|n| n.starts_with('⚠')).count();
     let ms = rep.total_ms;
     if warns > 0 {
-        let word = if warns == 1 {
-            tr!("경고", "warning")
-        } else {
-            tr!("경고", "warnings")
-        };
+        let word = if warns == 1 { tr!("warning") } else { tr!("warnings") };
         (
             trf!(
-                "완료 ({ms} ms) · ⚠ {word} {warns}건 (노드 상태 참고)",
-                "Done ({ms} ms) · ⚠ {warns} {word} (see the node status)"
+                "Done ({ms} ms) · ⚠ {warns} {word} (see the node status)",
+                ms = ms,
+                warns = warns,
+                word = word
             ),
             false,
         )
     } else {
-        (trf!("완료 ({ms} ms)", "Done ({ms} ms)"), false)
+        (trf!("Done ({ms} ms)", ms = ms), false)
     }
 }
 
@@ -242,41 +234,33 @@ fn tests_status(results: &[Option<TestResult>], cancelled: bool) -> (String, boo
     let pass = results.iter().flatten().filter(|r| r.pass).count();
     let done = results.iter().flatten().count();
     let text = if cancelled {
-        trf!(
-            "테스트 중지됨 ({pass}/{done} 통과)",
-            "Tests stopped ({pass}/{done} passed)"
-        )
+        trf!("Tests stopped ({pass}/{done} passed)", pass = pass, done = done)
     } else {
-        trf!("테스트 {pass}/{done} 통과", "Tests: {pass}/{done} passed")
+        trf!("Tests: {pass}/{done} passed", pass = pass, done = done)
     };
     (text, pass != done)
 }
 
-/// 실행 중에 열기를 막을 때의 상태 줄 문구(열기 대화상자와 파일 열기가 같이 쓴다).
+/// Status line text when opening is refused during a run (shared by the open dialog and opening a file).
 fn open_while_running() -> &'static str {
-    tr!(
-        "실행 중에는 파일을 열 수 없습니다 (■ 중지를 누르면 바로 열 수 있습니다)",
-        "Cannot open a file while running (press ■ Stop to open it right away)"
-    )
+    tr!("Cannot open a file while running (press ■ Stop to open it right away)")
 }
 
-/// 언어를 바꾼 뒤 상태 줄 문구(바뀐 언어로 쓴다). 설정 파일 저장에 실패하면 오류로 알린다.
-/// 저장에 실패해도 이번 실행은 바뀐 언어로 계속한다.
+/// Status line text after a language switch (written in the new language). A failure to save the settings file is
+/// reported as an error.
+/// Even if saving fails, this session continues in the new language.
 fn language_status(lang: Lang, saved: Result<(), String>) -> (String, bool) {
     let name = lang.native_name();
     match saved {
-        Ok(()) => (trf!("언어: {name}", "Language: {name}"), false),
+        Ok(()) => (trf!("Language: {name}", name = name), false),
         Err(e) => (
-            trf!(
-                "언어: {name} · 설정을 저장하지 못했습니다: {e}",
-                "Language: {name} · could not save the setting: {e}"
-            ),
+            trf!("Language: {name} · could not save the setting: {e}", name = name, e = e),
             true,
         ),
     }
 }
 
-/// 워커 스레드가 UI로 메시지를 보내는 통로.
+/// The channel through which the worker thread sends messages to the UI.
 struct Reporter {
     tx: Sender<(u64, Msg)>,
     ctx: egui::Context,
@@ -290,18 +274,17 @@ impl Reporter {
     }
 }
 
-/// 작업이 패닉해도 `Finished`가 반드시 가게 해서 실행 중 상태가 남지 않게 한다.
+/// Makes sure `Finished` is sent even if the job panics, so that no running state is left behind.
 fn run_guarded(rep: &Reporter, job: impl FnOnce(&Reporter)) {
     if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(rep))) {
         rep.send(Msg::Finished(Done::Error(trf!(
-            "실행 중 내부 오류: {}",
             "Internal error during the run: {}",
             exec::panic_text(e)
         ))));
     }
 }
 
-/// 그래프 전체 실행 작업.
+/// Job that runs the whole graph.
 fn flow_job(rep: &Reporter, g: &Graph, opts: &RunOptions) {
     let done = match exec::run_graph(g, opts, |e| rep.send(Msg::Node(e))) {
         Ok(r) => Done::Flow(Box::new(r)),
@@ -310,7 +293,7 @@ fn flow_job(rep: &Reporter, g: &Graph, opts: &RunOptions) {
     rep.send(Msg::Finished(done));
 }
 
-/// 테스트 케이스를 차례로 실행하는 작업. 중지하면 남은 케이스는 실행하지 않고 결과도 남기지 않는다.
+/// Job that runs the test cases one after another. When stopped, the remaining cases are not run and leave no results.
 fn tests_job(rep: &Reporter, g: &Graph, entry: u32, cases: &[(usize, TestSpec)], base: &RunOptions) {
     let stopped = || base.cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed));
     let mut cancelled = false;
@@ -343,7 +326,7 @@ fn tests_job(rep: &Reporter, g: &Graph, entry: u32, cases: &[(usize, TestSpec)],
     rep.send(Msg::Finished(Done::Tests { cancelled }));
 }
 
-/// 한 테스트 케이스의 통과 여부와 표시 문구.
+/// Whether one test case passed, and the text to show.
 fn judge_case(g: &Graph, r: &RunReport, expect: &str) -> TestResult {
     let mut errs: Vec<(&u32, &String)> = r.errors.iter().collect();
     errs.sort_by_key(|(id, _)| **id);
@@ -355,10 +338,7 @@ fn judge_case(g: &Graph, r: &RunReport, expect: &str) -> TestResult {
     let ok = r.ok();
     let pass = ok && (expect.is_empty() || r.final_text.contains(expect));
     if ok && !pass {
-        error = trf!(
-            "출력에 '{expect}' 가 없습니다",
-            "The output does not contain '{expect}'"
-        );
+        error = trf!("The output does not contain '{expect}'", expect = expect);
     }
     TestResult {
         pass,
@@ -368,13 +348,15 @@ fn judge_case(g: &Graph, r: &RunReport, expect: &str) -> TestResult {
     }
 }
 
-/// 입력칸마다 남아 있는 egui 자체 실행 취소 기록을 지운다.
-/// 새 그래프를 열었을 때 이전 그래프의 글자가 되살아나는 것을 막는다(app.rs와 같은 방식).
+/// Clears egui's own undo history left in every input field.
+/// This keeps the text of the previous graph from coming back after a new graph is opened (the same approach as
+/// app.rs).
 fn clear_text_undo(ctx: &egui::Context) {
     ctx.data_mut(|d| d.remove_by_type::<egui::text_edit::TextEditState>());
 }
 
-/// 임시 파일에 쓴 뒤 이름을 바꿔 저장한다. 도중에 멈춰도 원래 파일이 반쯤 쓰인 채로 남지 않는다.
+/// Saves by writing a temporary file and then renaming it. Even if interrupted, the original file is never left half
+/// written.
 fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
@@ -389,9 +371,10 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     })
 }
 
-/// 처음 열 때 보여 주는 예제 그래프. 내용은 만들 때의 언어로 쓰고, 두 번째 테스트 케이스는 다른 언어로 묻는다.
+/// Sample graph shown at startup. Its content is written in the language in use when it is created, and the second
+/// test case asks in the other language.
 fn sample_graph() -> Graph {
-    const QUESTION_KO: &str = "3분기 매출이 급감한 원인을 분석해줘"; // i18n-data
+    const QUESTION_KO: &str = crate::lexicon::GRAPH_SAMPLE_QUESTION_KO;
     const QUESTION_EN: &str = "Why did Q3 revenue drop?";
     let node = |id: u32, kind: NodeKind| Node {
         id,
@@ -418,12 +401,12 @@ fn sample_graph() -> Graph {
         ],
         tests: vec![
             TestSpec {
-                name: tr!("기본", "Basic").into(),
+                name: tr!("Basic").into(),
                 input: question.into(),
                 expect: "dry-run".into(),
             },
             TestSpec {
-                name: tr!("영문 입력", "Korean input").into(),
+                name: tr!("Korean input").into(),
                 input: other.into(),
                 expect: String::new(),
             },
@@ -442,12 +425,12 @@ fn node_rect(pos: [f32; 2]) -> Rect {
     Rect::from_min_size(pos2(pos[0], pos[1]), vec2(NODE_W, NODE_H))
 }
 
-/// 모든 노드를 감싸는 영역(화면 맞춤에 쓴다). 노드가 없으면 None.
+/// The area that encloses all nodes (used to fit the view). None if there are no nodes.
 fn graph_bounds(g: &Graph) -> Option<Rect> {
     g.nodes.iter().map(|n| node_rect(n.pos)).reduce(|a, b| a.union(b))
 }
 
-/// 노드 카드에 보여 줄 실행 상태.
+/// Run state shown on a node card.
 struct StatusView {
     border: Color32,
     badge: String,
@@ -469,7 +452,7 @@ fn status_view(run: Option<&NodeRun>) -> StatusView {
         RunState::Idle => idle(),
         RunState::Running => StatusView {
             border: AMBER,
-            badge: tr!("실행 중…", "Running…").into(),
+            badge: tr!("Running…").into(),
             ..idle()
         },
         RunState::Done { ms, note } => {
@@ -484,14 +467,14 @@ fn status_view(run: Option<&NodeRun>) -> StatusView {
         }
         RunState::Failed(e) => StatusView {
             border: Color32::from_rgb(220, 70, 70),
-            badge: tr!("✖ 실패", "✖ Failed").into(),
+            badge: tr!("✖ Failed").into(),
             detail: clip(e.lines().next().unwrap_or_default(), DETAIL_CHARS),
             detail_color: RED,
             tooltip: Some(e.clone()),
         },
         RunState::Skipped => StatusView {
             border: Color32::from_gray(110),
-            badge: tr!("건너뜀", "Skipped").into(),
+            badge: tr!("Skipped").into(),
             ..idle()
         },
     }
@@ -501,13 +484,13 @@ pub struct CanvasApp {
     graph: Graph,
     path: Option<PathBuf>,
     selected: Option<u32>,
-    /// 캔버스가 보여 주는 장면 영역(Scene이 이동·확대에 따라 바꾼다)
+    /// Scene area the canvas shows (the Scene changes it when panning and zooming)
     scene_rect: Rect,
-    /// 다음 프레임에 모든 노드가 보이게 맞춘다
+    /// Fit the view to all nodes in the next frame
     want_fit: bool,
     link_from: Option<u32>,
     board: RunBoard,
-    /// 현재 실행의 중지 신호
+    /// Stop signal of the current run
     cancel: Arc<AtomicBool>,
     allow_mcp: bool,
     allow_custom_endpoint: bool,
@@ -544,7 +527,7 @@ impl CanvasApp {
             cancel: Arc::new(AtomicBool::new(false)),
             allow_mcp: false,
             allow_custom_endpoint: false,
-            status: tr!("준비됨", "Ready").into(),
+            status: tr!("Ready").into(),
             status_err: false,
             deferred: None,
             tx,
@@ -559,7 +542,7 @@ impl CanvasApp {
         self.status_err = err;
     }
 
-    /// 테스트 입력 노드가 유효한 Text 노드를 가리키도록 보정한다.
+    /// Makes the test input node point to a valid Text node.
     fn fix_test_node(&mut self) {
         let is_text = |g: &Graph, id: u32| g.node(id).is_some_and(|n| matches!(n.kind, NodeKind::Text { .. }));
         if !self.graph.test_node.is_some_and(|id| is_text(&self.graph, id)) {
@@ -572,7 +555,7 @@ impl CanvasApp {
         }
     }
 
-    /// 테스트 케이스 수와 결과 칸 수를 맞춘다.
+    /// Keeps the number of result slots equal to the number of test cases.
     fn sync_test_results(&mut self) {
         let n = self.graph.tests.len();
         if self.board.test_results.len() != n {
@@ -580,15 +563,16 @@ impl CanvasApp {
         }
     }
 
-    // ---------- 파일 ----------
+    // ---------- Files ----------
 
-    /// 그래프를 통째로 교체한다: 선택·연결 중인 선, 실행 결과, 테스트 결과, 이동·확대, 신뢰 설정을 모두 초기화한다.
+    /// Replaces the whole graph: resets the selection, the wire being dragged, run results, test results, pan and
+    /// zoom, and the trust settings.
     fn install(&mut self, g: Graph, path: Option<PathBuf>, ctx: &egui::Context) {
         self.graph = g;
         self.path = path;
         self.selected = None;
         self.link_from = None;
-        self.allow_mcp = false; // 불러온 그래프의 MCP 명령·엔드포인트는 매번 다시 허용해야 한다
+        self.allow_mcp = false; // MCP commands and endpoints of a loaded graph must be allowed again every time
         self.allow_custom_endpoint = false;
         self.board.reset(self.graph.tests.len());
         self.fix_test_node();
@@ -597,20 +581,17 @@ impl CanvasApp {
         clear_text_undo(ctx);
     }
 
-    /// 새로 만들기·열기로 그래프를 바꿀 수 있는가. 실행 중이어도 중지를 눌렀으면 된다: "■ 중지"는 실행 중인 노드
-    /// (최대 수 분 걸리는 LLM·MCP 호출)가 끝나야 멈추지만, 그래프를 바꾸면 세대 번호가 올라가 옛 워커가 늦게 보내는
-    /// 이벤트는 모두 버려진다(RunBoard::apply).
+    /// Whether New or Open may replace the graph. During a run this is allowed once Stop was pressed: "■ Stop" only
+    /// halts after the running node (an LLM or MCP call that can take minutes) finishes, but replacing the graph
+    /// raises the generation number, so all events the old worker sends late are dropped (RunBoard::apply).
     fn can_replace_graph(&self) -> bool {
         !self.board.running || self.board.cancelling
     }
 
-    /// 그래프를 바꾼 뒤 상태 줄에 덧붙일 말. 중지 중이던 실행을 버렸으면 알린다.
+    /// Text appended to the status line after replacing the graph. Mentions it when a run being stopped was discarded.
     fn abandoned_note(&self) -> &'static str {
         if self.board.running {
-            tr!(
-                " · 중지 중이던 실행의 결과는 버립니다",
-                " · results of the run being stopped are discarded"
-            )
+            tr!(" · results of the run being stopped are discarded")
         } else {
             ""
         }
@@ -619,17 +600,14 @@ impl CanvasApp {
     fn new_graph(&mut self, ctx: &egui::Context) {
         if !self.can_replace_graph() {
             self.set_status(
-                tr!(
-                    "실행 중에는 새로 만들 수 없습니다 (■ 중지를 누르면 바로 할 수 있습니다)",
-                    "Cannot create a new graph while running (press ■ Stop to do it right away)"
-                ),
+                tr!("Cannot create a new graph while running (press ■ Stop to do it right away)"),
                 true,
             );
             return;
         }
         let note = self.abandoned_note();
         self.install(Graph::default(), None, ctx);
-        self.set_status(trf!("새 그래프{note}", "New graph{note}"), false);
+        self.set_status(trf!("New graph{note}", note = note), false);
     }
 
     fn load(&mut self, p: PathBuf, ctx: &egui::Context) {
@@ -642,15 +620,15 @@ impl CanvasApp {
             .and_then(|s| Graph::from_json(&s))
         {
             Ok(g) => {
-                let msg = trf!("불러옴: {}{}", "Opened: {}{}", p.display(), self.abandoned_note());
+                let msg = trf!("Opened: {}{}", p.display(), self.abandoned_note());
                 self.install(g, Some(p), ctx);
                 self.set_status(msg, false);
             }
-            Err(e) => self.set_status(trf!("불러오기 실패: {e}", "Failed to open: {e}"), true),
+            Err(e) => self.set_status(trf!("Failed to open: {e}", e = e), true),
         }
     }
 
-    /// 열기·저장 대화상자. 열려 있는 파일의 폴더에서 시작한다.
+    /// Open and save dialog. Starts in the folder of the open file.
     #[cfg(not(test))]
     fn file_dialog(&self) -> rfd::FileDialog {
         let d = rfd::FileDialog::new().add_filter("canvas", &["json"]);
@@ -660,7 +638,7 @@ impl CanvasApp {
         }
     }
 
-    /// 열 파일을 고른다. 사용자가 취소하면 None. 단위 테스트에서는 창을 띄우지 않고 취소로 본다.
+    /// Picks the file to open. None if the user cancels. Unit tests open no window and treat it as cancelled.
     fn pick_open_path(&self) -> Option<PathBuf> {
         #[cfg(test)]
         {
@@ -672,7 +650,7 @@ impl CanvasApp {
         }
     }
 
-    /// 저장할 파일을 고른다. 사용자가 취소하면 None. 단위 테스트에서는 창을 띄우지 않고 취소로 본다.
+    /// Picks the file to save to. None if the user cancels. Unit tests open no window and treat it as cancelled.
     fn pick_save_path(&self) -> Option<PathBuf> {
         #[cfg(test)]
         {
@@ -693,14 +671,14 @@ impl CanvasApp {
         let Some(p) = target else { return };
         match self.graph.to_json().and_then(|s| write_atomic(&p, &s)) {
             Ok(()) => {
-                self.set_status(trf!("저장됨: {}", "Saved: {}", p.display()), false);
+                self.set_status(trf!("Saved: {}", p.display()), false);
                 self.path = Some(p);
             }
-            Err(e) => self.set_status(trf!("저장 실패: {e}", "Failed to save: {e}"), true),
+            Err(e) => self.set_status(trf!("Failed to save: {e}", e = e), true),
         }
     }
 
-    /// 프레임 끝에서 호출된다. 대화상자는 여기서만 연다.
+    /// Called at the end of the frame. Dialogs are opened only here.
     fn run_deferred(&mut self, d: Deferred, ctx: &egui::Context) {
         match d {
             Deferred::New => self.new_graph(ctx),
@@ -717,8 +695,10 @@ impl CanvasApp {
         }
     }
 
-    /// 화면 언어를 바꾸고 설정 파일에 저장한다(스튜디오와 같은 설정이라 다음 실행에도 쓴다).
-    /// 고정 문구는 다음 프레임부터 새 언어로 그려진다. 노드에 적힌 글자는 사용자 내용이라 그대로 둔다.
+    /// Switches the display language and saves it in the settings file (the same setting as the studio, so the next
+    /// start uses it too).
+    /// Fixed text is drawn in the new language from the next frame on. Text in the nodes is user content and stays as
+    /// it is.
     fn switch_language(&mut self, lang: Lang, ctx: &egui::Context) {
         if lang == i18n::current() {
             return;
@@ -729,7 +709,7 @@ impl CanvasApp {
         ctx.request_repaint();
     }
 
-    // ---------- 편집 ----------
+    // ---------- Editing ----------
 
     fn add_node(&mut self, kind: NodeKind) {
         let off = (self.graph.nodes.len() % 8) as f32 * 24.0;
@@ -751,8 +731,9 @@ impl CanvasApp {
                 self.selected = Some(copy);
                 self.set_status(
                     trf!(
-                        "노드 {id}을(를) {copy}(으)로 복제했습니다 (연결은 복사되지 않습니다)",
-                        "Duplicated node {id} as {copy} (connections are not copied)"
+                        "Duplicated node {id} as {copy} (connections are not copied)",
+                        id = id,
+                        copy = copy
                     ),
                     false,
                 );
@@ -763,13 +744,7 @@ impl CanvasApp {
 
     fn delete_node(&mut self, id: u32) {
         if self.board.running {
-            self.set_status(
-                tr!(
-                    "실행 중에는 노드를 삭제할 수 없습니다",
-                    "Cannot delete nodes while running"
-                ),
-                true,
-            );
+            self.set_status(tr!("Cannot delete nodes while running"), true);
             return;
         }
         self.graph.remove_node(id);
@@ -778,7 +753,7 @@ impl CanvasApp {
             self.selected = None;
         }
         if self.link_from == Some(id) {
-            self.link_from = None; // 선을 끌던 노드가 사라지면 연결 상태를 놓는다
+            self.link_from = None; // if the node a wire is dragged from disappears, the link state is released
         }
         self.fix_test_node();
     }
@@ -797,20 +772,20 @@ impl CanvasApp {
         match self.graph.auto_layout() {
             Ok(()) => {
                 self.want_fit = true;
-                self.set_status(tr!("자동 정렬했습니다", "Nodes rearranged"), false);
+                self.set_status(tr!("Nodes rearranged"), false);
             }
             Err(e) => self.set_status(e, true),
         }
     }
 
-    // ---------- 실행 ----------
+    // ---------- Running ----------
 
     fn begin_run(&mut self) -> Option<(u64, Arc<AtomicBool>)> {
         if self.board.running {
             return None;
         }
         if self.graph.nodes.is_empty() {
-            self.set_status(tr!("실행할 노드가 없습니다", "There are no nodes to run"), true);
+            self.set_status(tr!("There are no nodes to run"), true);
             return None;
         }
         if let Err(e) = self.graph.topo_order() {
@@ -827,13 +802,13 @@ impl CanvasApp {
             allow_mcp: self.allow_mcp,
             allow_custom_endpoint: self.allow_custom_endpoint,
             input_override: None,
-            // 상대 data_path는 열었거나 저장한 그래프 파일의 폴더 기준이다.
+            // A relative data_path starts from the folder of the graph file that was opened or saved.
             base_dir: self.path.as_deref().and_then(exec::base_dir_of),
             cancel: Some(cancel),
         }
     }
 
-    /// 워커 스레드에서 작업을 돌린다. 스레드를 못 만들면 실행 중 상태를 바로 되돌린다.
+    /// Runs a job on a worker thread. If the thread cannot be created, the running state is reset right away.
     fn spawn(&mut self, ctx: &egui::Context, generation: u64, job: impl FnOnce(&Reporter) + Send + 'static) {
         let rep = Reporter {
             tx: self.tx.clone(),
@@ -845,13 +820,7 @@ impl CanvasApp {
             .spawn(move || run_guarded(&rep, job));
         if let Err(e) = started {
             self.board.running = false;
-            self.set_status(
-                trf!(
-                    "실행 스레드를 만들지 못했습니다: {e}",
-                    "Could not start the run thread: {e}"
-                ),
-                true,
-            );
+            self.set_status(trf!("Could not start the run thread: {e}", e = e), true);
         }
     }
 
@@ -859,21 +828,15 @@ impl CanvasApp {
         let Some((generation, cancel)) = self.begin_run() else {
             return;
         };
-        self.set_status(tr!("실행 중…", "Running…"), false);
+        self.set_status(tr!("Running…"), false);
         let (g, opts) = (self.graph.clone(), self.run_options(cancel));
         self.spawn(ctx, generation, move |rep| flow_job(rep, &g, &opts));
     }
 
-    /// `only`가 Some이면 해당 케이스만, None이면 전부 순차 실행한다.
+    /// If `only` is Some, runs only that case; if None, runs all cases in order.
     fn run_tests(&mut self, only: Option<usize>, ctx: &egui::Context) {
         let Some(entry) = self.graph.test_node else {
-            self.set_status(
-                tr!(
-                    "테스트 입력으로 쓸 Text 노드가 없습니다",
-                    "There is no Text node to take the test input"
-                ),
-                true,
-            );
+            self.set_status(tr!("There is no Text node to take the test input"), true);
             return;
         };
         let count = self.graph.tests.len();
@@ -883,7 +846,7 @@ impl CanvasApp {
             None => (0..count).collect(),
         };
         if idxs.is_empty() {
-            self.set_status(tr!("테스트 케이스가 없습니다", "There are no test cases"), true);
+            self.set_status(tr!("There are no test cases"), true);
             return;
         }
         let Some((generation, cancel)) = self.begin_run() else {
@@ -894,7 +857,7 @@ impl CanvasApp {
                 *slot = None;
             }
         }
-        self.set_status(tr!("테스트 실행 중…", "Running tests…"), false);
+        self.set_status(tr!("Running tests…"), false);
         let cases: Vec<(usize, TestSpec)> = idxs.iter().map(|&i| (i, self.graph.tests[i].clone())).collect();
         let (g, opts) = (self.graph.clone(), self.run_options(cancel));
         self.spawn(ctx, generation, move |rep| tests_job(rep, &g, entry, &cases, &opts));
@@ -905,10 +868,7 @@ impl CanvasApp {
             self.cancel.store(true, Ordering::Relaxed);
             self.board.cancelling = true;
             self.set_status(
-                tr!(
-                    "중지하는 중… 실행 중인 노드가 끝나면 멈춥니다 (새로 만들기·열기는 바로 할 수 있습니다)",
-                    "Stopping… the run halts when the running node finishes (New and Open work right away)"
-                ),
+                tr!("Stopping… the run halts when the running node finishes (New and Open work right away)"),
                 false,
             );
         }
@@ -922,11 +882,11 @@ impl CanvasApp {
         }
     }
 
-    // ---------- 화면 ----------
+    // ---------- Screen ----------
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         if ctx.egui_wants_keyboard_input() {
-            return; // 글자를 입력하는 중에는 단축키를 쓰지 않는다
+            return; // no shortcuts while text is being typed
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::D)) {
             self.duplicate_selected();
@@ -941,36 +901,33 @@ impl CanvasApp {
     fn top_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let running = self.board.running;
         let replaceable = self.can_replace_graph();
-        let busy = tr!(
-            "실행 중에는 쓸 수 없습니다. ■ 중지를 누르면 바로 쓸 수 있습니다",
-            "Not available while running. Press ■ Stop to use it right away"
-        );
+        let busy = tr!("Not available while running. Press ■ Stop to use it right away");
         ui.horizontal_wrapped(|ui| {
             if ui
-                .add_enabled(replaceable, egui::Button::new(tr!("새로 만들기", "New")))
+                .add_enabled(replaceable, egui::Button::new(tr!("New")))
                 .on_disabled_hover_text(busy)
                 .clicked()
             {
                 self.deferred = Some(Deferred::New);
             }
             if ui
-                .add_enabled(replaceable, egui::Button::new(tr!("열기", "Open")))
+                .add_enabled(replaceable, egui::Button::new(tr!("Open")))
                 .on_disabled_hover_text(busy)
                 .clicked()
             {
                 self.deferred = Some(Deferred::Open);
             }
-            if ui.button(tr!("저장", "Save")).clicked() {
+            if ui.button(tr!("Save")).clicked() {
                 self.deferred = Some(Deferred::Save);
             }
-            if ui.button(tr!("다른 이름으로", "Save as")).clicked() {
+            if ui.button(tr!("Save as")).clicked() {
                 self.deferred = Some(Deferred::SaveAs);
             }
             ui.separator();
-            ui.menu_button(tr!("＋ 노드 추가", "＋ Add node"), |ui| {
+            ui.menu_button(tr!("＋ Add node"), |ui| {
                 let kinds: [(&str, NodeCtor); 5] = [
-                    (tr!("Text (입력)", "Text (input)"), NodeKind::new_text),
-                    (tr!("Prompt (컴파일러)", "Prompt (compiler)"), NodeKind::new_prompt),
+                    (tr!("Text (input)"), NodeKind::new_text),
+                    (tr!("Prompt (compiler)"), NodeKind::new_prompt),
                     ("LLM API", NodeKind::new_llm),
                     ("MCP Tool", NodeKind::new_mcp),
                     ("Output", || NodeKind::Output),
@@ -983,67 +940,44 @@ impl CanvasApp {
                 }
             });
             if ui
-                .add_enabled(self.selected.is_some(), egui::Button::new(tr!("복제", "Duplicate")))
-                .on_hover_text(tr!(
-                    "선택한 노드를 복제합니다 (Ctrl+D). 연결은 복사되지 않습니다",
-                    "Duplicates the selected node (Ctrl+D). Connections are not copied"
-                ))
+                .add_enabled(self.selected.is_some(), egui::Button::new(tr!("Duplicate")))
+                .on_hover_text(tr!("Duplicates the selected node (Ctrl+D). Connections are not copied"))
                 .clicked()
             {
                 self.duplicate_selected();
             }
             if ui
-                .button(tr!("자동 정렬", "Auto layout"))
-                .on_hover_text(tr!(
-                    "연결 순서대로 왼쪽에서 오른쪽으로 노드를 다시 배치합니다",
-                    "Rearranges the nodes from left to right in connection order"
-                ))
+                .button(tr!("Auto layout"))
+                .on_hover_text(tr!("Rearranges the nodes from left to right in connection order"))
                 .clicked()
             {
                 self.auto_layout();
             }
             if ui
-                .button(tr!("화면 맞춤", "Fit view"))
-                .on_hover_text(tr!(
-                    "모든 노드가 보이게 확대·이동합니다 (휠: 이동, Ctrl+휠: 확대/축소)",
-                    "Zooms and pans so that every node is visible (wheel: pan, Ctrl+wheel: zoom)"
-                ))
+                .button(tr!("Fit view"))
+                .on_hover_text(tr!("Zooms and pans so that every node is visible (wheel: pan, Ctrl+wheel: zoom)"))
                 .clicked()
             {
                 self.want_fit = true;
             }
             ui.separator();
-            ui.checkbox(&mut self.allow_mcp, tr!("MCP 실행 허용", "Allow MCP execution"))
-                .on_hover_text(tr!(
-                    "MCP 노드는 지정한 명령을 로컬에서 실행합니다. 신뢰하는 그래프에서만 켜세요.",
-                    "MCP nodes run their command on this computer. Turn this on only for graphs you trust."
-                ));
+            ui.checkbox(&mut self.allow_mcp, tr!("Allow MCP execution"))
+                .on_hover_text(tr!("MCP nodes run their command on this computer. Turn this on only for graphs you trust."));
             ui.checkbox(
                 &mut self.allow_custom_endpoint,
-                tr!("사용자 지정 엔드포인트 허용", "Allow custom endpoint"),
+                tr!("Allow custom endpoint"),
             )
-            .on_hover_text(tr!(
-                "LLM 노드의 Base URL이 제공자 기본 주소와 다르면 API 키가 그 주소로 전송됩니다. \
-                 신뢰하는 그래프에서만 켜세요. https만 허용하며 localhost는 http도 됩니다.",
-                "If an LLM node's Base URL differs from the provider's default address, the API key is sent \
-                 to that address. Turn this on only for graphs you trust. Only https is allowed, plus http \
-                 for localhost."
-            ));
+            .on_hover_text(tr!("If an LLM node's Base URL differs from the provider's default address, the API key is sent to that address. Turn this on only for graphs you trust. Only https is allowed, plus http for localhost."));
             if running {
                 if ui
-                    .add_enabled(!self.board.cancelling, egui::Button::new(tr!("■ 중지", "■ Stop")))
-                    .on_hover_text(tr!(
-                        "실행 중인 노드가 끝나면 남은 노드를 건너뛰고 멈춥니다. 누른 뒤에는 기다리지 않고 \
-                         새로 만들기·열기를 할 수 있습니다",
-                        "Stops once the running node finishes and skips the remaining nodes. After pressing \
-                         it you can use New and Open without waiting"
-                    ))
+                    .add_enabled(!self.board.cancelling, egui::Button::new(tr!("■ Stop")))
+                    .on_hover_text(tr!("Stops once the running node finishes and skips the remaining nodes. After pressing it you can use New and Open without waiting"))
                     .clicked()
                 {
                     self.request_cancel();
                 }
                 ui.spinner();
-            } else if ui.button(tr!("▶ 전체 실행", "▶ Run all")).clicked() {
+            } else if ui.button(tr!("▶ Run all")).clicked() {
                 self.run_flow(ctx);
             }
             ui.separator();
@@ -1054,7 +988,7 @@ impl CanvasApp {
             } else {
                 ui.visuals().text_color()
             };
-            // 상태 줄이 여러 줄로 커지지 않게 한 줄로 줄이고, 전체 문구는 마우스를 올리면 보여 준다.
+            // Squeeze the status line into one line so it does not grow; the full text shows on hover.
             let one_line = self.status.split_whitespace().collect::<Vec<_>>().join(" ");
             let shown = clip(&one_line, 140);
             let label = ui.label(RichText::new(&shown).color(color));
@@ -1064,11 +998,11 @@ impl CanvasApp {
         });
     }
 
-    /// 상단 막대의 언어 선택. 고르면 프레임 끝에서 바꾼다(`Deferred::Language`).
+    /// Language picker in the top bar. A choice is applied at the end of the frame (`Deferred::Language`).
     fn language_picker(&mut self, ui: &mut egui::Ui) {
         let current = i18n::current();
         let mut picked = current;
-        ui.label(tr!("언어", "Language"));
+        ui.label(tr!("Language"));
         egui::ComboBox::from_id_salt("canvas_lang")
             .selected_text(current.native_name())
             .show_ui(ui, |ui| {
@@ -1077,10 +1011,7 @@ impl CanvasApp {
                 }
             })
             .response
-            .on_hover_text(tr!(
-                "화면 언어 (다음 실행에도 쓰도록 설정에 저장합니다)",
-                "Display language (saved in the settings for next time)"
-            ));
+            .on_hover_text(tr!("Display language (saved in the settings for next time)"));
         if picked != current {
             self.deferred = Some(Deferred::Language(picked));
         }
@@ -1107,14 +1038,14 @@ impl CanvasApp {
             ui.painter().text(
                 area.center(),
                 Align2::CENTER_CENTER,
-                tr!("‘＋ 노드 추가’로 시작하세요", "Start with ‘＋ Add node’"),
+                tr!("Start with ‘＋ Add node’"),
                 FontId::proportional(16.0),
                 Color32::from_gray(120),
             );
         }
     }
 
-    /// Scene 안(장면 좌표)에서 노드·간선·포트를 그리고 상호작용을 처리한다.
+    /// Draws the nodes, edges and ports inside the Scene (scene coordinates) and handles their interaction.
     fn draw(&mut self, ui: &mut egui::Ui) {
         paint_grid(ui);
         let running = self.board.running;
@@ -1127,7 +1058,7 @@ impl CanvasApp {
         let mut delete = None;
         let mut duplicate = None;
 
-        // 1) 노드 몸통: 끌어서 옮기고, 눌러서 선택하고, 우클릭 메뉴를 연다.
+        // 1) Node bodies: drag to move, click to select, right-click for the menu.
         for (idx, view) in views.iter().enumerate() {
             let id = self.graph.nodes[idx].id;
             let r = ui.interact(
@@ -1136,7 +1067,7 @@ impl CanvasApp {
                 Sense::click_and_drag(),
             );
             if r.dragged() {
-                let d = r.drag_delta(); // 확대 배율이 이미 반영된 장면 좌표 이동량
+                let d = r.drag_delta(); // movement in scene coordinates, with the zoom already applied
                 let n = &mut self.graph.nodes[idx];
                 n.pos = [n.pos[0] + d.x, n.pos[1] + d.y];
             }
@@ -1144,14 +1075,11 @@ impl CanvasApp {
                 self.selected = Some(id);
             }
             r.context_menu(|ui| {
-                if ui.button(tr!("복제", "Duplicate")).clicked() {
+                if ui.button(tr!("Duplicate")).clicked() {
                     duplicate = Some(id);
                     ui.close();
                 }
-                if ui
-                    .add_enabled(!running, egui::Button::new(tr!("삭제", "Delete")))
-                    .clicked()
-                {
+                if ui.add_enabled(!running, egui::Button::new(tr!("Delete"))).clicked() {
                     delete = Some(id);
                     ui.close();
                 }
@@ -1161,7 +1089,7 @@ impl CanvasApp {
             }
         }
 
-        // 2) 옮긴 위치로 간선과 노드를 그리고, 포트와 간선 삭제 버튼의 상호작용을 처리한다.
+        // 2) Draw the edges and nodes at their new positions, and handle the ports and the edge delete buttons.
         let rects: HashMap<u32, Rect> = self.graph.nodes.iter().map(|n| (n.id, node_rect(n.pos))).collect();
         let pointer = pointer_in_scene(ui);
         let painter = ui.painter().clone();
@@ -1209,7 +1137,7 @@ impl CanvasApp {
                 FontId::proportional(11.0),
                 Color32::WHITE,
             );
-            if r.on_hover_text(tr!("연결 삭제", "Delete connection")).clicked() {
+            if r.on_hover_text(tr!("Delete connection")).clicked() {
                 remove_edge = Some(i);
             }
         }
@@ -1262,7 +1190,7 @@ impl CanvasApp {
 
             if node.kind.has_input() {
                 painter.circle_filled(rect.left_center(), PORT_R, Color32::from_gray(200));
-                // 선을 끄는 중이면 놓을 수 있는 노드를 표시한다.
+                // While a wire is being dragged, highlight the node it can be dropped on.
                 if let (Some(from), Some(p)) = (self.link_from, pointer)
                     && from != node.id
                     && rect.expand(10.0).contains(p)
@@ -1317,8 +1245,9 @@ impl CanvasApp {
             );
         }
 
-        // 3) 반복문이 끝난 뒤에 구조를 바꾼다.
-        // 버튼을 뗐는데 연결 상태가 남았거나 출발 노드가 없어졌다면 놓는다(그대로 두면 상태가 굳는다).
+        // 3) Change the structure after the loops.
+        // If the button was released but the link state remains, or its source node is gone, release it (otherwise
+        // the state would get stuck).
         if self.link_from.is_some_and(|id| !rects.contains_key(&id)) || !ui.input(|i| i.pointer.any_down()) {
             self.link_from = None;
         }
@@ -1343,23 +1272,10 @@ impl CanvasApp {
 
     fn inspector(&mut self, ui: &mut egui::Ui) {
         let Some(id) = self.selected else {
-            ui.label(tr!(
-                "노드를 선택하면 설정이 표시됩니다.\n\n\
-                 • 출력 포트(●)를 입력 쪽 노드로 드래그해 연결\n\
-                 • 간선 중앙의 × 클릭으로 연결 삭제\n\
-                 • 우클릭 메뉴 또는 Delete로 삭제, Ctrl+D로 복제\n\
-                 • 빈 곳 드래그·휠로 이동, Ctrl+휠로 확대/축소\n\
-                 • '화면 맞춤', '자동 정렬' 버튼으로 배치 정리",
-                "Select a node to see its settings.\n\n\
-                 • Drag an output port (●) onto a node to connect them\n\
-                 • Click the × in the middle of an edge to delete it\n\
-                 • Delete with the right-click menu or Delete, duplicate with Ctrl+D\n\
-                 • Drag empty space or use the wheel to pan, Ctrl+wheel to zoom\n\
-                 • Tidy up with the 'Fit view' and 'Auto layout' buttons"
-            ));
+            ui.label(tr!("Select a node to see its settings.\n\n• Drag an output port (●) onto a node to connect them\n• Click the × in the middle of an edge to delete it\n• Delete with the right-click menu or Delete, duplicate with Ctrl+D\n• Drag empty space or use the wheel to pan, Ctrl+wheel to zoom\n• Tidy up with the 'Fit view' and 'Auto layout' buttons"));
             if !self.board.final_text.is_empty() {
                 ui.separator();
-                ui.label(RichText::new(tr!("최종 출력", "Final output")).strong());
+                ui.label(RichText::new(tr!("Final output")).strong());
                 readonly_box(ui, "final_out", &self.board.final_text);
             }
             return;
@@ -1373,31 +1289,26 @@ impl CanvasApp {
         let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == id) else {
             return;
         };
-        // 노드마다 입력칸 ID가 달라야 한다. 같으면 모든 노드가 하나의 실행 취소 기록을 공유해
-        // 다른 노드에서 Ctrl+Z를 누르면 그 노드의 글자가 되살아난다.
+        // Each node needs its own input field IDs. Otherwise all nodes would share one undo history, and pressing
+        // Ctrl+Z in another node would bring back that node's text.
         ui.push_id(id, |ui| {
             egui::ScrollArea::vertical().id_salt("inspector").show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(tr!("이름", "Name"));
+                    ui.label(tr!("Name"));
                     ui.text_edit_singleline(&mut node.title);
                 });
                 ui.label(
-                    RichText::new(trf!(
-                        "종류: {}   입력: {}",
-                        "Kind: {}   Inputs: {}",
-                        node.kind.label(),
-                        if ups.is_empty() {
-                            tr!("없음", "none").into()
+                    RichText::new(trf!("Kind: {}   Inputs: {}", node.kind.label(), if ups.is_empty() {
+                            tr!("none").into()
                         } else {
                             ups.join(", ")
-                        }
-                    ))
+                        }))
                     .weak(),
                 );
                 ui.separator();
                 match &mut node.kind {
                     NodeKind::Text { text } => {
-                        ui.label(tr!("텍스트", "Text"));
+                        ui.label(tr!("Text"));
                         ui.add(
                             egui::TextEdit::multiline(text)
                                 .desired_rows(6)
@@ -1412,23 +1323,20 @@ impl CanvasApp {
                         format,
                         data_path,
                     } => {
-                        ui.label(tr!(
-                            "지시문 ({{input}} = 업스트림 출력)",
-                            "Instruction ({{input}} = upstream output)"
-                        ));
+                        ui.label(tr!("Instruction ({{input}} = upstream output)"));
                         ui.add(
                             egui::TextEdit::multiline(role)
                                 .desired_rows(5)
                                 .desired_width(f32::INFINITY),
                         );
-                        ui.label(tr!("제약 조건 (한 줄에 하나)", "Constraints (one per line)"));
+                        ui.label(tr!("Constraints (one per line)"));
                         ui.add(
                             egui::TextEdit::multiline(constraints)
                                 .desired_rows(4)
                                 .desired_width(f32::INFINITY),
                         );
                         ui.horizontal(|ui| {
-                            ui.label(tr!("필수 필드", "Required fields"));
+                            ui.label(tr!("Required fields"));
                             ui.text_edit_singleline(fields);
                         });
                         ui.horizontal(|ui| {
@@ -1448,14 +1356,11 @@ impl CanvasApp {
                                 });
                         });
                         ui.horizontal(|ui| {
-                            ui.label(tr!("데이터 파일", "Data file"));
+                            ui.label(tr!("Data file"));
                             ui.text_edit_singleline(data_path);
                         });
                         ui.label(
-                            RichText::new(tr!(
-                                "상대 경로는 그래프 파일이 있는 폴더 기준입니다",
-                                "Relative paths start from the graph file's folder"
-                            ))
+                            RichText::new(tr!("Relative paths start from the graph file's folder"))
                             .weak(),
                         );
                     }
@@ -1480,28 +1385,23 @@ impl CanvasApp {
                         if *provider != before {
                             *model = provider.default_model().into();
                             *key_env = provider.default_key_env().into();
-                            // 제공자마다 받는 temperature 범위가 다르다(Anthropic은 0~1).
+                            // Each provider accepts a different temperature range (Anthropic takes 0~1).
                             if let Some(t) = temperature.as_mut() {
                                 *t = provider.clamp_temperature(*t);
                             }
                         }
                         ui.horizontal(|ui| {
-                            ui.label(tr!("모델", "Model"));
+                            ui.label(tr!("Model"));
                             ui.text_edit_singleline(model);
                         });
                         ui.horizontal(|ui| {
-                            ui.label(tr!("키 환경변수", "Key env var"));
+                            ui.label(tr!("Key env var"));
                             ui.text_edit_singleline(key_env);
                         });
                         if !exec::valid_key_env(key_env.trim()) {
                             ui.colored_label(
                                 RED,
-                                trf!(
-                                    "키 환경변수 이름은 영문 대문자·숫자·밑줄이고 _API_KEY로 끝나야 합니다 (예: {})",
-                                    "The key variable name must use uppercase letters, digits and underscores \
-                                     and end with _API_KEY (e.g. {})",
-                                    provider.default_key_env()
-                                ),
+                                trf!("The key variable name must use uppercase letters, digits and underscores and end with _API_KEY (e.g. {})", provider.default_key_env()),
                             );
                         }
                         ui.horizontal(|ui| {
@@ -1523,7 +1423,7 @@ impl CanvasApp {
                                 .prefix("max_tokens "),
                         );
                         let mut use_t = temperature.is_some();
-                        ui.checkbox(&mut use_t, tr!("temperature 지정", "Set temperature"));
+                        ui.checkbox(&mut use_t, tr!("Set temperature"));
                         match (use_t, temperature.is_some()) {
                             (true, false) => *temperature = Some(0.7),
                             (false, true) => *temperature = None,
@@ -1534,15 +1434,12 @@ impl CanvasApp {
                         }
                         ui.checkbox(
                             dry_run,
-                            tr!("Dry-run (네트워크 호출 안 함)", "Dry-run (no network calls)"),
+                            tr!("Dry-run (no network calls)"),
                         );
                         if !*dry_run {
                             ui.colored_label(
                                 AMBER,
-                                tr!(
-                                    "실제 API가 호출되며 비용이 발생합니다.",
-                                    "The real API will be called and you will be charged."
-                                ),
+                                tr!("The real API will be called and you will be charged."),
                             );
                         }
                     }
@@ -1553,28 +1450,22 @@ impl CanvasApp {
                         arguments,
                     } => {
                         ui.horizontal(|ui| {
-                            ui.label(tr!("명령", "Command"));
+                            ui.label(tr!("Command"));
                             ui.text_edit_singleline(command);
                         });
                         ui.horizontal(|ui| {
-                            ui.label(tr!("인자", "Arguments"));
+                            ui.label(tr!("Arguments"));
                             ui.text_edit_singleline(args);
                         });
                         ui.label(
-                            RichText::new(tr!(
-                                "예: 명령 cmd / 인자 /c npx -y 패키지명 (Windows의 npx)",
-                                "e.g. command cmd / arguments /c npx -y package-name (npx on Windows)"
-                            ))
+                            RichText::new(tr!("e.g. command cmd / arguments /c npx -y package-name (npx on Windows)"))
                             .weak(),
                         );
                         ui.horizontal(|ui| {
-                            ui.label(tr!("도구 이름", "Tool name"));
+                            ui.label(tr!("Tool name"));
                             ui.text_edit_singleline(tool);
                         });
-                        ui.label(tr!(
-                            "arguments (JSON, {{input}} 치환)",
-                            "arguments (JSON, {{input}} is replaced)"
-                        ));
+                        ui.label(tr!("arguments (JSON, {{input}} is replaced)"));
                         ui.add(
                             egui::TextEdit::multiline(arguments)
                                 .code_editor()
@@ -1583,10 +1474,7 @@ impl CanvasApp {
                         );
                     }
                     NodeKind::Output => {
-                        ui.label(tr!(
-                            "연결된 입력을 최종 결과로 수집합니다.",
-                            "Collects the connected inputs as the final result."
-                        ));
+                        ui.label(tr!("Collects the connected inputs as the final result."));
                     }
                 }
                 if let Some(run) = self.board.runs.get(&id) {
@@ -1596,7 +1484,7 @@ impl CanvasApp {
                             ui.colored_label(RED, e);
                         }
                         RunState::Done { ms, note } => {
-                            ui.label(RichText::new(trf!("출력 ({ms} ms)", "Output ({ms} ms)")).strong());
+                            ui.label(RichText::new(trf!("Output ({ms} ms)", ms = ms)).strong());
                             if let Some(n) = note {
                                 ui.colored_label(
                                     if n.starts_with('⚠') {
@@ -1619,9 +1507,9 @@ impl CanvasApp {
     fn test_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let running = self.board.running;
         ui.horizontal(|ui| {
-            ui.label(RichText::new(tr!("프롬프트 테스트", "Prompt tests")).strong());
+            ui.label(RichText::new(tr!("Prompt tests")).strong());
             ui.separator();
-            ui.label(tr!("입력 주입 노드:", "Input node:"));
+            ui.label(tr!("Input node:"));
             let texts: Vec<(u32, String)> = self
                 .graph
                 .nodes
@@ -1632,9 +1520,7 @@ impl CanvasApp {
             let cur = texts
                 .iter()
                 .find(|(i, _)| Some(*i) == self.graph.test_node)
-                .map_or(tr!("(Text 노드 없음)", "(no Text node)").to_string(), |(_, t)| {
-                    t.clone()
-                });
+                .map_or(tr!("(no Text node)").to_string(), |(_, t)| t.clone());
             egui::ComboBox::from_id_salt("test_node")
                 .selected_text(cur)
                 .show_ui(ui, |ui| {
@@ -1643,15 +1529,15 @@ impl CanvasApp {
                     }
                 });
             if ui
-                .add_enabled(!running, egui::Button::new(tr!("▶ 전체 테스트", "▶ Run all tests")))
+                .add_enabled(!running, egui::Button::new(tr!("▶ Run all tests")))
                 .clicked()
             {
                 self.run_tests(None, ctx);
             }
-            if ui.button(tr!("＋ 케이스", "＋ Case")).clicked() {
+            if ui.button(tr!("＋ Case")).clicked() {
                 let n = self.graph.tests.len() + 1;
                 self.graph.tests.push(TestSpec {
-                    name: trf!("케이스 {n}", "Case {n}"),
+                    name: trf!("Case {n}", n = n),
                     ..TestSpec::default()
                 });
                 self.board.test_results.push(None);
@@ -1659,7 +1545,7 @@ impl CanvasApp {
             let pass = self.board.test_results.iter().flatten().filter(|r| r.pass).count();
             let done = self.board.test_results.iter().flatten().count();
             if done > 0 {
-                ui.label(trf!("{pass}/{done} 통과", "{pass}/{done} passed"));
+                ui.label(trf!("{pass}/{done} passed", pass = pass, done = done));
             }
         });
         ui.separator();
@@ -1676,17 +1562,14 @@ impl CanvasApp {
                                 ui.add(egui::TextEdit::singleline(&mut t.name).desired_width(140.0));
                                 if ui
                                     .add_enabled(!running, egui::Button::new("▶"))
-                                    .on_hover_text(tr!("이 케이스만 실행", "Run only this case"))
+                                    .on_hover_text(tr!("Run only this case"))
                                     .clicked()
                                 {
                                     run_one = Some(i);
                                 }
                                 if ui
                                     .add_enabled(!running, egui::Button::new("🗑"))
-                                    .on_hover_text(tr!(
-                                        "케이스 삭제 (실행 중에는 삭제할 수 없습니다)",
-                                        "Delete the case (not possible while running)"
-                                    ))
+                                    .on_hover_text(tr!("Delete the case (not possible while running)"))
                                     .clicked()
                                 {
                                     remove = Some(i);
@@ -1707,15 +1590,12 @@ impl CanvasApp {
                                 egui::TextEdit::multiline(&mut t.input)
                                     .desired_rows(2)
                                     .desired_width(f32::INFINITY)
-                                    .hint_text(tr!("테스트 프롬프트 입력", "Test prompt input")),
+                                    .hint_text(tr!("Test prompt input")),
                             );
                             ui.add(
                                 egui::TextEdit::singleline(&mut t.expect)
                                     .desired_width(f32::INFINITY)
-                                    .hint_text(tr!(
-                                        "통과 조건: 최종 출력에 포함될 문자열 (선택)",
-                                        "Pass condition: text the final output must contain (optional)"
-                                    )),
+                                    .hint_text(tr!("Pass condition: text the final output must contain (optional)")),
                             );
                         });
                         ui.vertical(|ui| {
@@ -1740,7 +1620,7 @@ impl CanvasApp {
         }
     }
 
-    /// 한 프레임의 전체 화면. eframe과 단위 테스트가 같은 코드를 쓴다.
+    /// The whole screen for one frame. eframe and the unit tests use the same code.
     fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.poll();
@@ -1758,7 +1638,7 @@ impl CanvasApp {
             .size_range(260.0..=620.0)
             .show(ui, |ui| self.inspector(ui));
         egui::CentralPanel::default().show(ui, |ui| self.canvas(ui));
-        // 파일 대화상자, 그래프 교체, 언어 전환은 모든 위젯 처리가 끝난 뒤 실행한다.
+        // File dialogs, graph replacement and language switches run after all widgets are processed.
         if let Some(d) = self.deferred.take() {
             self.run_deferred(d, &ctx);
         }
@@ -1771,7 +1651,7 @@ impl eframe::App for CanvasApp {
     }
 }
 
-/// Scene 안에서 마우스 위치를 장면 좌표로 바꾼다.
+/// Converts the mouse position inside the Scene to scene coordinates.
 fn pointer_in_scene(ui: &egui::Ui) -> Option<Pos2> {
     let p = ui.input(|i| i.pointer.interact_pos())?;
     Some(match ui.ctx().layer_transform_from_global(ui.layer_id()) {
@@ -1780,9 +1660,9 @@ fn pointer_in_scene(ui: &egui::Ui) -> Option<Pos2> {
     })
 }
 
-/// 보이는 영역에만 점 격자를 그린다. 멀리 줄이면 점 간격을 넓혀 개수를 제한한다.
-/// 점 위치는 정수 번호로 계산한다. `x += step`로 돌리면 좌표가 아주 클 때(f32 간격이 step보다 커질 때)
-/// 값이 더 늘지 않아 영원히 도는 문제가 생긴다.
+/// Draws the dot grid only in the visible area. When zoomed far out, the dot spacing grows to limit the count.
+/// Dot positions are computed from integer indices. A loop with `x += step` would never end for very large
+/// coordinates (when the f32 spacing gets larger than step), because the value would stop growing.
 fn paint_grid(ui: &egui::Ui) {
     let vis = ui.clip_rect();
     let mut step = 28.0_f32;
@@ -1790,7 +1670,7 @@ fn paint_grid(ui: &egui::Ui) {
         step *= 2.0;
     }
     let (x0, y0) = ((vis.left() / step).floor() * step, (vis.top() / step).floor() * step);
-    // 숫자가 아니거나 무한대면 0이 되어 아무것도 그리지 않는다.
+    // NaN or infinity becomes 0, so nothing is drawn.
     let count = |from: f32, to: f32| ((to - from) / step).ceil().max(0.0) as usize;
     let painter = ui.painter();
     let dot = Color32::from_gray(48);
@@ -1892,23 +1772,23 @@ mod tests {
         }
     }
 
-    // ---------- 실행 상태 판 ----------
+    // ---------- Run board ----------
 
     #[test]
     fn stale_generation_messages_are_dropped() {
         let mut b = RunBoard::default();
         let g1 = b.begin().unwrap();
-        assert!(b.begin().is_none(), "실행 중에는 새 실행을 시작할 수 없다");
+        assert!(b.begin().is_none(), "a new run cannot start while one is running");
         assert!(b.apply(g1 + 1, Msg::Node(done(1))).is_none());
-        assert!(b.runs.is_empty(), "다른 세대의 이벤트는 반영하지 않는다");
+        assert!(b.runs.is_empty(), "events of another generation are not applied");
         b.apply(g1, Msg::Node(done(1)));
         assert_eq!(b.runs[&1].output, "out1");
-        // 늦게 온 이전 세대의 Finished가 지금 실행을 끝내면 안 된다.
-        assert!(b.apply(g1 - 1, Msg::Finished(Done::Error("옛 실행".into()))).is_none());
+        // A late Finished from an earlier generation must not end the current run.
+        assert!(b.apply(g1 - 1, Msg::Finished(Done::Error("old run".into()))).is_none());
         assert!(b.running);
-        let (text, err) = b.apply(g1, Msg::Finished(Done::Error("끝".into()))).unwrap();
-        assert_eq!((text.as_str(), err, b.running), ("끝", true, false));
-        assert!(b.begin().is_some(), "끝난 뒤에는 다시 시작할 수 있다");
+        let (text, err) = b.apply(g1, Msg::Finished(Done::Error("end".into()))).unwrap();
+        assert_eq!((text.as_str(), err, b.running), ("end", true, false));
+        assert!(b.begin().is_some(), "after it ends, a new run can start");
     }
 
     #[test]
@@ -1917,18 +1797,21 @@ mod tests {
         let g1 = b.begin().unwrap();
         b.apply(g1, Msg::Node(done(1)));
         b.test_results = vec![Some(passed())];
-        b.final_text = "이전 결과".into();
+        b.final_text = "previous result".into();
         b.reset(3);
         assert!(!b.running && !b.cancelling && b.runs.is_empty() && b.final_text.is_empty());
         assert_eq!(b.test_results.len(), 3);
         assert!(b.test_results.iter().all(Option::is_none));
-        // 이전 실행의 늦은 이벤트는 새 그래프에 적용되지 않는다(새 그래프는 노드 id가 1부터 다시 시작한다).
+        // Late events of the previous run are not applied to the new graph (its node ids start from 1 again).
         assert!(b.apply(g1, Msg::Node(done(1))).is_none() && b.runs.is_empty());
-        assert!(b.apply(g1, Msg::Finished(Done::Error("늦음".into()))).is_none());
+        assert!(b.apply(g1, Msg::Finished(Done::Error("late".into()))).is_none());
         let g2 = b.begin().unwrap();
         assert!(g2 > g1);
         assert!(b.apply(g1, Msg::Finished(Done::Tests { cancelled: false })).is_none());
-        assert!(b.running, "옛 세대의 끝 신호가 새 실행을 멈추면 안 된다");
+        assert!(
+            b.running,
+            "the end signal of an old generation must not stop the new run"
+        );
     }
 
     #[test]
@@ -1940,27 +1823,27 @@ mod tests {
             &mut runs,
             Event::Done {
                 id: 1,
-                output: "결과".into(),
+                output: "result".into(),
                 ms: 7,
-                note: Some("토큰 1→2".into()),
+                note: Some("tokens 1→2".into()),
             },
         );
         assert_eq!(
             runs[&1].state,
             RunState::Done {
                 ms: 7,
-                note: Some("토큰 1→2".into())
+                note: Some("tokens 1→2".into())
             }
         );
-        assert_eq!(runs[&1].output, "결과");
+        assert_eq!(runs[&1].output, "result");
         apply_event(
             &mut runs,
             Event::Failed {
                 id: 1,
-                error: "실패".into(),
+                error: "failure".into(),
             },
         );
-        assert_eq!(runs[&1].state, RunState::Failed("실패".into()));
+        assert_eq!(runs[&1].state, RunState::Failed("failure".into()));
         assert!(runs[&1].output.is_empty());
         apply_event(&mut runs, Event::Skipped(2));
         assert_eq!(runs[&2].state, RunState::Skipped);
@@ -1968,41 +1851,57 @@ mod tests {
 
     #[test]
     fn status_lines() {
-        let mut rep = RunReport {
-            total_ms: 12,
-            ..RunReport::default()
-        };
-        assert_eq!(flow_status(&rep), ("완료 (12 ms)".to_string(), false));
-        rep.notes.insert(3, "토큰 1→2".into());
-        assert_eq!(
-            flow_status(&rep).0,
-            "완료 (12 ms)",
-            "경고가 아닌 메모는 상태 줄에 올리지 않는다"
-        );
-        rep.notes.insert(4, "⚠ 출력 토큰 한도(10)에서 잘림 (length)".into());
-        let (text, err) = flow_status(&rep);
-        assert!(text.contains("경고 1건") && !err, "{text}");
-        rep.errors.insert(2, "x".into());
-        assert_eq!(flow_status(&rep), ("1개 노드 실패".to_string(), true));
-        rep.cancelled = true;
-        rep.skipped = vec![5, 6];
-        assert_eq!(
-            flow_status(&rep),
-            ("중지됨 · 노드 2개 건너뜀 · 1개 노드 실패".to_string(), true)
-        );
-        rep.errors.clear();
-        assert_eq!(flow_status(&rep), ("중지됨 · 노드 2개 건너뜀".to_string(), false));
+        with_lang(Lang::Ko, || {
+            let mut rep = RunReport {
+                total_ms: 12,
+                ..RunReport::default()
+            };
+            let done = format!(ko_text!("Done ({ms} ms)"), ms = 12);
+            assert_eq!(flow_status(&rep), (done.clone(), false));
+            rep.notes.insert(3, "tokens 1→2".into());
+            assert_eq!(
+                flow_status(&rep).0,
+                done,
+                "notes that are not warnings do not go to the status line"
+            );
+            rep.notes
+                .insert(4, "⚠ Truncated at the output token limit (10) (length)".into());
+            let (text, err) = flow_status(&rep);
+            let warned = format!(
+                ko_text!("Done ({ms} ms) · ⚠ {warns} {word} (see the node status)"),
+                ms = 12,
+                warns = 1,
+                word = ko_text!("warning")
+            );
+            assert!(text == warned && !err, "{text}");
+            rep.errors.insert(2, "x".into());
+            let failed = format!(
+                ko_text!("{failed} {nodes} failed"),
+                failed = 1,
+                nodes = ko_text!("node")
+            );
+            assert_eq!(flow_status(&rep), (failed.clone(), true));
+            rep.cancelled = true;
+            rep.skipped = vec![5, 6];
+            let stopped = format!(
+                ko_text!("Stopped · {skipped} {nodes} skipped"),
+                skipped = 2,
+                nodes = ko_text!("nodes")
+            );
+            assert_eq!(flow_status(&rep), (format!("{stopped} · {failed}"), true));
+            rep.errors.clear();
+            assert_eq!(flow_status(&rep), (stopped, false));
 
-        let bad = TestResult {
-            pass: false,
-            ..passed()
-        };
-        let results = vec![Some(passed()), Some(bad), None];
-        assert_eq!(tests_status(&results, false), ("테스트 1/2 통과".to_string(), true));
-        assert_eq!(
-            tests_status(&results[..1], true),
-            ("테스트 중지됨 (1/1 통과)".to_string(), false)
-        );
+            let bad = TestResult {
+                pass: false,
+                ..passed()
+            };
+            let results = vec![Some(passed()), Some(bad), None];
+            let passed_1_of_2 = format!(ko_text!("Tests: {pass}/{done} passed"), pass = 1, done = 2);
+            assert_eq!(tests_status(&results, false), (passed_1_of_2, true));
+            let stopped_1_of_1 = format!(ko_text!("Tests stopped ({pass}/{done} passed)"), pass = 1, done = 1);
+            assert_eq!(tests_status(&results[..1], true), (stopped_1_of_1, false));
+        });
     }
 
     #[test]
@@ -2015,28 +1914,28 @@ mod tests {
         };
         let ok = status_view(Some(&run(RunState::Done { ms: 12, note: None })));
         assert_eq!((ok.badge.as_str(), ok.border, ok.tooltip), ("✔ 12 ms", GREEN, None));
-        let warn_note = "⚠ 출력 토큰 한도(1024)에서 잘림 (max_tokens) · 토큰 812→403";
+        let warn_note = "⚠ Truncated at the output token limit (1024) (max_tokens) · tokens 812→403";
         let warned = status_view(Some(&run(RunState::Done {
             ms: 480,
             note: Some(warn_note.into()),
         })));
-        assert_eq!(warned.border, AMBER, "경고가 있으면 테두리가 노란색");
+        assert_eq!(warned.border, AMBER, "a warning makes the border yellow");
         assert_eq!(
             warned.tooltip.as_deref(),
             Some(warn_note),
-            "전체 문구는 마우스를 올리면 보인다"
+            "the full text shows on hover"
         );
         assert!(warned.detail.chars().count() <= DETAIL_CHARS + 1 && warned.detail.ends_with('…'));
         let usage = status_view(Some(&run(RunState::Done {
             ms: 5,
-            note: Some("토큰 812→403".into()),
+            note: Some("tokens 812→403".into()),
         })));
-        assert_eq!((usage.border, usage.detail.as_str()), (GREEN, "토큰 812→403"));
-        let failed = status_view(Some(&run(RunState::Failed("첫 줄 오류\n둘째 줄".into()))));
-        assert_eq!(failed.badge, "✖ 실패");
-        assert_eq!(failed.detail, "첫 줄 오류");
-        assert_eq!(failed.tooltip.as_deref(), Some("첫 줄 오류\n둘째 줄"));
-        assert_eq!(status_view(Some(&run(RunState::Skipped))).badge, "건너뜀");
+        assert_eq!((usage.border, usage.detail.as_str()), (GREEN, "tokens 812→403"));
+        let failed = status_view(Some(&run(RunState::Failed("first line error\nsecond line".into()))));
+        assert_eq!(failed.badge, "✖ Failed");
+        assert_eq!(failed.detail, "first line error");
+        assert_eq!(failed.tooltip.as_deref(), Some("first line error\nsecond line"));
+        assert_eq!(status_view(Some(&run(RunState::Skipped))).badge, "Skipped");
         assert_eq!(status_view(Some(&run(RunState::Running))).border, AMBER);
     }
 
@@ -2045,34 +1944,41 @@ mod tests {
         let mut g = Graph::default();
         let a = g.add(NodeKind::new_mcp(), [0.0; 2]);
         let b = g.add(NodeKind::new_mcp(), [0.0; 2]);
-        g.nodes[0].title = "첫째".into();
-        g.nodes[1].title = "둘째".into();
+        g.nodes[0].title = "first".into();
+        g.nodes[1].title = "second".into();
         let mut rep = RunReport {
-            final_text: "결과 dry-run 입니다".into(),
+            final_text: "the result is dry-run".into(),
             total_ms: 9,
             ..RunReport::default()
         };
         let r = judge_case(&g, &rep, "dry-run");
         assert!(r.pass && r.error.is_empty() && r.ms == 9 && r.output == rep.final_text);
-        assert!(judge_case(&g, &rep, "").pass, "통과 조건이 비면 실패만 아니면 통과");
-        let r = judge_case(&g, &rep, "없는 문구");
-        assert!(!r.pass && r.error == "출력에 '없는 문구' 가 없습니다", "{}", r.error);
-        // 노드가 실패하면 id 순서대로 노드 이름과 함께 알린다(HashMap 순서에 흔들리지 않는다).
-        rep.errors.insert(b, "나중".into());
-        rep.errors.insert(a, "먼저".into());
+        assert!(
+            judge_case(&g, &rep, "").pass,
+            "with an empty pass condition, a case passes unless something failed"
+        );
+        let r = judge_case(&g, &rep, "missing text");
+        assert!(
+            !r.pass && r.error == "The output does not contain 'missing text'",
+            "{}",
+            r.error
+        );
+        // Failed nodes are reported with their names in id order (HashMap order does not matter).
+        rep.errors.insert(b, "later".into());
+        rep.errors.insert(a, "earlier".into());
         let r = judge_case(&g, &rep, "dry-run");
         assert!(!r.pass);
-        assert_eq!(r.error, "첫째: 먼저 | 둘째: 나중");
+        assert_eq!(r.error, "first: earlier | second: later");
     }
 
-    // ---------- 워커 ----------
+    // ---------- Worker ----------
 
     #[test]
     fn a_panicking_job_still_finishes_the_run() {
         let (rep, rx) = reporter(5);
         run_guarded(&rep, |r| {
             r.send(Msg::Node(Event::Started(1)));
-            panic!("터짐");
+            panic!("boom");
         });
         let got: Vec<(u64, Msg)> = rx.try_iter().collect();
         assert_eq!(got.len(), 2);
@@ -2086,9 +1992,12 @@ mod tests {
         for (g, m) in got {
             status = board.apply(g, m).or(status);
         }
-        let (text, err) = status.expect("Finished가 도착해야 한다");
-        assert!(text.contains("내부 오류") && text.contains("터짐") && err, "{text}");
-        assert!(!board.running, "패닉 뒤에도 실행 중 상태가 남으면 안 된다");
+        let (text, err) = status.expect("Finished must arrive");
+        assert!(
+            text.contains("Internal error") && text.contains("boom") && err,
+            "{text}"
+        );
+        assert!(!board.running, "no running state may be left after a panic");
     }
 
     #[test]
@@ -2109,7 +2018,7 @@ mod tests {
         assert_eq!(board.runs.len(), 4);
         assert!(board.runs.values().all(|r| matches!(r.state, RunState::Done { .. })));
         assert!(board.final_text.starts_with("[dry-run]"), "{}", board.final_text);
-        assert!(status.unwrap().0.starts_with("완료"));
+        assert!(status.unwrap().0.starts_with("Done"));
     }
 
     #[test]
@@ -2135,7 +2044,7 @@ mod tests {
             Msg::Finished(Done::Tests { cancelled: false })
         ));
 
-        // 중지 신호가 켜져 있으면 케이스를 하나도 실행하지 않고 중지로 끝낸다.
+        // With the stop signal set, no case runs and the job ends as stopped.
         let (rep, rx) = reporter(2);
         let stop = RunOptions {
             cancel: Some(Arc::new(AtomicBool::new(true))),
@@ -2147,22 +2056,22 @@ mod tests {
         assert!(matches!(msgs[0].1, Msg::Finished(Done::Tests { cancelled: true })));
     }
 
-    // ---------- 파일 ----------
+    // ---------- Files ----------
 
     #[test]
     fn atomic_write_replaces_the_file_and_leaves_no_temp() {
         let dir = TempDir::new("atomic");
         let p = dir.0.join("g.canvas.json");
-        write_atomic(&p, "첫 번째").unwrap();
-        write_atomic(&p, "두 번째").unwrap();
-        assert_eq!(std::fs::read_to_string(&p).unwrap(), "두 번째");
+        write_atomic(&p, "first").unwrap();
+        write_atomic(&p, "second").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "second");
         let names: Vec<String> = std::fs::read_dir(&dir.0)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec!["g.canvas.json".to_string()]);
-        // 폴더가 없으면 실패하고 임시 파일도 남기지 않는다.
-        assert!(write_atomic(&dir.0.join("없는폴더").join("x.json"), "x").is_err());
+        // A missing folder fails and leaves no temporary file either.
+        assert!(write_atomic(&dir.0.join("no-such-folder").join("x.json"), "x").is_err());
     }
 
     #[test]
@@ -2198,7 +2107,7 @@ mod tests {
         assert_eq!(b.max, pos2(500.0 + NODE_W, 20.0 + NODE_H));
     }
 
-    // ---------- 앱 상태 ----------
+    // ---------- App state ----------
 
     fn app_with_sample() -> (CanvasApp, egui::Context) {
         (CanvasApp::from_graph(sample_graph()), egui::Context::default())
@@ -2207,18 +2116,18 @@ mod tests {
     #[test]
     fn new_open_and_delete_are_refused_while_running() {
         let (mut app, ctx) = app_with_sample();
-        app.begin_run().expect("실행을 시작할 수 있어야 한다");
+        app.begin_run().expect("a run must be able to start");
         assert!(app.board.running);
         let before = app.graph.nodes.len();
 
         app.new_graph(&ctx);
-        assert_eq!(app.graph.nodes.len(), before, "실행 중에는 새로 만들 수 없다");
-        assert!(app.status_err && app.status.contains("실행 중"));
+        assert_eq!(app.graph.nodes.len(), before, "no new graph while running");
+        assert!(app.status_err && app.status.contains("while running"));
         app.set_status("", false);
         app.load(PathBuf::from(SAMPLE_FILE), &ctx);
         assert!(
             app.path.is_none() && app.status_err,
-            "실행 중에는 열 수 없다: {}",
+            "no opening while running: {}",
             app.status
         );
         app.set_status("", false);
@@ -2227,9 +2136,13 @@ mod tests {
         assert!(app.status_err);
         let tests = app.graph.tests.len();
         app.remove_test(0);
-        assert_eq!(app.graph.tests.len(), tests, "실행 중에는 테스트 케이스를 지울 수 없다");
-        assert!(app.begin_run().is_none(), "이미 실행 중이면 또 시작하지 않는다");
-        // 끝나면 다시 할 수 있다.
+        assert_eq!(
+            app.graph.tests.len(),
+            tests,
+            "test cases cannot be deleted while running"
+        );
+        assert!(app.begin_run().is_none(), "no second start while already running");
+        // After the run ends it works again.
         app.board.running = false;
         app.delete_node(2);
         assert_eq!(app.graph.nodes.len(), before - 1);
@@ -2242,7 +2155,7 @@ mod tests {
     fn install_resets_results_view_and_trust() {
         let (mut app, ctx) = app_with_sample();
         app.board.runs.insert(1, NodeRun::default());
-        app.board.final_text = "이전 출력".into();
+        app.board.final_text = "previous output".into();
         app.board.test_results = vec![Some(passed()), Some(passed())];
         app.selected = Some(2);
         app.link_from = Some(1);
@@ -2257,7 +2170,7 @@ mod tests {
         assert_eq!((app.selected, app.link_from), (None, None));
         assert!(
             !app.allow_mcp && !app.allow_custom_endpoint,
-            "신뢰 설정은 문서마다 다시 켠다"
+            "the trust settings are turned on again for each document"
         );
         assert_eq!(app.scene_rect, default_scene_rect());
         assert!(app.want_fit);
@@ -2278,13 +2191,17 @@ mod tests {
         let base = exec::base_dir_of(app.path.as_deref().unwrap()).unwrap();
         assert_eq!(base, Path::new(env!("CARGO_MANIFEST_DIR")).join("samples"));
         let opts = app.run_options(Arc::new(AtomicBool::new(false)));
-        assert_eq!(opts.base_dir, Some(base), "상대 data_path는 그래프 파일 폴더 기준");
-        // 깨진 파일은 현재 그래프를 건드리지 않는다.
+        assert_eq!(
+            opts.base_dir,
+            Some(base),
+            "a relative data_path starts from the graph file's folder"
+        );
+        // A broken file leaves the current graph alone.
         let dir = TempDir::new("bad");
         let bad = dir.0.join("bad.json");
         std::fs::write(&bad, r#"{"nodes":[],"edges":[{"from":1,"to":2}]}"#).unwrap();
         app.load(bad, &ctx);
-        assert!(app.status_err && app.status.contains("불러오기 실패"));
+        assert!(app.status_err && app.status.contains("Failed to open"));
         assert_eq!(app.graph.nodes.len(), 4);
     }
 
@@ -2293,14 +2210,14 @@ mod tests {
         let dir = TempDir::new("save");
         let (mut app, _ctx) = app_with_sample();
         let p = dir.0.join("out.canvas.json");
-        app.path = Some(p.clone()); // 경로가 있으면 대화상자 없이 저장한다
-        app.graph.tests[1].name = "고친 이름".into();
+        app.path = Some(p.clone()); // with a path, it saves without a dialog
+        app.graph.tests[1].name = "renamed".into();
         app.save(false);
         assert!(!app.status_err, "{}", app.status);
         let back = Graph::from_json(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(back.nodes.len(), 4);
         assert_eq!(back.edges.len(), 3);
-        assert_eq!(back.tests, app.graph.tests, "테스트 케이스가 파일에 들어간다");
+        assert_eq!(back.tests, app.graph.tests, "the test cases are written to the file");
         assert_eq!(back.test_node, Some(1));
     }
 
@@ -2311,11 +2228,14 @@ mod tests {
         app.selected = Some(2);
         app.board.runs.insert(2, NodeRun::default());
         app.delete_node(2);
-        assert_eq!(app.link_from, None, "선을 끌던 노드가 사라지면 연결 상태를 놓는다");
+        assert_eq!(
+            app.link_from, None,
+            "if the node a wire is dragged from disappears, the link state is released"
+        );
         assert_eq!(app.selected, None);
         assert!(!app.board.runs.contains_key(&2));
         assert!(app.graph.edges.iter().all(|e| e.from != 2 && e.to != 2));
-        // 다른 노드를 지워도 진행 중인 연결은 유지한다.
+        // Deleting another node keeps the link in progress.
         app.link_from = Some(1);
         app.delete_node(4);
         assert_eq!(app.link_from, Some(1));
@@ -2338,13 +2258,13 @@ mod tests {
         let mut g = Graph::default();
         g.nodes.push(Node {
             id: u32::MAX,
-            title: "끝".into(),
+            title: "end".into(),
             pos: [0.0; 2],
             kind: NodeKind::new_text(),
         });
         let mut app = CanvasApp::from_graph(g);
         app.add_node(NodeKind::Output);
-        assert!(app.status_err && app.status.contains("한계"), "{}", app.status);
+        assert!(app.status_err && app.status.contains("limit"), "{}", app.status);
         assert_eq!(app.graph.nodes.len(), 1);
         app.selected = Some(u32::MAX);
         app.duplicate_selected();
@@ -2361,16 +2281,16 @@ mod tests {
         assert_eq!(app.selected, Some(n.id));
         assert_eq!(
             app.graph.test_node, None,
-            "Text가 아닌 노드는 테스트 입력 노드가 되지 않는다"
+            "a node that is not Text does not become the test input node"
         );
         app.add_node(NodeKind::new_text());
         assert_eq!(app.graph.test_node, Some(2));
     }
 
-    // ---------- 화면 없이 egui 프레임 돌리기 ----------
+    // ---------- Running egui frames without a screen ----------
 
-    /// 화면 없이 egui 프레임을 돌리는 도구. 실제 `show()` 코드가 마우스·키보드 이벤트를 받는다.
-    /// 파일 대화상자가 열리는 버튼(열기·저장·다른 이름으로)은 누르지 않는다.
+    /// Runs egui frames without a screen. The real `show()` code receives the mouse and keyboard events.
+    /// Buttons that open a file dialog (Open, Save, Save as) are never pressed.
     struct Harness {
         ctx: egui::Context,
         app: CanvasApp,
@@ -2418,7 +2338,7 @@ mod tests {
             self.frame_texts(events);
         }
 
-        /// 한 프레임을 그리고 그 프레임에 그려진 글자를 모두 돌려준다.
+        /// Draws one frame and returns all text drawn in it.
         fn frame_texts(&mut self, events: Vec<egui::Event>) -> Vec<String> {
             self.time += 0.1;
             let input = egui::RawInput {
@@ -2444,10 +2364,10 @@ mod tests {
         }
 
         fn widget(&self, id: Id) -> egui::Response {
-            self.ctx.read_response(id).expect("위젯이 그려져 있어야 한다")
+            self.ctx.read_response(id).expect("the widget must have been drawn")
         }
 
-        /// 장면 좌표의 위젯 중심을 화면 좌표로 바꾼다.
+        /// Converts the center of a widget from scene coordinates to screen coordinates.
         fn screen(&self, id: Id) -> Pos2 {
             let r = self.widget(id);
             match self.ctx.layer_transform_to_global(r.layer_id) {
@@ -2505,7 +2425,7 @@ mod tests {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            panic!("5초 안에 실행이 끝나지 않았다");
+            panic!("the run did not finish within 5 seconds");
         }
 
         fn text_states(&self) -> usize {
@@ -2513,10 +2433,10 @@ mod tests {
         }
     }
 
-    /// 빈 캔버스 위의 한 점(노드·패널과 겹치지 않는다).
+    /// A point on the empty canvas (it overlaps no node or panel).
     const BACKGROUND: Pos2 = pos2(40.0, 600.0);
 
-    /// 그려진 모양에서 글자를 모은다.
+    /// Collects the text from the drawn shapes.
     fn collect_texts(shape: &egui::Shape, out: &mut Vec<String>) {
         match shape {
             egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
@@ -2527,7 +2447,7 @@ mod tests {
 
     fn two_nodes() -> (Graph, u32, u32) {
         let mut g = Graph::default();
-        let a = g.add(NodeKind::Text { text: "입력".into() }, [0.0, 0.0]);
+        let a = g.add(NodeKind::Text { text: "input".into() }, [0.0, 0.0]);
         let b = g.add(NodeKind::Output, [300.0, 0.0]);
         (g, a, b)
     }
@@ -2542,7 +2462,7 @@ mod tests {
         h.click(h.node(b));
         assert_eq!(h.app.selected, Some(b));
         h.click(BACKGROUND);
-        assert_eq!(h.app.selected, None, "빈 곳을 누르면 선택이 풀린다");
+        assert_eq!(h.app.selected, None, "clicking empty space clears the selection");
     }
 
     #[test]
@@ -2550,26 +2470,26 @@ mod tests {
         let (g, a, _) = two_nodes();
         let mut h = Harness::new(g);
         let scale = h.scale(Id::unique(("cc-node", a)));
-        assert!(scale > 0.25 && scale <= 1.6, "확대 배율 {scale}");
+        assert!(scale > 0.25 && scale <= 1.6, "zoom {scale}");
         let start = h.app.graph.nodes[0].pos;
         let from = h.node(a);
         let screen_delta = vec2(80.0, 40.0);
         h.drag(from, from + screen_delta);
         let pos = h.app.graph.nodes[0].pos;
         let (dx, dy) = (pos[0] - start[0], pos[1] - start[1]);
-        // 화면에서 끈 거리를 확대 배율로 나눈 만큼 장면에서 움직인다.
+        // In the scene it moves by the dragged screen distance divided by the zoom.
         assert!(
             (dx - screen_delta.x / scale).abs() < 1.0,
-            "dx={dx}, 기대={}",
+            "dx={dx}, expected={}",
             screen_delta.x / scale
         );
         assert!(
             (dy - screen_delta.y / scale).abs() < 1.0,
-            "dy={dy}, 기대={}",
+            "dy={dy}, expected={}",
             screen_delta.y / scale
         );
         assert_eq!(h.app.selected, Some(a));
-        // 이동은 그래프 데이터에만 남고 다른 노드는 그대로다.
+        // The move is stored in the graph data only, and the other node stays put.
         assert_eq!(h.app.graph.nodes[1].pos, [300.0, 0.0]);
     }
 
@@ -2581,11 +2501,11 @@ mod tests {
         assert_eq!(h.app.graph.edges, vec![Edge { from: a, to: b }]);
         assert_eq!(h.app.link_from, None);
         assert!(!h.app.status_err, "{}", h.app.status);
-        // 같은 연결을 또 만들면 중복으로 거절하고 상태 줄에 알린다.
+        // Making the same connection again is refused as a duplicate and reported in the status line.
         h.drag(h.port(a), h.node(b));
         assert_eq!(h.app.graph.edges.len(), 1);
         assert!(
-            h.app.status_err && h.app.status.contains("이미 연결"),
+            h.app.status_err && h.app.status.contains("Already connected"),
             "{}",
             h.app.status
         );
@@ -2598,15 +2518,18 @@ mod tests {
         let mut h = Harness::new(g);
         h.drag(h.port(a), BACKGROUND);
         assert!(h.app.graph.edges.is_empty());
-        assert_eq!(h.app.link_from, None, "빈 곳에 놓아도 연결 상태가 남지 않는다");
+        assert_eq!(
+            h.app.link_from, None,
+            "dropping on empty space leaves no link state behind"
+        );
         assert!(
             h.ctx.read_response(Id::unique(("cc-out", b))).is_none(),
-            "Output 노드에는 출력 포트가 없다"
+            "Output nodes have no output port"
         );
         h.drag(h.port(a), h.node(t2));
-        assert!(h.app.graph.edges.is_empty(), "Text에는 입력 포트가 없다");
+        assert!(h.app.graph.edges.is_empty(), "Text has no input port");
         h.drag(h.port(a), h.node(a));
-        assert!(h.app.graph.edges.is_empty(), "자기 자신에는 연결하지 않는다");
+        assert!(h.app.graph.edges.is_empty(), "a node is not connected to itself");
         assert_eq!(h.app.link_from, None);
     }
 
@@ -2618,7 +2541,7 @@ mod tests {
         let cross = h.screen(Id::unique(("cc-edge", a, b)));
         h.click(cross);
         assert!(h.app.graph.edges.is_empty());
-        assert_eq!(h.app.graph.nodes.len(), 2, "노드는 남는다");
+        assert_eq!(h.app.graph.nodes.len(), 2, "the nodes stay");
     }
 
     #[test]
@@ -2627,15 +2550,15 @@ mod tests {
         let mut h = Harness::new(g);
         h.click(h.node(a));
         h.frame(key(egui::Key::D, egui::Modifiers::COMMAND));
-        assert_eq!(h.app.graph.nodes.len(), 3, "Ctrl+D로 복제");
-        let copy = h.app.selected.expect("복제본이 선택된다");
+        assert_eq!(h.app.graph.nodes.len(), 3, "Ctrl+D duplicates");
+        let copy = h.app.selected.expect("the copy is selected");
         assert!(copy != a && copy != b);
         assert_eq!(h.app.graph.node(copy).unwrap().pos, [32.0, 32.0]);
         h.frame(key(egui::Key::Delete, egui::Modifiers::NONE));
-        assert!(h.app.graph.node(copy).is_none(), "Delete로 삭제");
+        assert!(h.app.graph.node(copy).is_none(), "Delete deletes");
         assert_eq!(h.app.selected, None);
         assert_eq!(h.app.graph.nodes.len(), 2);
-        // 선택이 없으면 아무 일도 없다.
+        // Without a selection nothing happens.
         h.frame(key(egui::Key::Delete, egui::Modifiers::NONE));
         h.frame(key(egui::Key::D, egui::Modifiers::COMMAND));
         assert_eq!(h.app.graph.nodes.len(), 2);
@@ -2647,42 +2570,42 @@ mod tests {
         let mut h = Harness::new(g);
         let on_node = h.node(a);
         h.click_with(on_node, egui::PointerButton::Secondary);
-        assert!(egui::Popup::is_any_open(&h.ctx), "우클릭하면 메뉴가 열린다");
+        assert!(egui::Popup::is_any_open(&h.ctx), "a right click opens the menu");
         assert_eq!(h.app.graph.nodes.len(), 2);
-        // 메뉴 항목은 포인터 아래쪽에 세로로 놓인다. 그 줄을 훑어 '복제'를 누른다.
+        // The menu items are stacked vertically below the pointer. Scan that column and press 'Duplicate'.
         for step in 1..12 {
             if h.app.graph.nodes.len() > 2 {
                 break;
             }
             h.click(on_node + vec2(16.0, 6.0 + 8.0 * step as f32));
             if !egui::Popup::is_any_open(&h.ctx) && h.app.graph.nodes.len() == 2 {
-                // 다른 곳을 눌러 닫혔다면 다시 연다.
+                // If a click elsewhere closed it, open it again.
                 h.click_with(on_node, egui::PointerButton::Secondary);
             }
         }
-        assert_eq!(h.app.graph.nodes.len(), 3, "메뉴의 복제가 노드를 늘린다");
-        assert!(h.app.selected.is_some_and(|id| id != a), "복제본이 선택된다");
+        assert_eq!(h.app.graph.nodes.len(), 3, "Duplicate in the menu adds a node");
+        assert!(h.app.selected.is_some_and(|id| id != a), "the copy is selected");
         assert!(h.app.graph.edges.is_empty());
     }
 
     #[test]
     fn deferred_actions_run_at_the_end_of_the_frame() {
         let mut h = Harness::new(sample_graph());
-        // 열기·다른 이름으로: 대화상자를 취소하면 아무것도 바뀌지 않는다(테스트에서는 창을 띄우지 않고 취소로 본다).
+        // Open and Save as: cancelling the dialog changes nothing (tests open no window and treat it as cancelled).
         for d in [Deferred::Open, Deferred::SaveAs, Deferred::Save] {
             h.app.deferred = Some(d);
             h.frame(vec![]);
-            assert!(h.app.deferred.is_none(), "{d:?}는 한 프레임에 한 번만 실행된다");
+            assert!(h.app.deferred.is_none(), "{d:?} runs only once per frame");
             assert_eq!(h.app.graph.nodes.len(), 4, "{d:?}");
             assert!(h.app.path.is_none() && !h.app.status_err, "{d:?}: {}", h.app.status);
         }
-        // 새로 만들기는 그래프를 비우고 보이는 영역을 처음으로 돌린다.
+        // New empties the graph and resets the visible area.
         h.app.board.runs.insert(1, NodeRun::default());
         h.app.deferred = Some(Deferred::New);
         h.frame(vec![]);
         assert!(h.app.graph.nodes.is_empty() && h.app.board.runs.is_empty());
-        assert_eq!(h.app.status, "새 그래프");
-        // 실행 중에는 새로 만들기도 막힌다.
+        assert_eq!(h.app.status, "New graph");
+        // New is blocked while running too.
         h.app.install(sample_graph(), None, &h.ctx.clone());
         h.app.board.running = true;
         h.app.deferred = Some(Deferred::New);
@@ -2693,7 +2616,8 @@ mod tests {
 
     #[test]
     fn huge_coordinates_do_not_hang_the_canvas() {
-        // 파일에 아주 큰 좌표가 있어도(f32 간격이 격자 간격보다 커진다) 격자 그리기가 끝나야 한다.
+        // Even with huge coordinates in the file (the f32 spacing gets larger than the grid spacing), drawing the
+        // grid must finish.
         let mut g = Graph::default();
         g.add(NodeKind::new_text(), [1.0e9, 1.0e9]);
         g.add(NodeKind::Output, [-3.0e9, 2.0e9]);
@@ -2711,7 +2635,7 @@ mod tests {
         h.click(h.node(a));
         h.app.board.running = true;
         h.frame(key(egui::Key::Delete, egui::Modifiers::NONE));
-        assert_eq!(h.app.graph.nodes.len(), 2, "실행 중에는 삭제하지 않는다");
+        assert_eq!(h.app.graph.nodes.len(), 2, "nothing is deleted while running");
         assert!(h.app.status_err);
         h.app.board.running = false;
         h.frame(key(egui::Key::Delete, egui::Modifiers::NONE));
@@ -2725,38 +2649,35 @@ mod tests {
         let node = Id::unique(("cc-node", a));
         let fitted = h.app.scene_rect;
         let bounds = graph_bounds(&h.app.graph).unwrap().expand(40.0);
-        assert_eq!(fitted, bounds, "처음에는 모든 노드가 보이게 맞춘다");
-        // 노드 두 개는 작아서 처음부터 최대 배율(1.6)로 맞춰진다.
+        assert_eq!(fitted, bounds, "at first the view fits all nodes");
+        // Two nodes are small, so the view starts at the maximum zoom (1.6).
         assert!((h.scale(node) - 1.6).abs() < 1e-3, "{}", h.scale(node));
         h.frame(vec![moved(pos2(500.0, 300.0))]);
         h.frame(vec![egui::Event::Zoom(0.5)]);
         let zoomed_out = h.scale(node);
-        assert!(zoomed_out < 1.0, "축소하면 배율이 줄어든다: {zoomed_out}");
+        assert!(zoomed_out < 1.0, "zooming out lowers the zoom: {zoomed_out}");
         assert!(
             h.app.scene_rect.width() > fitted.width() * 1.2,
-            "축소하면 보이는 장면 영역이 늘어난다: {fitted:?} -> {:?}",
+            "zooming out shows a larger scene area: {fitted:?} -> {:?}",
             h.app.scene_rect
         );
-        // 확대·축소에는 한도가 있다.
+        // Zooming in and out has limits.
         h.frame(vec![egui::Event::Zoom(100.0)]);
         assert!(
             (h.scale(node) - 1.6).abs() < 1e-3,
-            "최대 배율을 넘지 않는다: {}",
+            "it never goes above the maximum zoom: {}",
             h.scale(node)
         );
         h.frame(vec![egui::Event::Zoom(0.0001)]);
         assert!(
             (h.scale(node) - 0.25).abs() < 1e-3,
-            "최소 배율 아래로 내려가지 않는다: {}",
+            "it never goes below the minimum zoom: {}",
             h.scale(node)
         );
         h.settle();
         h.app.want_fit = true;
         h.frame(vec![]);
-        assert_eq!(
-            h.app.scene_rect, bounds,
-            "화면 맞춤은 모든 노드가 보이는 상태로 되돌린다"
-        );
+        assert_eq!(h.app.scene_rect, bounds, "Fit view goes back to showing all nodes");
         assert!(!h.app.want_fit);
         assert!((h.scale(node) - 1.6).abs() < 1e-3);
     }
@@ -2778,10 +2699,10 @@ mod tests {
 
     #[test]
     fn inspector_inputs_have_a_separate_id_per_node() {
-        // 입력칸 ID가 노드마다 같으면 실행 취소 기록(TextEditState)을 모든 노드가 공유한다.
+        // If every node used the same input field IDs, all nodes would share one undo history (TextEditState).
         let mut g = Graph::default();
-        let a = g.add(NodeKind::Text { text: "가".into() }, [0.0, 0.0]);
-        let b = g.add(NodeKind::Text { text: "나".into() }, [300.0, 0.0]);
+        let a = g.add(NodeKind::Text { text: "a".into() }, [0.0, 0.0]);
+        let b = g.add(NodeKind::Text { text: "b".into() }, [300.0, 0.0]);
         let mut h = Harness::new(g);
         h.app.selected = Some(a);
         h.settle();
@@ -2789,21 +2710,25 @@ mod tests {
         h.app.selected = Some(b);
         h.settle();
         let with_b = h.text_states();
-        // 인스펙터의 입력칸은 이름과 텍스트 둘이다.
+        // The inspector has two input fields: the name and the text.
         assert_eq!(
             with_b - with_a,
             2,
-            "다른 노드는 자기 입력칸 ID(=실행 취소 기록)를 가져야 한다"
+            "another node must have its own input field IDs (= undo history)"
         );
         h.app.selected = Some(a);
         h.settle();
-        assert_eq!(h.text_states(), with_b, "다시 선택하면 그 노드의 기록을 이어 쓴다");
+        assert_eq!(
+            h.text_states(),
+            with_b,
+            "selecting a node again continues its own history"
+        );
     }
 
     #[test]
     fn opening_clears_the_input_undo_history() {
         let (mut g, a, _) = two_nodes();
-        g.nodes[0].title = "제목".into();
+        g.nodes[0].title = "title".into();
         let mut h = Harness::new(g);
         h.app.selected = Some(a);
         h.settle();
@@ -2813,7 +2738,7 @@ mod tests {
         assert_eq!(
             h.text_states(),
             0,
-            "새 그래프에는 이전 입력의 실행 취소 기록이 남지 않는다"
+            "a new graph keeps no undo history of the previous input"
         );
     }
 
@@ -2822,10 +2747,10 @@ mod tests {
         let mut h = Harness::new(sample_graph());
         let ctx = h.ctx.clone();
         h.app.run_flow(&ctx);
-        assert!(h.app.board.running, "실행을 시작하면 바로 실행 중 상태가 된다");
+        assert!(h.app.board.running, "starting a run sets the running state right away");
         h.wait_until_idle();
         assert!(!h.app.status_err, "{}", h.app.status);
-        assert!(h.app.status.starts_with("완료"), "{}", h.app.status);
+        assert!(h.app.status.starts_with("Done"), "{}", h.app.status);
         assert!(h.app.board.final_text.starts_with("[dry-run]"));
         assert_eq!(h.app.board.runs.len(), 4);
         assert!(
@@ -2835,12 +2760,12 @@ mod tests {
                 .values()
                 .all(|r| matches!(r.state, RunState::Done { .. }))
         );
-        // 끝난 뒤에는 인스펙터가 최종 출력을 보여 주고 다시 실행할 수 있다.
+        // After the run the inspector shows the final output, and the graph can run again.
         h.app.selected = None;
         h.settle();
         h.app.run_flow(&ctx);
         h.wait_until_idle();
-        assert!(h.app.status.starts_with("완료"));
+        assert!(h.app.status.starts_with("Done"));
     }
 
     #[test]
@@ -2849,7 +2774,7 @@ mod tests {
         let ctx = h.ctx.clone();
         h.app.run_tests(None, &ctx);
         h.wait_until_idle();
-        assert_eq!(h.app.status, "테스트 2/2 통과");
+        assert_eq!(h.app.status, "Tests: 2/2 passed");
         assert!(!h.app.status_err);
         assert!(
             h.app
@@ -2858,19 +2783,19 @@ mod tests {
                 .iter()
                 .all(|r| r.as_ref().is_some_and(|r| r.pass))
         );
-        // 통과 조건을 못 맞추는 케이스 하나만 다시 실행한다.
-        h.app.graph.tests[1].expect = "절대 없는 문구".into();
+        // Run again only one case, whose pass condition cannot be met.
+        h.app.graph.tests[1].expect = "a phrase that never appears".into();
         h.app.run_tests(Some(1), &ctx);
         h.wait_until_idle();
-        assert_eq!(h.app.status, "테스트 1/2 통과");
+        assert_eq!(h.app.status, "Tests: 1/2 passed");
         assert!(h.app.status_err);
         let r = h.app.board.test_results[1].as_ref().unwrap();
-        assert!(!r.pass && r.error.contains("절대 없는 문구"));
+        assert!(!r.pass && r.error.contains("a phrase that never appears"));
         assert!(
             h.app.board.test_results[0].as_ref().unwrap().pass,
-            "다른 케이스의 결과는 그대로"
+            "the result of the other case stays"
         );
-        // Text 노드가 없으면 테스트를 시작하지 않는다.
+        // Without a Text node, tests do not start.
         h.app.graph.test_node = None;
         h.app.run_tests(None, &ctx);
         assert!(h.app.status_err && !h.app.board.running);
@@ -2878,66 +2803,70 @@ mod tests {
 
     #[test]
     fn late_results_of_a_replaced_graph_are_ignored() {
-        // 실행 중이던 그래프가 교체되면(새 그래프도 노드 id가 1부터 시작한다) 늦게 오는 이벤트를 버려야 한다.
+        // When the running graph is replaced (the new graph's node ids also start from 1), late events must be
+        // dropped.
         let mut h = Harness::new(sample_graph());
         let ctx = h.ctx.clone();
         h.app.run_flow(&ctx);
         h.app.install(Graph::default(), None, &ctx);
         assert!(!h.app.board.running);
-        std::thread::sleep(std::time::Duration::from_millis(300)); // 워커가 끝까지 메시지를 보낸다
+        std::thread::sleep(std::time::Duration::from_millis(300)); // the worker sends all its messages
         h.settle();
         assert!(
             h.app.board.runs.is_empty(),
-            "옛 실행의 노드 상태가 새 그래프에 붙으면 안 된다"
+            "node states of the old run must not attach to the new graph"
         );
         assert!(h.app.board.final_text.is_empty());
         assert!(!h.app.board.running);
-        assert!(!h.app.status.starts_with("완료"), "{}", h.app.status);
-        // 교체 뒤의 새 실행은 정상으로 돈다.
+        assert!(!h.app.status.starts_with("Done"), "{}", h.app.status);
+        // A new run after the replacement works normally.
         let mut g = Graph::default();
         g.add(
             NodeKind::Text {
-                text: "새 그래프".into(),
+                text: "new graph".into(),
             },
             [0.0; 2],
         );
         h.app.install(g, None, &ctx);
         h.app.run_flow(&ctx);
         h.wait_until_idle();
-        assert_eq!(h.app.board.final_text, "새 그래프");
+        assert_eq!(h.app.board.final_text, "new graph");
     }
 
-    /// 리뷰 재현: "■ 중지"는 노드 사이에서만 멈추므로, 막혀 있는 LLM·MCP 호출(최대 120~900초) 동안 새로 만들기·열기가
-    /// 계속 막혀 있었다. 중지를 누르면 바로 그래프를 바꿀 수 있고, 옛 워커가 늦게 보낸 이벤트는 새 그래프에 닿지 않는다.
+    /// Review repro: "■ Stop" only halts between nodes, so New and Open stayed blocked during a hanging LLM or MCP
+    /// call (up to 120~900 s). After Stop is pressed the graph can be replaced right away, and events the old worker
+    /// sends late never reach the new graph.
     #[test]
     fn new_and_open_are_allowed_once_stop_is_requested() {
         let mut h = Harness::new(sample_graph());
         let ctx = h.ctx.clone();
-        // 막혀 있는 호출을 흉내 낸다: 실행을 시작만 하고, 옛 워커의 메시지는 나중에 그 세대 번호로 직접 보낸다.
+        // Simulate a hanging call: only start the run, and send the old worker's messages later by hand with its
+        // generation number.
         let (old, flag) = h.app.begin_run().unwrap();
         assert!(!h.app.can_replace_graph());
         h.app.deferred = Some(Deferred::New);
         h.frame(vec![]);
-        assert_eq!(h.app.graph.nodes.len(), 4, "중지를 누르기 전에는 새로 만들 수 없다");
-        assert!(h.app.status_err && h.app.status.contains("■ 중지"), "{}", h.app.status);
+        assert_eq!(h.app.graph.nodes.len(), 4, "no new graph before Stop is pressed");
+        assert!(h.app.status_err && h.app.status.contains("■ Stop"), "{}", h.app.status);
 
         h.app.request_cancel();
         assert!(flag.load(Ordering::Relaxed) && h.app.can_replace_graph());
-        h.frame(vec![]); // 중지 중에도 화면은 그려진다(새로 만들기·열기 버튼이 켜진다)
+        h.frame(vec![]); // the screen is drawn while stopping too (New and Open are enabled)
         h.app.deferred = Some(Deferred::New);
         h.frame(vec![]);
-        assert!(h.app.graph.nodes.is_empty(), "중지를 누른 뒤에는 새로 만들 수 있다");
+        assert!(h.app.graph.nodes.is_empty(), "after Stop is pressed, New works");
         assert!(!h.app.board.running && !h.app.board.cancelling);
         assert!(
-            !h.app.status_err && h.app.status.starts_with("새 그래프"),
+            !h.app.status_err && h.app.status.starts_with("New graph"),
             "{}",
             h.app.status
         );
-        assert!(h.app.status.contains("버립니다"), "{}", h.app.status);
+        assert!(h.app.status.contains("discarded"), "{}", h.app.status);
 
-        // 새 그래프도 노드 id가 1부터 시작한다. 옛 워커가 늦게 보낸 이벤트·테스트 결과·끝 신호는 모두 버린다.
+        // The new graph's node ids also start from 1. Late events, test results and the end signal of the old worker
+        // are all dropped.
         h.app.add_node(NodeKind::Text {
-            text: "새 입력".into()
+            text: "new input".into(),
         });
         let status = h.app.status.clone();
         let late = Reporter {
@@ -2949,20 +2878,23 @@ mod tests {
         late.send(Msg::Node(done(1)));
         late.send(Msg::Test(0, passed()));
         late.send(Msg::Finished(Done::Flow(Box::new(RunReport {
-            final_text: "옛 결과".into(),
+            final_text: "old result".into(),
             cancelled: true,
             ..RunReport::default()
         }))));
         h.settle();
         assert!(h.app.board.runs.is_empty() && h.app.board.final_text.is_empty());
-        assert_eq!(h.app.status, status, "옛 실행의 끝 신호가 상태 줄을 바꾸면 안 된다");
+        assert_eq!(
+            h.app.status, status,
+            "the end signal of the old run must not change the status line"
+        );
         assert!(!h.app.board.running);
-        // 새 그래프는 바로 실행할 수 있다(옛 중지 신호가 이어지지 않는다).
+        // The new graph can run right away (the old stop signal does not carry over).
         h.app.run_flow(&ctx);
         h.wait_until_idle();
-        assert_eq!(h.app.board.final_text, "새 입력", "{}", h.app.status);
+        assert_eq!(h.app.board.final_text, "new input", "{}", h.app.status);
 
-        // 열기도 같다: 중지 전에는 막히고, 중지를 누르면 바로 열린다.
+        // Open works the same way: blocked before Stop, and it opens right away once Stop is pressed.
         let (old, _) = h.app.begin_run().unwrap();
         h.app.load(PathBuf::from(SAMPLE_FILE), &ctx);
         assert!(h.app.status_err && h.app.path.is_none(), "{}", h.app.status);
@@ -2976,7 +2908,7 @@ mod tests {
             generation: old,
         };
         late.send(Msg::Node(done(1)));
-        late.send(Msg::Finished(Done::Error("옛 실행".into())));
+        late.send(Msg::Finished(Done::Error("old run".into())));
         h.settle();
         assert!(h.app.board.runs.is_empty() && !h.app.status_err, "{}", h.app.status);
     }
@@ -2985,17 +2917,17 @@ mod tests {
     fn stop_button_logic_sets_the_cancel_flag_once() {
         let (mut app, _ctx) = app_with_sample();
         app.request_cancel();
-        assert!(!app.board.cancelling, "실행 중이 아니면 아무 일도 없다");
+        assert!(!app.board.cancelling, "nothing happens when no run is going");
         let (_, flag) = app.begin_run().unwrap();
         assert!(!flag.load(Ordering::Relaxed));
         app.request_cancel();
         assert!(flag.load(Ordering::Relaxed) && app.board.cancelling);
-        assert!(app.status.contains("중지"));
-        // 끝나면 중지 표시는 사라진다.
+        assert!(app.status.contains("Stopping"));
+        // When the run ends, the stopping state goes away.
         let g = app.board.generation;
         app.board.apply(g, Msg::Finished(Done::Error("x".into())));
         assert!(!app.board.cancelling && !app.board.running);
-        // 다음 실행은 새 신호를 쓴다(이전 중지가 이어지지 않는다).
+        // The next run uses a new signal (the previous stop does not carry over).
         let (_, next) = app.begin_run().unwrap();
         assert!(!next.load(Ordering::Relaxed));
     }
@@ -3011,10 +2943,10 @@ mod tests {
         g.edges = vec![Edge { from: x, to: y }, Edge { from: y, to: x }];
         let mut app = CanvasApp::from_graph(g);
         assert!(app.begin_run().is_none() && !app.board.running);
-        assert!(app.status.contains("순환"), "{}", app.status);
+        assert!(app.status.contains("cycle"), "{}", app.status);
     }
 
-    // ---------- 영어 ----------
+    // ---------- English ----------
 
     fn has_hangul(s: &str) -> bool {
         s.chars()
@@ -3088,7 +3020,7 @@ mod tests {
         );
         assert_eq!(
             with_lang(Lang::Ko, || language_status(Lang::Ko, Ok(()))),
-            ("언어: 한국어".to_string(), false)
+            (format!(ko_text!("Language: {name}"), name = ko_text!("Korean")), false)
         );
         assert_eq!(
             with_lang(Lang::En, || language_status(Lang::En, Err("access denied".into()))),
@@ -3097,7 +3029,7 @@ mod tests {
                 true
             )
         );
-        // 이미 쓰는 언어를 고르면 아무것도 바꾸지 않는다(전역 언어도, 설정 파일도 건드리지 않는다).
+        // Picking the language already in use changes nothing (neither the global language nor the settings file).
         let mut h = Harness::new(sample_graph());
         let before = h.app.status.clone();
         h.app.deferred = Some(Deferred::Language(i18n::current()));
@@ -3111,7 +3043,8 @@ mod tests {
         with_lang(Lang::En, || {
             let (mut app, ctx) = app_with_sample();
             assert_eq!(app.status, "Ready");
-            // 예제 그래프는 만들 때의 언어로 쓴다. 두 번째 케이스는 다른 언어(한국어) 입력이다.
+            // The sample graph is written in the language in use when it is created. The second case is input in the
+            // other language (Korean).
             assert!(matches!(&app.graph.nodes[0].kind, NodeKind::Text { text } if text == "Why did Q3 revenue drop?"));
             assert_eq!(app.graph.tests[0].name, "Basic");
             assert_eq!(app.graph.tests[1].name, "Korean input");
@@ -3147,11 +3080,11 @@ mod tests {
             app.run_tests(None, &ctx);
             assert_eq!(app.status, "There is no Text node to take the test input");
 
-            // 저장된 그래프의 글자(사용자 내용)는 영어로 열어도 그대로다.
+            // The text of a saved graph (user content) stays as it is when opened in English.
             app.load(PathBuf::from(SAMPLE_FILE), &ctx);
             assert!(app.status.starts_with("Opened: "), "{}", app.status);
-            assert!(matches!(&app.graph.nodes[1].kind, NodeKind::Prompt { role, .. } if role == "분석: {{input}}"));
-            assert_eq!(app.graph.tests[0].name, "기본");
+            assert!(matches!(&app.graph.nodes[1].kind, NodeKind::Prompt { role, .. } if role == "Analyze: {{input}}"));
+            assert_eq!(app.graph.tests[0].name, "Basic");
             app.selected = Some(2);
             app.duplicate_selected();
             assert_eq!(app.status, "Duplicated node 2 as 5 (connections are not copied)");
@@ -3164,8 +3097,8 @@ mod tests {
         });
     }
 
-    /// 영어 화면에는 사용자 내용 말고는 한국어가 남지 않는다. 노드 종류마다 인스펙터를 열고,
-    /// 실행 결과·테스트 결과·우클릭 메뉴·실행 중 막대·빈 캔버스까지 그려 본다.
+    /// The English screen shows no Korean apart from user content. Opens the inspector for every node kind and also
+    /// draws run results, test results, the right-click menu, the top bar while running and the empty canvas.
     #[test]
     fn the_english_screen_shows_no_korean() {
         with_lang(Lang::En, || {
@@ -3237,7 +3170,7 @@ mod tests {
             h.settle();
             let on_node = h.node(t);
             h.click_with(on_node, egui::PointerButton::Secondary);
-            assert!(egui::Popup::is_any_open(&h.ctx), "우클릭 메뉴가 열려야 한다");
+            assert!(egui::Popup::is_any_open(&h.ctx), "the right-click menu must be open");
             seen.extend(h.frame_texts(vec![]));
             let ctx = h.ctx.clone();
             h.app.install(Graph::default(), None, &ctx);
@@ -3245,7 +3178,7 @@ mod tests {
             seen.extend(h.frame_texts(vec![]));
 
             let korean: Vec<&String> = seen.iter().filter(|s| has_hangul(s)).collect();
-            assert!(korean.is_empty(), "영어 화면에 남은 한국어: {korean:?}");
+            assert!(korean.is_empty(), "Korean left on the English screen: {korean:?}");
             for want in [
                 "New",
                 "＋ Add node",
@@ -3279,7 +3212,7 @@ mod tests {
                 "(no Text node)",
                 "Start with ‘＋ Add node’",
             ] {
-                assert!(seen.iter().any(|s| s.contains(want)), "{want:?} 가 그려지지 않음");
+                assert!(seen.iter().any(|s| s.contains(want)), "{want:?} was not drawn");
             }
         });
     }

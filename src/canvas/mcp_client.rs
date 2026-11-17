@@ -1,12 +1,13 @@
-//! stdio MCP 클라이언트. 서버 프로세스를 띄워 initialize → tools/call 순서로 호출한다.
-//! 줄 단위(newline-delimited) JSON-RPC 2.0만 지원한다.
+//! stdio MCP client. Starts the server process and calls initialize → tools/call in that order.
+//! Only newline-delimited JSON-RPC 2.0 is supported.
 //!
-//! - stdin 쓰기, stdout 읽기, stderr 읽기를 각각 별도 스레드가 맡아 어느 파이프도 막히지 않는다.
-//!   서버가 입력을 읽지 않거나 출력을 쏟아내도 호출한 쪽은 시간 초과로 끝난다.
-//! - 서버 출력은 바이트로 읽어 UTF-8이 아닌 로그 줄(CP949 등)이 있어도 멈추지 않는다.
-//! - `method`가 없는 메시지만 응답으로 본다. 서버가 보낸 ping에는 빈 결과로 답한다.
-//! - Windows: `npx`처럼 확장자 없는 명령은 PATH+PATHEXT(.com/.exe/.bat/.cmd)로 찾고, 콘솔 창 없이 띄우며,
-//!   시간 초과·종료 때는 stdin을 닫고 잠깐 기다린 뒤 프로세스 트리 전체를 끝낸다.
+//! - Writing stdin, reading stdout and reading stderr each have their own thread, so no pipe blocks.
+//!   Even if the server does not read its input or floods its output, the caller ends with a timeout.
+//! - Server output is read as bytes, so log lines that are not UTF-8 (CP949 etc.) do not stall it.
+//! - Only messages without `method` count as responses. Pings sent by the server get an empty result.
+//! - Windows: commands without an extension such as `npx` are found via PATH+PATHEXT (.com/.exe/.bat/.cmd) and
+//!   started without a console window; on timeout or shutdown, stdin is closed and, after a short wait, the whole
+//!   process tree is ended.
 
 use crate::profiler::csv_profiler::looks_utf8;
 use serde_json::{Value, json};
@@ -22,32 +23,32 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-/// 자식 프로세스에 콘솔 창을 만들지 않는다. GUI 빌드는 자기 콘솔을 떼어 내므로 이 플래그가 없으면
-/// 콘솔 프로그램(cmd, npx, node 등)마다 새 창이 뜬다.
+/// Do not create a console window for child processes. The GUI build detaches its own console, so without this
+/// flag every console program (cmd, npx, node, ...) would open a new window.
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-/// 오류 메시지에 붙이는 서버 stderr의 마지막 부분 크기
+/// Size of the end of the server's stderr that is appended to error messages
 const STDERR_TAIL_BYTES: usize = 2048;
-/// stdin을 닫은 뒤 서버가 스스로 끝나기를 기다리는 시간
+/// How long to wait for the server to exit by itself after stdin is closed
 const EXIT_GRACE: Duration = Duration::from_millis(500);
-/// 서버가 끝난 직후 종료 코드와 stderr를 모으려고 기다리는 시간
+/// How long to wait right after the server ends to collect its exit code and stderr
 const DIAG_WAIT: Duration = Duration::from_millis(300);
-/// PATHEXT 가운데 CreateProcess로 실행할 수 있는 확장자 (.js, .vbs, .ps1 등은 바로 실행할 수 없다)
+/// PATHEXT extensions that CreateProcess can run (.js, .vbs, .ps1 etc. cannot be run directly)
 const RUNNABLE_EXTS: [&str; 4] = [".com", ".exe", ".bat", ".cmd"];
 
 pub struct McpClient {
     child: Child,
-    /// stdin 쓰기 스레드로 보낼 줄. None이면 stdin을 닫았다
+    /// Lines to send to the stdin writer thread. None once stdin is closed
     writer: Option<Sender<Vec<u8>>>,
     rx: Receiver<String>,
     stderr: StderrTail,
     next_id: u64,
     timeout: Duration,
-    /// 프로세스 트리를 이미 정리했다
+    /// The process tree has already been cleaned up
     stopped: bool,
 }
 
-/// 공백 구분 인자 문자열을 나눈다. 큰따옴표로 감싼 구간은 하나의 인자로 취급한다.
+/// Splits a whitespace-separated argument string. A span in double quotes counts as one argument.
 pub fn split_args(s: &str) -> Vec<String> {
     let mut out = vec![];
     let mut cur = String::new();
@@ -79,10 +80,10 @@ pub fn split_args(s: &str) -> Vec<String> {
 
 impl McpClient {
     pub fn spawn(command: &str, args: &str, timeout: Duration) -> Result<Self, String> {
-        // 따옴표로 감싼 경로("C:\Program Files\nodejs\npx.cmd")도 받는다
+        // Quoted paths ("C:\Program Files\nodejs\npx.cmd") are accepted too
         let command = command.trim().trim_matches('"').trim();
         if command.is_empty() {
-            return Err(tr!("MCP command가 비어 있습니다", "The MCP command is empty").into());
+            return Err(tr!("The MCP command is empty").into());
         }
         let program = resolve_program(command);
         let mut cmd = Command::new(&program);
@@ -97,11 +98,7 @@ impl McpClient {
         else {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(tr!(
-                "MCP 서버 파이프를 만들지 못했습니다",
-                "Could not create the pipes for the MCP server"
-            )
-            .into());
+            return Err(tr!("Could not create the pipes for the MCP server").into());
         };
         let mut c = McpClient {
             child,
@@ -112,7 +109,7 @@ impl McpClient {
             timeout,
             stopped: false,
         };
-        // 실패하면 c가 drop되면서 프로세스 트리를 정리한다
+        // On failure, dropping c cleans up the process tree
         c.request(
             "initialize",
             json!({
@@ -125,9 +122,9 @@ impl McpClient {
         Ok(c)
     }
 
-    /// 한 줄을 쓰기 스레드에 넘긴다. 쓰기 자체는 기다리지 않는다(서버가 안 읽어도 막히지 않는다).
-    /// 한 줄을 쓰기 스레드에 넘긴다. 쓰기 자체는 기다리지 않는다(서버가 안 읽어도 막히지 않는다).
-    /// stdin이 이미 닫혔으면 false.
+    /// Hands one line to the writer thread. It does not wait for the write itself (so it does not block even if the
+    /// server does not read).
+    /// false if stdin is already closed.
     fn push_line(&self, v: &Value) -> bool {
         let mut line = v.to_string().into_bytes();
         line.push(b'\n');
@@ -138,26 +135,21 @@ impl McpClient {
         if self.push_line(v) {
             Ok(())
         } else {
-            Err(self.with_stderr(
-                tr!(
-                    "MCP 쓰기 실패: 서버 입력이 닫혔습니다",
-                    "MCP write failed: the server's input is closed"
-                )
-                .into(),
-            ))
+            Err(self.with_stderr(tr!("MCP write failed: the server's input is closed").into()))
         }
     }
 
-    /// 요청을 보내고 같은 id의 응답을 기다린다. `method`가 있는 메시지는 서버가 보낸 요청·알림이라 응답으로 보지 않는다.
-    /// JSON이 아닌 줄(로그)과 다른 id의 응답은 건너뛴다. 요청은 한 번에 하나뿐이므로 id가 null인 오류 응답
-    /// (서버가 요청을 읽지 못함)은 이 요청의 실패다.
+    /// Sends a request and waits for the response with the same id. Messages with `method` are requests or
+    /// notifications sent by the server, so they are not taken as responses.
+    /// Lines that are not JSON (logs) and responses with another id are skipped. Only one request is pending at a
+    /// time, so an error response with a null id (the server could not read the request) fails this request.
     fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id;
         self.next_id += 1;
         self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))?;
         let deadline = Instant::now() + self.timeout;
         loop {
-            // 메시지가 쉬지 않고 와도(로그 홍수) 마감 시간은 지킨다
+            // Keep the deadline even if messages keep coming (a log flood)
             let now = Instant::now();
             let received = if now >= deadline {
                 Err(RecvTimeoutError::Timeout)
@@ -170,20 +162,19 @@ impl McpClient {
                     self.stop();
                     let secs = self.timeout.as_secs_f64();
                     return Err(self.with_stderr(trf!(
-                        "MCP 응답 시간 초과 ({method}, {secs}초)",
-                        "MCP response timed out ({method}, {secs}s)"
+                        "MCP response timed out ({method}, {secs}s)",
+                        method = method,
+                        secs = secs
                     )));
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     let msg = match wait_exit(&mut self.child, DIAG_WAIT).and_then(|s| s.code()) {
                         Some(code) => trf!(
-                            "MCP 서버가 응답 전에 종료됨 ({method}, 종료 코드 {code})",
-                            "The MCP server exited before responding ({method}, exit code {code})"
+                            "The MCP server exited before responding ({method}, exit code {code})",
+                            method = method,
+                            code = code
                         ),
-                        None => trf!(
-                            "MCP 서버가 응답 전에 종료됨 ({method})",
-                            "The MCP server exited before responding ({method})"
-                        ),
+                        None => trf!("The MCP server exited before responding ({method})", method = method),
                     };
                     return Err(self.with_stderr(msg));
                 }
@@ -204,15 +195,17 @@ impl McpClient {
             }
             if let Some(err) = msg.get("error") {
                 let text = err.get("message").and_then(Value::as_str).unwrap_or("unknown");
-                return Err(trf!("MCP 오류: {text}", "MCP error: {text}"));
+                return Err(trf!("MCP error: {text}", text = text));
             }
             return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
         }
     }
 
-    /// 서버가 보낸 요청에 답한다: ping은 빈 결과, 그 밖의 요청(roots/list, sampling 등)은 -32601.
-    /// JSON-RPC는 요청마다 응답을 요구하므로, 답하지 않으면 그 응답을 기다리는 서버가 멈출 수 있다.
-    /// id가 없는 알림(로그, 진행률)은 무시한다. 답을 못 보내도(서버 입력이 닫힘) 기다리지 않고 넘어간다.
+    /// Answers a request sent by the server: ping gets an empty result, any other request (roots/list, sampling,
+    /// ...) gets -32601.
+    /// JSON-RPC requires a response to every request, so without an answer a server waiting for it could hang.
+    /// Notifications without an id (logs, progress) are ignored. If the answer cannot be sent (the server's input is
+    /// closed), it moves on without waiting.
     fn answer_server_request(&self, method: &Value, id: Option<&Value>) {
         let Some(id) = id.filter(|v| v.is_string() || v.is_number()).cloned() else {
             return;
@@ -221,7 +214,7 @@ impl McpClient {
             json!({ "jsonrpc": "2.0", "id": id, "result": {} })
         } else {
             let name = method.as_str().unwrap_or("?");
-            let message = trf!("지원하지 않는 요청: {name}", "Unsupported request: {name}");
+            let message = trf!("Unsupported request: {name}", name = name);
             json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": message } })
         };
         let _ = self.push_line(&reply);
@@ -239,29 +232,30 @@ impl McpClient {
             })
             .unwrap_or_default();
         if r["isError"].as_bool().unwrap_or(false) {
-            Err(trf!("도구 오류: {text}", "Tool error: {text}"))
+            Err(trf!("Tool error: {text}", text = text))
         } else {
             Ok(text)
         }
     }
 
-    /// 오류 메시지에 서버 stderr의 마지막 부분을 붙인다(서버가 왜 실패했는지 알 수 있게).
+    /// Appends the end of the server's stderr to an error message (so it shows why the server failed).
     fn with_stderr(&self, msg: String) -> String {
         let tail = self.stderr.text(DIAG_WAIT);
         if tail.is_empty() {
             msg
         } else {
-            trf!("{msg}\n[서버 stderr]\n{tail}", "{msg}\n[server stderr]\n{tail}")
+            trf!("{msg}\n[server stderr]\n{tail}", msg = msg, tail = tail)
         }
     }
 
-    /// stdin을 닫고 잠깐 기다린 뒤에도 살아 있으면 프로세스 트리 전체를 끝낸다.
+    /// Closes stdin and, if the server is still alive after a short wait, ends the whole process tree.
     fn stop(&mut self) {
         if self.stopped {
             return;
         }
         self.stopped = true;
-        // 쓰기 스레드가 남은 줄을 쓰고 stdin을 닫는다 → 서버가 입력 끝(EOF)을 보고 스스로 끝날 기회
+        // The writer thread writes the remaining lines and closes stdin → a chance for the server to see the end of
+        // its input (EOF) and exit by itself
         self.writer = None;
         if wait_exit(&mut self.child, EXIT_GRACE).is_none() {
             kill_tree(&mut self.child);
@@ -275,7 +269,7 @@ impl Drop for McpClient {
     }
 }
 
-/// stdin 쓰기 스레드. 채널이 닫히면(클라이언트 종료) stdin을 닫는다.
+/// Stdin writer thread. Closes stdin when the channel closes (the client is done).
 fn spawn_writer(mut stdin: ChildStdin) -> Sender<Vec<u8>> {
     let (tx, rx) = channel::<Vec<u8>>();
     std::thread::spawn(move || {
@@ -288,7 +282,8 @@ fn spawn_writer(mut stdin: ChildStdin) -> Sender<Vec<u8>> {
     tx
 }
 
-/// stdout 줄 리더. 바이트 단위로 읽고 UTF-8이 아닌 부분은 대체 문자로 바꿔, 로그 줄 하나 때문에 멈추지 않는다.
+/// Stdout line reader. Reads bytes and replaces parts that are not UTF-8 with the replacement character, so a single
+/// log line cannot stall it.
 fn spawn_line_reader(stdout: ChildStdout) -> Receiver<String> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
@@ -309,7 +304,8 @@ fn spawn_line_reader(stdout: ChildStdout) -> Receiver<String> {
     rx
 }
 
-/// 서버 stderr의 마지막 부분. 별도 스레드가 계속 읽어 stderr 파이프가 가득 차 서버가 멈추는 일이 없다.
+/// The end of the server's stderr. A separate thread keeps reading, so the server never stalls on a full stderr
+/// pipe.
 struct StderrTail {
     shared: Arc<Mutex<TailBuf>>,
     reader: JoinHandle<()>,
@@ -318,7 +314,7 @@ struct StderrTail {
 #[derive(Default)]
 struct TailBuf {
     bytes: Vec<u8>,
-    /// 앞부분을 잘라 냈다
+    /// The beginning was cut off
     cut: bool,
 }
 
@@ -341,7 +337,7 @@ impl StderrTail {
         StderrTail { shared, reader }
     }
 
-    /// stderr가 닫힐 때까지 최대 `wait` 기다린 뒤 마지막 부분을 글자로 돌려준다.
+    /// Waits up to `wait` for stderr to close, then returns its end as text.
     fn text(&self, wait: Duration) -> String {
         let deadline = Instant::now() + wait;
         while !self.reader.is_finished() && Instant::now() < deadline {
@@ -352,9 +348,11 @@ impl StderrTail {
     }
 }
 
-/// stderr 바이트를 글자로. UTF-8이 아니면 CP949(한국어 Windows 콘솔의 기본 코드 페이지)로 읽는다.
+/// Stderr bytes as text. Bytes that are not UTF-8 are read as CP949 (the default code page of Korean Windows
+/// consoles).
 fn decode_tail(bytes: &[u8], cut: bool) -> String {
-    // 앞을 잘라 냈으면 UTF-8 글자 중간에서 시작할 수 있으므로 이어지는 바이트(10xxxxxx)를 버린다
+    // If the beginning was cut off, it may start in the middle of a UTF-8 character, so drop continuation bytes
+    // (10xxxxxx)
     let skip = if cut {
         bytes.iter().take(3).take_while(|&&b| b & 0xC0 == 0x80).count()
     } else {
@@ -369,7 +367,7 @@ fn decode_tail(bytes: &[u8], cut: bool) -> String {
     text.trim().to_string()
 }
 
-/// 끝날 때까지 최대 `wait` 기다린다. 끝났으면 종료 상태.
+/// Waits up to `wait` for the process to end. The exit status if it ended.
 fn wait_exit(child: &mut Child, wait: Duration) -> Option<ExitStatus> {
     let deadline = Instant::now() + wait;
     loop {
@@ -381,8 +379,10 @@ fn wait_exit(child: &mut Child, wait: Duration) -> Option<ExitStatus> {
     }
 }
 
-/// 서버와 그 자식들(cmd → npx → node 등)을 모두 끝낸다. taskkill이 실패하면 직접 띄운 프로세스만이라도 끝낸다.
-/// `child` 핸들을 쥐고 있는 동안에는 Windows가 PID를 다른 프로세스에 다시 주지 않으므로 엉뚱한 프로세스를 끝낼 일은 없다.
+/// Ends the server and all its children (cmd → npx → node, ...). If taskkill fails, at least the process started
+/// directly is ended.
+/// While the `child` handle is held, Windows does not give the PID to another process, so the wrong process is never
+/// ended.
 fn kill_tree(child: &mut Child) {
     #[cfg(windows)]
     {
@@ -406,8 +406,9 @@ fn kill_tree(child: &mut Child) {
     let _ = wait_exit(child, Duration::from_secs(2));
 }
 
-/// 명령 이름을 실행할 경로로 바꾼다. 표준 라이브러리는 확장자 없는 이름에 .exe만 붙여 찾으므로
-/// `npx`(실제 파일은 npx.cmd) 같은 명령을 못 찾는다. 직접 찾지 못하면 원래 이름을 그대로 쓴다.
+/// Turns a command name into the path to run. The standard library only tries .exe for a name without an
+/// extension, so it cannot find commands such as `npx` (the actual file is npx.cmd). If our own lookup finds
+/// nothing, the original name is used as is.
 fn resolve_program(command: &str) -> PathBuf {
     #[cfg(windows)]
     {
@@ -420,8 +421,9 @@ fn resolve_program(command: &str) -> PathBuf {
     PathBuf::from(command)
 }
 
-/// PATH의 각 폴더(경로가 들어 있으면 그 위치만)에서 실행 파일을 찾는다. 확장자가 없으면 PATHEXT 순서대로
-/// .com/.exe/.bat/.cmd를 붙여 본다(PATHEXT가 없으면 이 순서). 빈 PATH 항목(현재 폴더)은 보지 않는다.
+/// Looks for the executable in each PATH folder (only in the given location if the command contains a path).
+/// Without an extension, .com/.exe/.bat/.cmd are tried in PATHEXT order (in this order if PATHEXT is not set).
+/// Empty PATH entries (the current folder) are not searched.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn find_program(command: &str, path: Option<&OsStr>, pathext: Option<&OsStr>) -> Option<PathBuf> {
     let mut exts: Vec<String> = pathext
@@ -464,14 +466,12 @@ fn find_program(command: &str, path: Option<&OsStr>, pathext: Option<&OsStr>) ->
 
 fn spawn_error(command: &str, program: &Path, e: &std::io::Error) -> String {
     let mut msg = trf!(
-        "MCP 서버 실행 실패 ({command}): {e}",
-        "Failed to start the MCP server ({command}): {e}"
+        "Failed to start the MCP server ({command}): {e}",
+        command = command,
+        e = e
     );
     if e.kind() == std::io::ErrorKind::NotFound && program == Path::new(command) {
-        msg += tr!(
-            "\nPATH에서 실행 파일(.exe/.cmd/.bat/.com)을 찾지 못했습니다. 전체 경로를 쓰거나 PATH를 확인하세요",
-            "\nNo executable (.exe/.cmd/.bat/.com) was found on PATH. Use the full path or check PATH"
-        );
+        msg += tr!("\nNo executable (.exe/.cmd/.bat/.com) was found on PATH. Use the full path or check PATH");
     }
     msg
 }
@@ -481,7 +481,7 @@ mod tests {
     use super::*;
     use crate::i18n::{Lang, with_lang};
 
-    /// 이 테스트 실행 파일을 가짜 MCP 서버로 다시 띄울 때 쓰는 테스트 이름
+    /// Name of the test used to start this test executable again as a fake MCP server
     const FAKE_TEST: &str = "canvas::mcp_client::tests::fake_server";
 
     #[test]
@@ -500,8 +500,8 @@ mod tests {
         d
     }
 
-    /// 가짜 MCP 서버. 이 테스트 실행 파일을 `cc-fake-mode=<모드>` 인자와 함께 다시 띄우면 서버로 동작한다.
-    /// 보통의 `cargo test`에서는 그 인자가 없으므로 아무것도 하지 않는다.
+    /// Fake MCP server. Started again with a `cc-fake-mode=<mode>` argument, this test executable acts as a server.
+    /// A normal `cargo test` run has no such argument, so it does nothing.
     #[test]
     fn fake_server() {
         let arg = |key: &str| std::env::args().find_map(|a| a.strip_prefix(key).map(String::from));
@@ -524,7 +524,7 @@ mod tests {
             out.write_all(b"\n").unwrap();
             out.flush().unwrap();
         };
-        // 테스트 하네스가 같은 줄에 찍어 둔 "test ... " 뒤에 붙지 않게 줄을 먼저 끝낸다
+        // End the line first so the output does not stick to the "test ... " the test harness printed on that line
         emit(b"");
         let result = |id: &Value, result: Value| json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string();
         let init_result = json!({
@@ -534,8 +534,9 @@ mod tests {
         match mode.as_str() {
             "ping_trap" => {
                 let init = recv().unwrap();
-                // CP949 로그 줄(UTF-8 아님), 클라이언트 요청과 같은 id의 ping, 다른 요청, 알림
-                emit(&encoding_rs::EUC_KR.encode("로그: 서버 시작").0);
+                // A CP949 log line (not UTF-8), a ping with the same id as the client's request, another request,
+                // a notification
+                emit(&encoding_rs::EUC_KR.encode(ko_fixture!("graph.mcp.cp949_log_line")).0);
                 emit(
                     json!({ "jsonrpc": "2.0", "id": init["id"], "method": "ping" })
                         .to_string()
@@ -559,13 +560,13 @@ mod tests {
             }
             "crash" => {
                 let mut err = std::io::stderr();
-                err.write_all(&encoding_rs::EUC_KR.encode("치명적 오류: 설정 파일 없음\r\n").0)
-                    .unwrap();
+                let line = format!("{}\r\n", ko_fixture!("graph.mcp.crash_stderr"));
+                err.write_all(&encoding_rs::EUC_KR.encode(&line).0).unwrap();
                 err.flush().unwrap();
                 std::process::exit(3);
             }
             "hang" => {
-                // 손자 프로세스(60초 잠)를 하나 띄우고 응답하지 않는다
+                // Start one grandchild process (it sleeps for 60 s) and never respond
                 let me = std::env::current_exe().unwrap();
                 let mut grandchild = Command::new(me)
                     .args(["--exact", FAKE_TEST, "--nocapture", "cc-fake-mode=sleep"])
@@ -576,7 +577,7 @@ mod tests {
             }
             "sleep" => std::thread::sleep(Duration::from_secs(60)),
             "null_error" => {
-                // 요청을 읽지 못한 서버처럼 id가 null인 오류로 답한다
+                // Answer with a null-id error, like a server that could not read the request
                 let _ = recv();
                 emit(br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}}"#);
                 while recv().is_some() {}
@@ -585,7 +586,7 @@ mod tests {
                 while let Some(msg) = recv() {
                     match msg["method"].as_str() {
                         Some("initialize") => emit(result(&msg["id"], init_result.clone()).as_bytes()),
-                        // 도구 이름이 "fail"이면 도구 오류(isError)로 답한다
+                        // If the tool name is "fail", answer with a tool error (isError)
                         Some("tools/call") if msg["params"]["name"] == "fail" => {
                             let body = json!({ "isError": true, "content": [{ "type": "text", "text": "boom" }] });
                             emit(result(&msg["id"], body).as_bytes());
@@ -599,12 +600,12 @@ mod tests {
                         _ => {}
                     }
                 }
-                // 입력 끝(EOF)을 보고 스스로 끝났다는 표시
+                // Marker showing that the server saw the end of its input (EOF) and exited by itself
                 if let Some(f) = file {
                     std::fs::write(f, "eof").unwrap();
                 }
             }
-            other => panic!("알 수 없는 가짜 서버 모드: {other}"),
+            other => panic!("unknown fake server mode: {other}"),
         }
     }
 
@@ -630,30 +631,45 @@ mod tests {
     #[test]
     fn answers_server_ping_and_survives_cp949_log_line() {
         let mut c = fake("ping_trap", None, Duration::from_secs(20)).unwrap();
-        let text = c.call_tool("echo", json!({ "q": "한글" })).unwrap();
+        let arg = ko_fixture!("graph.mcp.non_ascii_arg");
+        let text = c.call_tool("echo", json!({ "q": arg })).unwrap();
         assert!(text.contains("ping_ok=true"), "{text}");
         assert!(
             text.contains("roots_ok=true") && text.contains("notified=true"),
             "{text}"
         );
-        assert!(text.contains(r#"args={"q":"한글"}"#), "{text}");
+        assert!(text.contains(&format!(r#"args={{"q":"{arg}"}}"#)), "{text}");
     }
 
     #[test]
     fn crash_reports_exit_code_and_stderr_tail() {
-        let err = fake("crash", None, Duration::from_secs(20)).err().unwrap();
-        assert!(err.contains("응답 전에 종료됨 (initialize, 종료 코드 3)"), "{err}");
-        assert!(err.contains("[서버 stderr]\n치명적 오류: 설정 파일 없음"), "{err}");
+        with_lang(Lang::Ko, || {
+            let err = fake("crash", None, Duration::from_secs(20)).err().unwrap();
+            let exited = format!(
+                ko_text!("The MCP server exited before responding ({method}, exit code {code})"),
+                method = "initialize",
+                code = 3
+            );
+            assert!(err.contains(&exited), "{err}");
+            let tail = format!(
+                ko_text!("{msg}\n[server stderr]\n{tail}"),
+                msg = "",
+                tail = ko_fixture!("graph.mcp.crash_stderr")
+            );
+            assert!(err.contains(&tail), "{err}");
+        });
     }
 
     #[test]
     fn null_id_error_fails_the_pending_request_at_once() {
         let started = Instant::now();
-        let err = fake("null_error", None, Duration::from_secs(20)).err().unwrap();
-        assert_eq!(err, "MCP 오류: parse error");
+        let err = with_lang(Lang::Ko, || {
+            fake("null_error", None, Duration::from_secs(20)).err().unwrap()
+        });
+        assert_eq!(err, format!(ko_text!("MCP error: {text}"), text = "parse error"));
         assert!(
             started.elapsed() < Duration::from_secs(10),
-            "시간 초과까지 기다리면 안 된다"
+            "it must not wait for the timeout"
         );
     }
 
@@ -664,13 +680,13 @@ mod tests {
         let pid_file = dir.join("pid.txt");
         let started = Instant::now();
         let err = fake("hang", Some(&pid_file), Duration::from_secs(4)).err().unwrap();
-        assert!(err.contains("MCP 응답 시간 초과 (initialize, 4초)"), "{err}");
+        assert!(err.contains("MCP response timed out (initialize, 4s)"), "{err}");
         let pid: u32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         while alive(pid) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(100));
         }
-        assert!(!alive(pid), "손자 프로세스 {pid}가 남아 있음");
+        assert!(!alive(pid), "grandchild process {pid} is still alive");
         assert!(started.elapsed() < Duration::from_secs(20));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -690,23 +706,33 @@ mod tests {
             ),
         )
         .unwrap();
-        // 확장자 없이 넘겨도 .cmd를 찾아 cmd.exe로 실행한다 (npx → npx.cmd와 같은 경우)
+        // Even without an extension the .cmd is found and run through cmd.exe (the same case as npx → npx.cmd)
         let quoted = format!("\"{}\"", dir.join("fake-mcp").display());
         let mut c = McpClient::spawn(&quoted, "", Duration::from_secs(20)).unwrap();
         assert_eq!(c.call_tool("echo", json!({ "n": 1 })).unwrap(), r#"basic:{"n":1}"#);
         let t = Instant::now();
         drop(c);
-        assert!(marker.is_file(), "stdin을 닫으면 서버가 EOF를 보고 스스로 끝나야 한다");
+        assert!(
+            marker.is_file(),
+            "after stdin is closed the server must see EOF and exit by itself"
+        );
         assert!(t.elapsed() < Duration::from_secs(5));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn missing_command_explains_path_lookup() {
-        let err = McpClient::spawn("cc-no-such-mcp-server", "", Duration::from_secs(1))
-            .err()
-            .unwrap();
-        assert!(err.contains("MCP 서버 실행 실패 (cc-no-such-mcp-server)"), "{err}");
+        let err = with_lang(Lang::Ko, || {
+            McpClient::spawn("cc-no-such-mcp-server", "", Duration::from_secs(1))
+                .err()
+                .unwrap()
+        });
+        let failed = format!(
+            ko_text!("Failed to start the MCP server ({command}): {e}"),
+            command = "cc-no-such-mcp-server",
+            e = ""
+        );
+        assert!(err.starts_with(&failed), "{err}");
         assert!(err.contains("PATH"), "{err}");
         assert!(McpClient::spawn("  ", "", Duration::from_secs(1)).is_err());
     }
@@ -717,22 +743,26 @@ mod tests {
         for f in ["tool.cmd", "both.cmd", "both.exe", "plain", "script.js"] {
             std::fs::write(d.join(f), "").unwrap();
         }
-        // 빈 항목(현재 폴더)은 건너뛴다
+        // Empty entries (the current folder) are skipped
         let path = std::env::join_paths([PathBuf::new(), d.clone()]).unwrap();
         let ext = OsStr::new(".COM;.EXE;.BAT;.CMD;.VBS;.JS");
         let find = |c: &str| find_program(c, Some(&path), Some(ext));
         assert_eq!(find("tool"), Some(d.join("tool.cmd")));
         assert_eq!(find("tool.cmd"), Some(d.join("tool.cmd")));
-        assert_eq!(find("both"), Some(d.join("both.exe")), "PATHEXT 순서");
+        assert_eq!(find("both"), Some(d.join("both.exe")), "PATHEXT order");
         assert_eq!(
             find_program("both", Some(&path), Some(OsStr::new(".CMD;.EXE"))),
             Some(d.join("both.cmd"))
         );
         assert_eq!(find_program("tool", Some(&path), None), Some(d.join("tool.cmd")));
-        assert_eq!(find("plain"), None, "확장자 없는 파일(sh 스크립트 등)은 실행할 수 없다");
-        assert_eq!(find("script"), None, ".js는 CreateProcess로 실행할 수 없다");
+        assert_eq!(
+            find("plain"),
+            None,
+            "files without an extension (sh scripts etc.) cannot be run"
+        );
+        assert_eq!(find("script"), None, ".js cannot be run with CreateProcess");
         assert_eq!(find("missing"), None);
-        // 경로가 들어 있으면 PATH 대신 그 위치에서 찾는다
+        // A command that contains a path is looked up there instead of on PATH
         let full = d.join("tool").display().to_string();
         assert_eq!(find_program(&full, None, Some(ext)), Some(d.join("tool.cmd")));
         let _ = std::fs::remove_dir_all(&d);
@@ -740,17 +770,24 @@ mod tests {
 
     #[test]
     fn stderr_tail_decodes_cp949_and_cut_utf8() {
-        let (cp, _, _) = encoding_rs::EUC_KR.encode("오류: 설정 파일 없음\r\n");
-        assert_eq!(decode_tail(&cp, false), "오류: 설정 파일 없음");
-        let utf8 = "가나다 error".as_bytes();
-        assert_eq!(decode_tail(&utf8[1..], true), "나다 error", "잘린 첫 글자는 버린다");
+        let error = ko_fixture!("graph.mcp.cp949_error");
+        let line = format!("{error}\r\n");
+        let (cp, _, _) = encoding_rs::EUC_KR.encode(&line);
+        assert_eq!(decode_tail(&cp, false), error);
+        let utf8 = ko_fixture!("graph.mcp.cut_utf8").as_bytes();
+        assert_eq!(
+            decode_tail(&utf8[1..], true),
+            ko_fixture!("graph.mcp.cut_utf8_tail"),
+            "the cut first character is dropped"
+        );
         assert_eq!(decode_tail(b"  plain\n", false), "plain");
     }
 
     #[test]
     fn tool_errors_are_reported_with_their_text() {
         let mut c = fake("basic", None, Duration::from_secs(20)).unwrap();
-        assert_eq!(c.call_tool("fail", json!({})).unwrap_err(), "도구 오류: boom");
+        let ko = with_lang(Lang::Ko, || c.call_tool("fail", json!({})));
+        assert_eq!(ko.unwrap_err(), format!(ko_text!("Tool error: {text}"), text = "boom"));
         let en = with_lang(Lang::En, || c.call_tool("fail", json!({})));
         assert_eq!(en.unwrap_err(), "Tool error: boom");
         assert_eq!(c.call_tool("echo", json!({ "n": 1 })).unwrap(), r#"basic:{"n":1}"#);
@@ -779,10 +816,8 @@ mod tests {
                 err.contains("The MCP server exited before responding (initialize, exit code 3)"),
                 "{err}"
             );
-            assert!(
-                err.contains("[server stderr]\n치명적 오류: 설정 파일 없음"),
-                "서버가 쓴 글자는 그대로: {err}"
-            );
+            let tail = format!("[server stderr]\n{}", ko_fixture!("graph.mcp.crash_stderr"));
+            assert!(err.contains(&tail), "the server's own text stays as is: {err}");
             let err = fake("null_error", None, Duration::from_secs(20)).err().unwrap();
             assert_eq!(err, "MCP error: parse error");
         });

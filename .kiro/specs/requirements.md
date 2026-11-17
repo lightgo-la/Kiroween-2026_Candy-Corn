@@ -9,3 +9,4 @@
 7. The system shall display original vs. compressed token counts (o200k_base approximation) and the estimated input-cost saving.
 8. Where the binary is started with `--cli`, the system shall run the pipeline in the terminal; where started with `--mcp`, it shall serve the `compress_prompt` tool over stdio JSON-RPC.
 9. The system shall render Korean text by registering a system Korean font at startup.
+10. The system shall show its UI text and diagnostics in English by default; where the user selects Korean (the language picker or `--lang ko`), it shall show them in Korean, and the compiled prompt shall be the same in both languages.

@@ -1,16 +1,16 @@
-//! 실행 취소/다시 실행 기록. 매 프레임 현재 상태를 넘기면, 변경이 잠시 멈췄을 때 한 단계로 묶어 기록한다.
-//! (글자를 칠 때마다 한 단계씩 쌓이지 않도록 디바운스한다.)
+//! Undo/redo history. Pass in the current state every frame; once changes pause briefly, they are recorded as one step.
+//! (Debounced so that typing does not add one step per character.)
 
 const MAX_STEPS: usize = 100;
-/// 마지막 변경 후 이 시간(초)이 지나면 한 단계로 확정한다.
+/// A change is committed as one step once this many seconds have passed since the last change.
 pub const SETTLE_SECS: f64 = 0.6;
 
 pub struct History<T> {
     undo: Vec<T>,
     redo: Vec<T>,
-    /// 마지막으로 확정된 상태
+    /// The last committed state
     committed: T,
-    /// 아직 확정되지 않은 최신 상태와 그 변경 시각
+    /// The latest uncommitted state and the time it changed
     pending: Option<(T, f64)>,
 }
 
@@ -24,7 +24,7 @@ impl<T: Clone + PartialEq> History<T> {
         }
     }
 
-    /// 매 프레임 호출한다. 확정을 기다리는 변경이 있으면 true(다시 그리기 예약용).
+    /// Call every frame. Returns true while a change is waiting to be committed (used to schedule a repaint).
     pub fn track(&mut self, now: &T, time: f64) -> bool {
         if *now == self.committed {
             self.pending = None;
@@ -64,7 +64,7 @@ impl<T: Clone + PartialEq> History<T> {
         !self.redo.is_empty() && self.pending.is_none()
     }
 
-    /// 되돌릴 상태를 돌려준다. 확정 전 변경이 있으면 먼저 확정해서 그 변경부터 되돌린다.
+    /// Returns the state to go back to. An uncommitted change is committed first, so it is the first one undone.
     pub fn undo(&mut self) -> Option<T> {
         self.commit();
         let prev = self.undo.pop()?;
@@ -75,7 +75,7 @@ impl<T: Clone + PartialEq> History<T> {
 
     pub fn redo(&mut self) -> Option<T> {
         if self.pending.is_some() {
-            return None; // 새 변경이 생기면 다시 실행 기록은 무효
+            return None; // a new change invalidates the redo history
         }
         let next = self.redo.pop()?;
         let cur = std::mem::replace(&mut self.committed, next);
@@ -83,7 +83,7 @@ impl<T: Clone + PartialEq> History<T> {
         Some(self.committed.clone())
     }
 
-    /// 프로젝트 불러오기처럼 기록 없이 상태를 바꿀 때 쓴다.
+    /// Replaces the state without recording history, e.g. when a project is loaded.
     pub fn reset(&mut self, state: T) {
         *self = History::new(state);
     }
@@ -96,11 +96,11 @@ mod tests {
     #[test]
     fn typing_is_one_step_after_pause() {
         let mut h = History::new("".to_string());
-        // 0.1초 간격으로 한 글자씩: 아직 확정 안 됨
+        // One character every 0.1 s: not committed yet
         for (i, s) in ["a", "ab", "abc"].iter().enumerate() {
             assert!(h.track(&s.to_string(), i as f64 * 0.1));
         }
-        assert!(!h.track(&"abc".to_string(), 1.0)); // 멈춘 뒤 확정
+        assert!(!h.track(&"abc".to_string(), 1.0)); // committed after the pause
         assert_eq!(h.undo().as_deref(), Some(""));
         assert_eq!(h.redo().as_deref(), Some("abc"));
         assert!(h.undo().is_some());
@@ -112,7 +112,7 @@ mod tests {
         let mut h = History::new(1);
         h.track(&2, 0.0);
         h.track(&2, 1.0);
-        h.track(&3, 1.1); // 아직 확정 전
+        h.track(&3, 1.1); // not committed yet
         assert_eq!(h.undo(), Some(2));
         assert_eq!(h.undo(), Some(1));
         assert_eq!(h.redo(), Some(2));

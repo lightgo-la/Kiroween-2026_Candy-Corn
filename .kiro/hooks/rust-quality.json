@@ -3,7 +3,7 @@
   "hooks": [
     {
       "name": "rustfmt-on-save",
-      "description": "포매터: 에이전트가 .rs 파일을 저장하면 cargo fmt로 포맷한다",
+      "description": "Formatter: formats with cargo fmt when the agent saves a .rs file",
       "trigger": "PostFileSave",
       "matcher": "\\.rs$",
       "action": { "type": "command", "command": "cargo fmt --all" },
@@ -11,7 +11,7 @@
     },
     {
       "name": "clippy-on-save",
-      "description": "린터 + 타입 체크: .rs 저장마다 clippy(컴파일 검사 포함)를 경고 0으로 통과해야 한다",
+      "description": "Linter + type check: every .rs save must pass clippy (including the compile check) with zero warnings",
       "trigger": "PostFileSave",
       "matcher": "\\.rs$",
       "action": { "type": "command", "command": "cargo clippy --all-targets --quiet -- -D warnings" },
@@ -19,14 +19,14 @@
     },
     {
       "name": "clippy-on-stop",
-      "description": "턴이 끝날 때 clippy 경고·오류가 있으면 에이전트가 이어서 고친다",
+      "description": "At the end of a turn, the agent keeps fixing clippy warnings and errors if there are any",
       "trigger": "Stop",
       "action": { "type": "command", "command": "cargo clippy --all-targets --quiet -- -D warnings" },
       "timeout": 300
     },
     {
       "name": "tests-on-stop",
-      "description": "완료 조건: 턴이 끝날 때 전체 테스트(단위·QC·시나리오)가 통과해야 한다. 실패하면 에이전트가 이어서 고친다",
+      "description": "Done condition: all tests (unit, QC, scenarios) must pass at the end of a turn. If they fail, the agent keeps fixing them",
       "trigger": "Stop",
       "action": { "type": "command", "command": "cargo test --quiet" },
       "timeout": 600

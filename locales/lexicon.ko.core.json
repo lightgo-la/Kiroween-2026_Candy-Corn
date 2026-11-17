@@ -1,0 +1,96 @@
+{
+  "_note": "Korean linguistic data of the core area (linter, AST classification, profiler). build.rs turns each key into a constant in crate::lexicon (string -> &str, array -> &[&str]). Array order is kept exactly; several lists are matched first-to-last and must stay longest-first.",
+
+  "_LINTER_KO_FILLERS": "Filler words dropped by the filler pass (the English ones are in linter.rs).",
+  "LINTER_KO_FILLERS": ["매우", "정말", "아주", "굉장히", "제발"],
+
+  "_LINTER_KO_NEG_IMPERATIVES": "'-ji ma/mal' prohibitive endings, longest first. Negative when the previous word ends in LINTER_KO_NEG_CONNECTIVE or when glued to such a word.",
+  "LINTER_KO_NEG_IMPERATIVES": [
+    "마십시오", "마세요", "마시오", "말아라", "말아요", "맙시다", "마라", "마요", "말고", "말라", "말아", "말것",
+    "말자", "말기", "말길", "마", "말"
+  ],
+
+  "_LINTER_KO_STOPWORDS": "Korean function words left out of content comparison (the English stopwords are in linter.rs).",
+  "LINTER_KO_STOPWORDS": [
+    "하지", "해", "하고", "하라", "해라", "하세요", "합니다", "한다", "할", "하는", "주세요", "줘",
+    "것", "수", "및", "또는", "반드시", "꼭", "절대", "절대로"
+  ],
+
+  "_LINTER_KO_SUFFIXES": "Endings and particles stripped from Korean words, longest first: 4 syllables, 3 syllables, 2-syllable endings, 2-syllable particles, 1 syllable.",
+  "LINTER_KO_SUFFIXES": [
+    "해주세요", "하십시오",
+    "하지는", "하지도", "하세요", "하시오", "합니다", "하도록", "되도록", "시켜라", "시키지", "시키고",
+    "하지", "해라", "해요", "해줘", "해서", "해야", "하고", "하라", "한다", "하는", "하여", "하면", "하되", "하기",
+    "하게", "했다", "했음", "되지", "되는", "되어", "된다", "되게", "시켜", "시킨", "시킬",
+    "으로", "에서", "에게", "까지", "부터", "처럼", "보다", "마다", "이나", "이랑",
+    "해", "할", "한", "함", "된", "됨", "돼",
+    "를", "을", "는", "은", "이", "의", "에", "로", "와", "과", "랑"
+  ],
+
+  "_LINTER_KO_LOOSE_SUFFIXES": "Particles stripped only by the loose comparison used for warnings.",
+  "LINTER_KO_LOOSE_SUFFIXES": ["가", "도", "만"],
+
+  "_LINTER_KO_ONLY_PARTICLE": "The loose suffix that is kept after a number unit (LINTER_KO_NUMBER_UNITS).",
+  "LINTER_KO_ONLY_PARTICLE": "만",
+  "LINTER_KO_NUMBER_UNITS": "십백천만억조",
+
+  "_LINTER_KO_NEG_AUX": "Negative auxiliary stem ('-ji anh-'), searched inside a word.",
+  "LINTER_KO_NEG_AUX": "않",
+  "LINTER_KO_NEG_CONNECTIVE": "지",
+
+  "_LINTER_KO_DESCRIPTIVE_NEG": "Adnominal negation: describes the following noun instead of forbidding.",
+  "LINTER_KO_DESCRIPTIVE_NEG": ["않은", "않는"],
+
+  "_LINTER_KO_PURPOSE": "Purpose/result endings after LINTER_KO_NEG_AUX, matched first to last.",
+  "LINTER_KO_PURPOSE": ["도록", "게끔", "게"],
+
+  "_LINTER_KO_PURPOSE_DIRECTIVES": "Directive forms of 'do' that turn a purpose clause into a prohibition.",
+  "LINTER_KO_PURPOSE_DIRECTIVES": [
+    "해", "하라", "해라", "하세요", "해요", "해줘", "해주세요", "하십시오", "하시오", "합시다", "하자", "한다", "합니다",
+    "해야", "할것"
+  ],
+
+  "_LINTER_KO_DO_PROSPECTIVE": "'do' in the prospective form: a directive only when LINTER_KO_NOMINALIZER follows.",
+  "LINTER_KO_DO_PROSPECTIVE": "할",
+  "LINTER_KO_NOMINALIZER": "것",
+
+  "_LINTER_KO_PURPOSE_CAUTIONS": "Word beginnings that are prohibitive directives after a purpose clause.",
+  "LINTER_KO_PURPOSE_CAUTIONS": ["주의", "유의", "조심"],
+
+  "_LINTER_KO_EMPHASIS": "Emphasis adverbs skipped when looking for the directive after a purpose clause.",
+  "LINTER_KO_EMPHASIS": ["꼭", "반드시", "절대", "절대로"],
+
+  "_LINTER_KO_PROHIBITIVE": "Prohibitive verb in 'mal geot', as a separate word or glued to the nominalizer.",
+  "LINTER_KO_PROHIBITIVE": "말",
+  "LINTER_KO_PROHIBITIVE_GLUED": "말것",
+
+  "_LINTER_KO_BANS": "Ban markers at the end of a word (or before LINTER_KO_BAN_ENDINGS), matched first to last.",
+  "LINTER_KO_BANS": ["금지", "지양", "자제"],
+  "LINTER_KO_BAN_ENDINGS": [
+    "", "야", "다", "임", "이다", "입니다", "함", "하다", "한다", "합니다", "해", "하라", "해라", "하세요", "하고", "하며",
+    "됨", "된다", "되어", "돼"
+  ],
+
+  "_LINTER_KO_EXCEPTION_WORDS": "Exception and contrast words (the English ones are in linter.rs).",
+  "LINTER_KO_EXCEPTION_WORDS": [
+    "대신", "제외", "말고", "빼고", "외", "외에", "외의", "아닌", "아니라", "아니고", "없이", "않은", "않는"
+  ],
+
+  "_LINTER_KO_ANTONYMS": "Korean sides of the antonym pairs in linter.rs (stems).",
+  "LINTER_KO_EXCLUDE": ["제외", "배제"],
+  "LINTER_KO_INCLUDE": ["포함"],
+  "LINTER_KO_ALLOW": ["허용"],
+  "LINTER_KO_FORBID": ["불허"],
+  "LINTER_KO_INCREASE": ["증가"],
+  "LINTER_KO_DECREASE": ["감소"],
+  "LINTER_KO_ASCENDING": ["오름차순"],
+  "LINTER_KO_DESCENDING": ["내림차순"],
+
+  "_AST_KO_FACTUALITY_MARKERS": "Phrases that forbid content outside the data (the English ones are in ast/mod.rs).",
+  "AST_KO_FACTUALITY_MARKERS": ["데이터 외", "데이터외", "데이터에 없는", "데이터에없는"],
+  "AST_KO_INFERENCE_WORDS": ["추론", "추측", "짐작", "지어내", "꾸며내"],
+  "AST_KO_INFERENCE_BANS": ["없이", "배제", "지양", "자제"],
+
+  "_PROFILER_KO_ID_WORDS": "Words that mark an identifier column anywhere in its name.",
+  "PROFILER_KO_ID_WORDS": ["번호", "코드", "아이디", "순번"]
+}

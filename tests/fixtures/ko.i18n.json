@@ -1,0 +1,5 @@
+{
+  "_note": "Korean test inputs. build.rs turns each key into ko_fixture!(key): string -> &str, array -> &[&str]. Each area keeps its own ko.<area>.json file.",
+  "i18n.sample": "한국어 예시",
+  "i18n.list": ["가", "나"]
+}

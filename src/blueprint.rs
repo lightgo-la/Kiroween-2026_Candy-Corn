@@ -1,8 +1,10 @@
-//! 블루프린트: 스튜디오 전체 설정을 담는 파일(.kiro, JSON).
-//! 데이터 경로·역할·제약·출력 포맷·필드·타겟·샘플 행 수·테마·LLM 모델·LLM 실행 옵션·노드 배치를 한 번에 저장/적용한다.
-//! GUI(캔버스 메뉴, 열기/저장)와 CLI(`--cli --blueprint 파일`)가 같은 형식을 쓴다.
+//! Blueprint: the file (.kiro, JSON) that holds the whole studio setup.
+//! Saves/applies the data path, role, constraints, output format, fields, target, sample row count, theme, LLM models,
+//! LLM run options and node layout in one go.
+//! The GUI (canvas menu, open/save) and the CLI (`--cli --blueprint FILE`) use the same format.
 //!
-//! 버전: v1(프로젝트 파일) → v2(llm_models) → v3(llm_options). 빠진 항목은 기본값으로 읽으므로 예전 파일도 열린다.
+//! Versions: v1 (project file) → v2 (llm_models) → v3 (llm_options). Missing entries are read as defaults, so older
+//! files still open.
 
 use crate::ast::{OutputFormat, TargetModel};
 use crate::canvas::graph::Provider;
@@ -13,10 +15,12 @@ use std::path::{Path, PathBuf};
 
 pub const VERSION: u32 = 3;
 
-/// 노드 좌표의 허용 범위(±). 이보다 먼 좌표는 f32 정밀도가 떨어져 캔버스 계산(격자, 화면 맞춤)이 망가진다.
+/// Allowed range (±) of node coordinates. Farther coordinates lose f32 precision and break the canvas math (grid, fit
+/// to view).
 pub const POS_LIMIT: f32 = 100_000.0;
 
-/// 저장된 노드 좌표를 검사한다. NaN·무한대가 있으면 버리고(None), 너무 먼 값은 ±POS_LIMIT로 자른다.
+/// Checks a saved node position: drops it (None) if it has NaN or infinity, and clamps values that are too far to
+/// ±POS_LIMIT.
 pub fn sanitize_pos(p: [f32; 2]) -> Option<[f32; 2]> {
     p.iter()
         .all(|v| v.is_finite())
@@ -27,15 +31,15 @@ pub const MIN_LLM_MAX_TOKENS: u32 = 256;
 pub const MAX_LLM_MAX_TOKENS: u32 = 32_000;
 pub const DEFAULT_LLM_MAX_TOKENS: u32 = 2048;
 
-/// LLM 실행 옵션 (v3부터 저장). v1/v2 파일에는 없으므로 기본값으로 읽는다.
+/// LLM run options (saved since v3). v1/v2 files do not have them, so they are read as defaults.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LlmOptions {
-    /// 출력 토큰 한도 (MIN_LLM_MAX_TOKENS..=MAX_LLM_MAX_TOKENS)
+    /// Output token limit (MIN_LLM_MAX_TOKENS..=MAX_LLM_MAX_TOKENS)
     pub max_tokens: u32,
-    /// 온도. None이면 요청에 넣지 않아 제공자 기본값을 쓴다
+    /// Temperature. None leaves it out of the request, so the provider default is used
     pub temperature: Option<f32>,
-    /// 시스템 프롬프트. 비어 있으면 보내지 않는다
+    /// System prompt. Not sent when empty
     pub system: String,
 }
 
@@ -49,7 +53,7 @@ impl Default for LlmOptions {
     }
 }
 
-/// 제공자별 온도 상한 (Anthropic 0~1, OpenAI·Gemini 0~2).
+/// Upper temperature limit per provider (Anthropic 0-1, OpenAI and Gemini 0-2).
 pub fn temperature_max(p: Provider) -> f32 {
     match p {
         Provider::Anthropic => 1.0,
@@ -58,22 +62,23 @@ pub fn temperature_max(p: Provider) -> f32 {
 }
 
 impl LlmOptions {
-    /// 범위를 벗어난 값을 바로잡는다. 온도는 제공자와 상관없는 최대 범위(0~2)로만 자르고,
-    /// 제공자별 범위는 보낼 때(effective_temperature) 맞춘다.
+    /// Fixes out-of-range values. The temperature is only clamped to the provider-independent maximum range (0-2);
+    /// the per-provider range is applied when sending (effective_temperature).
     pub fn normalized(mut self) -> LlmOptions {
         self.max_tokens = self.max_tokens.clamp(MIN_LLM_MAX_TOKENS, MAX_LLM_MAX_TOKENS);
         self.temperature = self.temperature.filter(|t| t.is_finite()).map(|t| t.clamp(0.0, 2.0));
         self
     }
 
-    /// 제공자에게 실제로 보낼 온도. 저장된 값은 그대로 두고 제공자 범위로 자른 값을 쓴다
-    /// (GPT에서 1.5로 둔 값을 Claude로 바꿔 1.0으로 보내도, 다시 GPT로 돌아오면 1.5가 남아 있다).
+    /// The temperature actually sent to the provider: the saved value is left alone and a copy clamped to the
+    /// provider's range is used (1.5 set for GPT is sent as 1.0 after switching to Claude, and is still 1.5 after
+    /// switching back to GPT).
     pub fn effective_temperature(&self, p: Provider) -> Option<f32> {
         self.temperature.map(|t| t.clamp(0.0, temperature_max(p)))
     }
 }
 
-/// 필드가 빠진 예전 파일(v1 프로젝트 파일 포함)도 읽을 수 있게 모든 필드에 기본값을 둔다.
+/// Every field has a default so that older files with missing fields (including v1 project files) can be read.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Blueprint {
@@ -85,15 +90,15 @@ pub struct Blueprint {
     pub format: OutputFormat,
     pub fields: String,
     pub sample_rows: usize,
-    /// 테마 번호 (0부터, 디자인샘플 01 = 0)
+    /// Theme number (from 0; design sample 01 = 0)
     pub theme: usize,
-    /// 데이터 파일 경로. 상대 경로는 블루프린트 파일이 있는 폴더 기준이다.
+    /// Data file path. A relative path is relative to the folder of the blueprint file.
     pub data_path: Option<String>,
-    /// 고정 노드 위치 (data, role, output, root, result, llm, settings)
+    /// Fixed node positions (data, role, output, root, result, llm, settings)
     pub positions: Vec<(String, [f32; 2])>,
-    /// 제공자별 LLM 모델 이름
+    /// LLM model name per provider
     pub llm_models: Vec<(Provider, String)>,
-    /// LLM 실행 옵션: 출력 토큰 한도, 온도, 시스템 프롬프트 (v3)
+    /// LLM run options: output token limit, temperature, system prompt (v3)
     pub llm_options: LlmOptions,
 }
 
@@ -129,30 +134,21 @@ pub const MAX_SAMPLE_ROWS: usize = 50;
 
 impl Blueprint {
     pub fn load(path: &Path) -> Result<Blueprint, String> {
-        let text =
-            std::fs::read_to_string(path).map_err(|e| trf!("파일을 읽을 수 없음: {e}", "cannot read file: {e}"))?;
+        let text = std::fs::read_to_string(path).map_err(|e| trf!("cannot read file: {e}", e = e))?;
         Blueprint::parse(&text)
     }
 
-    /// 블루프린트 JSON을 읽는다. 모든 블루프린트(v1 프로젝트 파일 포함)에는 숫자 version 키가 있으므로,
-    /// 그것이 없는 JSON은 다른 종류의 파일로 보고 거부한다.
+    /// Parses blueprint JSON. Every blueprint (including v1 project files) has a numeric version key,
+    /// so JSON without one is taken as a different kind of file and rejected.
     pub fn parse(text: &str) -> Result<Blueprint, String> {
         let value: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
-            .map_err(|e| trf!("형식 오류: {e}", "invalid format: {e}"))?;
+            .map_err(|e| trf!("invalid format: {e}", e = e))?;
         if !value.get("version").is_some_and(serde_json::Value::is_u64) {
-            return Err(tr!(
-                "블루프린트 파일이 아닙니다 (version 항목 없음)",
-                "not a blueprint file (no version field)"
-            )
-            .into());
+            return Err(tr!("not a blueprint file (no version field)").into());
         }
-        let bp: Blueprint = serde_json::from_value(value).map_err(|e| trf!("형식 오류: {e}", "invalid format: {e}"))?;
+        let bp: Blueprint = serde_json::from_value(value).map_err(|e| trf!("invalid format: {e}", e = e))?;
         if bp.version > VERSION {
-            return Err(trf!(
-                "더 새로운 형식(v{})의 블루프린트입니다",
-                "the blueprint uses a newer format (v{})",
-                bp.version
-            ));
+            return Err(trf!("the blueprint uses a newer format (v{})", bp.version));
         }
         Ok(bp.normalized())
     }
@@ -161,11 +157,11 @@ impl Blueprint {
         let mut bp = self.clone();
         bp.version = VERSION;
         let text = serde_json::to_string_pretty(&bp).map_err(|e| e.to_string())?;
-        std::fs::write(path, text).map_err(|e| trf!("저장 실패: {e}", "Save failed: {e}"))
+        std::fs::write(path, text).map_err(|e| trf!("Save failed: {e}", e = e))
     }
 
-    /// 범위를 벗어난 값을 바로잡는다. 노드 좌표는 NaN·무한대를 버리고 ±POS_LIMIT로 자른다
-    /// (아주 먼 좌표는 캔버스의 화면 맞춤·격자 계산을 망가뜨린다).
+    /// Fixes out-of-range values. Node positions with NaN or infinity are dropped, the rest are clamped to ±POS_LIMIT
+    /// (very distant coordinates break the canvas fit-to-view and grid math).
     pub fn normalized(mut self) -> Blueprint {
         self.sample_rows = self.sample_rows.min(MAX_SAMPLE_ROWS);
         self.theme = self.theme.min(crate::theme::THEMES.len() - 1);
@@ -180,12 +176,12 @@ impl Blueprint {
         self
     }
 
-    /// 저장하지 않은 변경을 찾기 위한 비교용 직렬화 (전체 내용).
+    /// Serialization of the whole content, compared to detect unsaved changes.
     pub fn fingerprint(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
     }
 
-    /// 데이터 경로를 블루프린트 파일 위치 기준으로 해석한다.
+    /// Resolves the data path relative to the blueprint file's location.
     pub fn data_path_from(&self, blueprint_file: Option<&Path>) -> Option<PathBuf> {
         let p = PathBuf::from(self.data_path.as_ref()?.trim());
         if p.as_os_str().is_empty() {
@@ -197,9 +193,9 @@ impl Blueprint {
         })
     }
 
-    /// 데이터 파일 경로를 블루프린트 파일 위치 기준으로 저장할 문자열로 바꾼다.
-    /// 둘 다 절대 경로로 만든 뒤, 데이터가 블루프린트 폴더 아래에 있으면 `/` 구분 상대 경로를,
-    /// 아니면 절대 경로를 쓴다(작업 폴더 기준 상대 경로를 그대로 저장하면 다른 곳에서 열 때 깨진다).
+    /// Turns a data file path into the string to save, relative to the blueprint file's location.
+    /// Both are made absolute first; if the data is under the blueprint's folder a `/`-separated relative path is used,
+    /// otherwise the absolute path (saving a path relative to the working folder as is breaks when opened elsewhere).
     pub fn portable_data_path(data: &Path, blueprint_file: &Path) -> String {
         let abs = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
         let data_abs = abs(data);
@@ -218,7 +214,7 @@ impl Blueprint {
         self.llm_models.iter().find(|(k, _)| *k == p).map(|(_, m)| m.as_str())
     }
 
-    /// 사용 중이고 비어 있지 않은 제약 문장.
+    /// Constraint sentences that are on and not empty.
     pub fn active_constraints(&self) -> Vec<String> {
         self.goals
             .iter()
@@ -241,8 +237,9 @@ impl Blueprint {
     }
 }
 
-/// 내장 블루프린트: 이름, 설명, 설정. 문구(이름·설명·역할·제약)는 두 언어로 적고 적용할 때 현재 언어를 쓴다.
-/// 필드 이름은 출력 스키마의 식별자라 언어와 관계없이 같다.
+/// Built-in blueprint: name, summary, settings. The text (name, summary, role, constraints) is written in both
+/// languages, and the current language is used when it is applied.
+/// Field names are output schema identifiers, so they are the same in every language.
 pub struct Preset {
     pub name: Tr,
     pub summary: Tr,
@@ -257,107 +254,71 @@ pub struct Preset {
 
 pub const PRESETS: [Preset; 5] = [
     Preset {
-        name: Tr("매출 이상치 분석", "Sales Outlier Analysis"),
-        summary: Tr(
-            "Claude · JSON · 샘플 8행 · 느와르",
-            "Claude · JSON · 8 sample rows · Noir",
-        ),
+        name: trp!("Sales Outlier Analysis"),
+        summary: trp!("Claude · JSON · 8 sample rows · Noir"),
         target: TargetModel::Claude,
         format: OutputFormat::StrictJson,
-        role: Tr(
-            "매출 데이터를 분석해 근본 원인을 찾는 데이터 분석가",
-            "Data analyst who finds root causes in sales data",
-        ),
+        role: trp!("Data analyst who finds root causes in sales data"),
         goals: &[
-            Tr("결측치 0.2% 제외", "Exclude missing values (0.2%)"),
-            Tr("이상치 우선 탐지", "Detect outliers first"),
-            Tr(
-                "데이터에 없는 내용은 추론하지 마",
-                "Do not infer anything not in the data",
-            ),
+            trp!("Exclude missing values (0.2%)"),
+            trp!("Detect outliers first"),
+            trp!("Do not infer anything not in the data"),
         ],
         fields: "root_causes,outliers,recommendations",
         sample_rows: 8,
         theme: 3,
     },
     Preset {
-        name: Tr("데이터 품질 점검", "Data Quality Check"),
-        summary: Tr(
-            "GPT · 표 · 샘플 12행 · 안개 묘지",
-            "GPT · Table · 12 sample rows · Misty Graveyard",
-        ),
+        name: trp!("Data Quality Check"),
+        summary: trp!("GPT · Table · 12 sample rows · Misty Graveyard"),
         target: TargetModel::Gpt,
         format: OutputFormat::MarkdownTable,
-        role: Tr("데이터 품질 감사관", "Data quality auditor"),
+        role: trp!("Data quality auditor"),
         goals: &[
-            Tr(
-                "결측치 비율을 컬럼별로 보고",
-                "Report the missing-value ratio for each column",
-            ),
-            Tr("중복 행 여부를 확인", "Check for duplicate rows"),
-            Tr(
-                "데이터에 없는 내용은 추론하지 마",
-                "Do not infer anything not in the data",
-            ),
+            trp!("Report the missing-value ratio for each column"),
+            trp!("Check for duplicate rows"),
+            trp!("Do not infer anything not in the data"),
         ],
         fields: "column,issue,severity,fix",
         sample_rows: 12,
         theme: 5,
     },
     Preset {
-        name: Tr("경영진 요약 리포트", "Executive Summary Report"),
-        summary: Tr(
-            "Claude · JSON · 샘플 5행 · 벨벳",
-            "Claude · JSON · 5 sample rows · Velvet",
-        ),
+        name: trp!("Executive Summary Report"),
+        summary: trp!("Claude · JSON · 5 sample rows · Velvet"),
         target: TargetModel::Claude,
         format: OutputFormat::StrictJson,
-        role: Tr(
-            "경영진에게 보고하는 비즈니스 분석가",
-            "Business analyst reporting to executives",
-        ),
+        role: trp!("Business analyst reporting to executives"),
         goals: &[
-            Tr("요약은 3문장 이내", "Keep the summary to 3 sentences or fewer"),
-            Tr("숫자는 소수점 둘째 자리까지", "Round numbers to 2 decimal places"),
-            Tr("핵심 지표를 먼저 제시", "Present the key metrics first"),
+            trp!("Keep the summary to 3 sentences or fewer"),
+            trp!("Round numbers to 2 decimal places"),
+            trp!("Present the key metrics first"),
         ],
         fields: "headline,key_metrics,next_steps",
         sample_rows: 5,
         theme: 4,
     },
     Preset {
-        name: Tr("고객 세그먼트 분류", "Customer Segmentation"),
-        summary: Tr(
-            "Gemini · 표 · 샘플 20행 · 클래식 나이트",
-            "Gemini · Table · 20 sample rows · Classic Night",
-        ),
+        name: trp!("Customer Segmentation"),
+        summary: trp!("Gemini · Table · 20 sample rows · Classic Night"),
         target: TargetModel::Gemini,
         format: OutputFormat::MarkdownTable,
-        role: Tr(
-            "고객 데이터를 세그먼트로 분류하는 분석가",
-            "Analyst who sorts customer data into segments",
-        ),
+        role: trp!("Analyst who sorts customer data into segments"),
         goals: &[
-            Tr("금액 4M 기준으로 분류", "Classify by the 4M amount threshold"),
-            Tr(
-                "분류 근거를 한 줄로 설명",
-                "Explain the basis for each segment in one line",
-            ),
-            Tr(
-                "분류할 수 없으면 unknown으로 표기",
-                "Mark anything that cannot be classified as unknown",
-            ),
+            trp!("Classify by the 4M amount threshold"),
+            trp!("Explain the basis for each segment in one line"),
+            trp!("Mark anything that cannot be classified as unknown"),
         ],
         fields: "segment,reason,confidence",
         sample_rows: 20,
         theme: 0,
     },
     Preset {
-        name: Tr("빈 블루프린트", "Blank Blueprint"),
-        summary: Tr("기본값에서 직접 구성", "Build it yourself from the defaults"),
+        name: trp!("Blank Blueprint"),
+        summary: trp!("Build it yourself from the defaults"),
         target: TargetModel::Claude,
         format: OutputFormat::StrictJson,
-        role: Tr("데이터 분석가", "Data analyst"),
+        role: trp!("Data analyst"),
         goals: &[],
         fields: pipeline::DEFAULT_FIELDS,
         sample_rows: 8,
@@ -366,8 +327,9 @@ pub const PRESETS: [Preset; 5] = [
 ];
 
 impl Preset {
-    /// 내장 블루프린트를 설정으로 만든다. 데이터와 노드 배치는 비워 둔다(현재 데이터를 유지).
-    /// 이름·역할·제약은 지금 언어의 문구로 채운다(적용한 뒤에는 사용자 내용이라 언어를 바꿔도 그대로 둔다).
+    /// Turns the built-in blueprint into settings. Data and node layout are left empty (the current data is kept).
+    /// The name, role and constraints are filled in the current language (once applied they are user content and stay
+    /// as they are when the language changes).
     pub fn to_blueprint(&self) -> Blueprint {
         Blueprint {
             project: format!("{}.kiro", self.name.get().replace(' ', "_")),
@@ -406,7 +368,7 @@ mod tests {
         bp.positions = vec![("root".into(), [1.0, 2.0])];
         bp.llm_models = vec![(Provider::OpenAi, "gpt-x".into())];
         bp.goals.push(GoalSpec {
-            text: "꺼진 제약".into(),
+            text: ko_fixture!("studio.goal_off").into(),
             on: false,
             pos: Some([3.0, 4.0]),
         });
@@ -424,7 +386,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sc_bp1_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("old.kiro");
-        // v1 형식: llm_models 없음, 범위 밖 값, BOM
+        // v1 format: no llm_models, out-of-range values, BOM
         std::fs::write(
             &path,
             "\u{feff}{\"version\":1,\"role\":\"r\",\"sample_rows\":999,\"theme\":42,\"target\":\"Gpt\"}",
@@ -442,16 +404,15 @@ mod tests {
 
     #[test]
     fn rejects_json_that_is_not_a_blueprint() {
-        assert!(
-            Blueprint::parse("{}")
-                .unwrap_err()
-                .contains("블루프린트 파일이 아닙니다")
+        assert_eq!(
+            with_lang(Lang::Ko, || Blueprint::parse("{}").unwrap_err()),
+            ko_text!("not a blueprint file (no version field)")
         );
         let graph = r#"{"nodes":[{"id":1,"kind":"text"}],"edges":[]}"#;
         assert!(Blueprint::parse(graph).is_err());
         assert!(Blueprint::parse(r#"{"version":"2"}"#).is_err());
         assert!(Blueprint::parse(r#"{"version":1,"role":"r"}"#).is_ok());
-        // 저장소의 캔버스 그래프 샘플도 블루프린트로 열리면 안 된다
+        // The repository's canvas graph sample must not open as a blueprint either
         let sample = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/flow.canvas.json")).unwrap();
         assert!(Blueprint::parse(&sample).is_err());
     }
@@ -460,7 +421,7 @@ mod tests {
     fn portable_data_path_cases() {
         let root = std::env::temp_dir().join("sc_bp_paths");
         let bp = root.join("proj").join("plan.kiro");
-        // 블루프린트 폴더 아래: / 구분 상대 경로
+        // Under the blueprint folder: a /-separated relative path
         assert_eq!(
             Blueprint::portable_data_path(&root.join("proj").join("d.csv"), &bp),
             "d.csv"
@@ -469,13 +430,13 @@ mod tests {
             Blueprint::portable_data_path(&root.join("proj").join("sub").join("s.csv"), &bp),
             "sub/s.csv"
         );
-        // 형제 폴더: 절대 경로
+        // Sibling folder: an absolute path
         let sibling = root.join("other").join("x.csv");
         assert_eq!(
             Blueprint::portable_data_path(&sibling, &bp),
             sibling.display().to_string()
         );
-        // 작업 폴더 기준 상대 경로 데이터는 절대 경로로 바뀌어 다른 폴더에서도 열린다
+        // Data relative to the working folder becomes an absolute path, so it also opens from other folders
         let rel = Path::new("samples").join("sales.csv");
         let saved = Blueprint::portable_data_path(&rel, &bp);
         assert!(Path::new(&saved).is_absolute(), "{saved}");
@@ -484,7 +445,7 @@ mod tests {
             ..Blueprint::default()
         };
         assert_eq!(back.data_path_from(Some(&bp)), Some(std::path::absolute(&rel).unwrap()));
-        // 저장한 상대 경로는 블루프린트 기준으로 다시 해석된다
+        // A saved relative path is resolved again relative to the blueprint
         let back = Blueprint {
             data_path: Some("sub/s.csv".into()),
             ..Blueprint::default()
@@ -514,7 +475,7 @@ mod tests {
 
     #[test]
     fn presets_exist_in_both_languages_with_identical_fields() {
-        let hangul = |s: &str| s.chars().any(|c| ('가'..='힣').contains(&c));
+        let hangul = |s: &str| s.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c));
         for p in &PRESETS {
             for t in [p.name, p.summary, p.role].iter().chain(p.goals) {
                 assert!(!t.ko().trim().is_empty() && !t.en().trim().is_empty(), "{t:?}");
@@ -522,7 +483,8 @@ mod tests {
             }
             let ko = with_lang(Lang::Ko, || p.to_blueprint());
             let en = with_lang(Lang::En, || p.to_blueprint());
-            // 언어에 따라 바뀌는 것은 문구뿐이다: 필드(출력 스키마 식별자)·타겟·형식·샘플 행 수·테마·제약 수는 같다
+            // Only the text depends on the language: fields (output schema identifiers), target, format, sample row
+            // count, theme and number of constraints are the same
             assert_eq!(ko.fields, en.fields, "{}", p.name.ko());
             assert!(!hangul(&en.fields));
             assert_eq!(
@@ -549,16 +511,19 @@ mod tests {
             ]
         );
         assert_eq!(en.project, "Sales_Outlier_Analysis.kiro");
-        // 한국어는 예전 문구 그대로
+        // Korean keeps the previous text
         let ko = with_lang(Lang::Ko, || PRESETS[0].to_blueprint());
-        assert_eq!(ko.role, "매출 데이터를 분석해 근본 원인을 찾는 데이터 분석가");
-        assert_eq!(ko.goals[1].text, "이상치 우선 탐지");
-        assert_eq!(ko.project, "매출_이상치_분석.kiro");
+        assert_eq!(ko.role, ko_text!("Data analyst who finds root causes in sales data"));
+        assert_eq!(ko.goals[1].text, ko_text!("Detect outliers first"));
+        assert_eq!(
+            ko.project,
+            format!("{}.kiro", ko_text!("Sales Outlier Analysis").replace(' ', "_"))
+        );
     }
 
     #[test]
     fn load_errors_follow_the_language() {
-        // 부모가 파일인 경로: 읽기와 쓰기가 모두 실패한다
+        // A path whose parent is a file: both reading and writing fail
         let missing = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("Cargo.toml")
             .join("plan.kiro");
@@ -579,17 +544,23 @@ mod tests {
             assert!(e.starts_with("Save failed: "), "{e}");
         });
         with_lang(Lang::Ko, || {
-            assert!(Blueprint::parse("{").unwrap_err().starts_with("형식 오류: "));
+            // The text of a `{e}` template in front of the error detail
+            let lead = |template: &'static str| template.strip_suffix("{e}").unwrap();
+            assert!(
+                Blueprint::parse("{")
+                    .unwrap_err()
+                    .starts_with(lead(ko_text!("invalid format: {e}")))
+            );
             assert!(
                 Blueprint::load(missing)
                     .unwrap_err()
-                    .starts_with("파일을 읽을 수 없음: ")
+                    .starts_with(lead(ko_text!("cannot read file: {e}")))
             );
             assert!(
                 Blueprint::default()
                     .save(missing)
                     .unwrap_err()
-                    .starts_with("저장 실패: ")
+                    .starts_with(lead(ko_text!("Save failed: {e}")))
             );
         });
     }
@@ -603,7 +574,7 @@ mod tests {
         bp.llm_options = LlmOptions {
             max_tokens: 8192,
             temperature: Some(0.7),
-            system: "너는 신중한 분석가다.\n숫자는 근거와 함께.".into(),
+            system: ko_fixture!("studio.blueprint.system_prompt").into(),
         };
         bp.save(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -630,7 +601,7 @@ mod tests {
         assert_eq!(bp.llm_options, LlmOptions::default());
         assert_eq!(bp.goals[0].pos, Some([1.0, 2.0]));
         assert_eq!(bp.positions, vec![("root".to_string(), [3.0, 4.0])]);
-        // 일부만 있는 llm_options도 나머지는 기본값
+        // A partial llm_options gets defaults for the rest
         let partial = r#"{"version":3,"llm_options":{"temperature":0.3}}"#;
         let o = Blueprint::parse(partial).unwrap().llm_options;
         assert_eq!((o.max_tokens, o.temperature, o.system.as_str()), (2048, Some(0.3), ""));
@@ -649,7 +620,7 @@ mod tests {
             ..LlmOptions::default()
         };
         assert_eq!(nan.normalized().temperature, None);
-        // 제공자 범위로 자른 값을 보내되, 저장된 값은 바꾸지 않는다
+        // The value clamped to the provider's range is sent, but the saved value does not change
         let o = LlmOptions {
             temperature: Some(1.6),
             ..LlmOptions::default()
@@ -663,7 +634,8 @@ mod tests {
 
     #[test]
     fn node_positions_are_sanitized() {
-        // 3e9 같은 먼 좌표는 캔버스 격자 루프를 멈추게 했다: 허용 범위로 자른다. 1e39(f32 무한대)는 버린다.
+        // Far coordinates such as 3e9 used to hang the canvas grid loop: they are clamped to the allowed range. 1e39
+        // (f32 infinity) is dropped.
         let text = r#"{"version":2,"goals":[{"text":"a","on":true,"pos":[0.0,3e9]},{"text":"b","on":true,"pos":[1e39,0.0]}],
             "positions":[["root",[-5e9,10.0]],["data",[1e39,1.0]],["llm",[5.0,6.0]]]}"#;
         let bp = Blueprint::parse(text).unwrap();
@@ -698,7 +670,7 @@ mod tests {
         assert_eq!(base.clone().fingerprint(), fp);
         let changed = [
             Blueprint {
-                role: "다른 역할".into(),
+                role: ko_fixture!("studio.blueprint.other_role").into(),
                 ..base.clone()
             },
             Blueprint {

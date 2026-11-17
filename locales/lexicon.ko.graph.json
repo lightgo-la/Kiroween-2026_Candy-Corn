@@ -1,0 +1,4 @@
+{
+  "_note": "Korean data used by the canvas graph tool (src/canvas). build.rs turns each key into a constant in crate::lexicon.",
+  "GRAPH_SAMPLE_QUESTION_KO": "3분기 매출이 급감한 원인을 분석해줘"
+}

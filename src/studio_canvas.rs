@@ -1,6 +1,7 @@
-//! 블루프린트 캔버스: 설정·데이터·역할·제약·출력 블록을 컴파일러 노드에 연결하고 결과·LLM 실행까지 한 화면에서 구성한다.
-//! 캔버스의 모든 노드 값이 곧 블루프린트(.kiro) 파일의 내용이다.
-//! 이동(드래그)·확대(Ctrl+휠, 핀치)는 egui::Scene이 처리한다.
+//! Blueprint canvas: connects the settings, data, role, constraint and output blocks to the compiler node and lays out
+//! everything up to the result and the LLM run on one screen.
+//! The values of all canvas nodes are exactly the content of the blueprint (.kiro) file.
+//! Panning (drag) and zooming (Ctrl+wheel, pinch) are handled by egui::Scene.
 
 use crate::ast::{ConstraintNode, ConstraintType, LintDiagnostic, OutputFormat, OutputSchemaAst, TargetModel};
 use crate::blueprint::{self, LlmOptions, MAX_SAMPLE_ROWS, PRESETS};
@@ -42,7 +43,7 @@ impl NodeKey {
         }
     }
 
-    /// 블루프린트 `positions`의 이름으로 고정 노드를 찾는다.
+    /// Finds a fixed node by its name in the blueprint's `positions`.
     pub fn from_fixed_name(name: &str) -> Option<NodeKey> {
         NodeKey::FIXED.into_iter().find(|k| k.fixed_name() == Some(name))
     }
@@ -58,7 +59,7 @@ impl NodeKey {
     ];
 }
 
-/// 제약 한 줄. 캔버스 노드와 왼쪽 폼이 같은 목록을 편집한다.
+/// One constraint line. The canvas nodes and the form on the left edit the same list.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Goal {
     pub id: u64,
@@ -78,18 +79,18 @@ pub struct Model<'a> {
     pub compiling: bool,
     pub stale: bool,
     pub project: &'a mut String,
-    /// 마지막으로 열거나 저장한 블루프린트와 다른지 (이름 옆 ● 표시)
+    /// Whether it differs from the last opened or saved blueprint (● next to the name)
     pub dirty: bool,
     pub theme_idx: &'a mut usize,
-    /// 안개 테마의 움직이는 안개 사용 여부
+    /// Whether the moving fog of the fog themes is on
     pub fog: &'a mut bool,
-    /// 현재 테마가 안개 테마인지 (아니면 안개 효과 설정을 끈 상태로 보여 준다)
+    /// Whether the current theme is a fog theme (if not, the fog effect setting is shown disabled)
     pub fog_theme: bool,
     pub sample_rows: &'a mut usize,
     pub llm: LlmView<'a>,
 }
 
-/// LLM 실행 노드에 보여 줄 상태.
+/// State shown in the LLM run node.
 pub struct LlmView<'a> {
     pub provider: &'static str,
     pub key_env: &'static str,
@@ -97,107 +98,93 @@ pub struct LlmView<'a> {
     pub model_hint: &'static str,
     pub has_key: bool,
     pub running: bool,
-    /// (통과 여부, 한 줄 요약)
+    /// (passed, one-line summary)
     pub verdict: Option<(bool, String)>,
-    /// 출력 한도·온도·시스템 프롬프트 (오른쪽 VIII과 같은 값)
+    /// Output limit, temperature, system prompt (the same values as VIII on the right)
     pub opts: &'a mut LlmOptions,
-    /// 현재 제공자의 온도 상한
+    /// Upper temperature limit of the current provider
     pub temp_max: f32,
-    /// 지난 실행의 응답 시간·토큰 사용량 한 줄
+    /// One line with the reply time and token usage of the last run
     pub details: Option<String>,
-    /// 지난 응답이 출력 한도에서 잘렸으면 두 배로 늘린 한도 (다시 실행 버튼)
+    /// The doubled limit if the last reply was cut off at the output limit (retry button)
     pub retry_limit: Option<u32>,
 }
 
-/// 캔버스가 앱에 요청하는 동작(소유권 충돌을 피하려고 반환값으로 전달한다).
+/// Actions the canvas asks the app to perform (passed back as return values to avoid ownership conflicts).
 pub enum Action {
     PickFile,
     Compile,
     RemoveGoal(u64),
     AddGoal(String),
-    /// 내장 블루프린트 적용 (blueprint::PRESETS 번호)
+    /// Apply a built-in blueprint (index into blueprint::PRESETS)
     Preset(usize),
-    /// 다른 이름으로 저장 (항상 위치를 묻는다)
+    /// Save as (always asks for a location)
     SaveProject,
-    /// 지금 블루프린트 파일에 저장 (Ctrl+S, 파일이 없으면 위치를 묻는다)
+    /// Save to the current blueprint file (Ctrl+S; asks for a location if there is no file yet)
     QuickSave,
     LoadProject,
     SaveOutput,
     RunLlm,
-    /// 진행 중인 LLM 실행을 버린다
+    /// Discard the LLM run in progress
     CancelLlm,
-    /// 출력 한도를 이 값으로 늘려 다시 실행
+    /// Raise the output limit to this value and run again
     RetryLonger(u32),
-    /// 샘플 행 수를 바꿨으니 데이터를 다시 프로파일링
+    /// The sample row count changed, so profile the data again
     ReloadSample,
-    /// 화면 언어를 바꾼다 (설정 노드의 언어 선택)
+    /// Change the UI language (language picker in the settings node)
     SetLang(Lang),
 }
 
-/// 제약 노드 템플릿: (분류, 문장들). 고르면 지금 언어의 문장으로 제약을 추가한다.
+/// Constraint node templates: (category, sentences). Picking one adds a constraint with the sentence in the current
+/// language.
 pub const TEMPLATES: [(Tr, &[Tr]); 5] = [
     (
-        Tr("결측치", "Missing values"),
+        trp!("Missing values"),
         &[
-            Tr("결측치 0.2% 제외", "Exclude missing values (0.2%)"),
-            Tr(
-                "결측치 비율을 컬럼별로 보고",
-                "Report the missing-value ratio for each column",
-            ),
+            trp!("Exclude missing values (0.2%)"),
+            trp!("Report the missing-value ratio for each column"),
         ],
     ),
     (
-        Tr("이상치", "Outliers"),
+        trp!("Outliers"),
+        &[trp!("Detect outliers first"), trp!("Judge outliers by a z-score of 3")],
+    ),
+    (
+        trp!("Factuality"),
         &[
-            Tr("이상치 우선 탐지", "Detect outliers first"),
-            Tr("이상치는 z-score 3 기준으로 판단", "Judge outliers by a z-score of 3"),
+            trp!("Do not infer anything not in the data"),
+            trp!("Name the columns that support each claim"),
         ],
     ),
     (
-        Tr("사실성", "Factuality"),
+        trp!("Format"),
         &[
-            Tr(
-                "데이터에 없는 내용은 추론하지 마",
-                "Do not infer anything not in the data",
-            ),
-            Tr(
-                "근거가 되는 컬럼 이름을 함께 표기",
-                "Name the columns that support each claim",
-            ),
+            trp!("Keep the summary to 3 sentences or fewer"),
+            trp!("Round numbers to 2 decimal places"),
         ],
     ),
     (
-        Tr("형식", "Format"),
+        trp!("Classification"),
         &[
-            Tr("요약은 3문장 이내", "Keep the summary to 3 sentences or fewer"),
-            Tr("숫자는 소수점 둘째 자리까지", "Round numbers to 2 decimal places"),
-        ],
-    ),
-    (
-        Tr("분류", "Classification"),
-        &[
-            Tr("금액 4M 기준으로 분류", "Classify by the 4M amount threshold"),
-            Tr(
-                "분류할 수 없으면 unknown으로 표기",
-                "Mark anything that cannot be classified as unknown",
-            ),
+            trp!("Classify by the 4M amount threshold"),
+            trp!("Mark anything that cannot be classified as unknown"),
         ],
     ),
 ];
 
-/// 노드 사이 세로 간격
+/// Vertical gap between nodes
 const GAP: f32 = 20.0;
 const LEFT_X: f32 = 0.0;
 const GOAL_X: f32 = 290.0;
 const ROOT_X: f32 = 590.0;
 const LLM_X: f32 = 900.0;
-/// 격자 점 간격(확대가 작으면 두 배씩 늘린다)과 한 화면의 최대 점 수
+/// Grid dot spacing (doubled step by step when zoomed far out) and the maximum number of dots on one screen
 const GRID_STEP: f32 = 40.0;
 const MAX_GRID_DOTS: i64 = 6000;
-/// 흐름 애니메이션 프레임 간격 (최대 20fps)
+/// Flow animation frame interval (at most 20 fps)
 pub const FLOW_FRAME: Duration = Duration::from_millis(50);
 
-/// 노드 높이 추정치. 지난 프레임에 잰 높이를 모를 때(처음 그리기 전) 쓴다.
+/// Estimated node height, used when the height measured in the last frame is unknown (before the first draw).
 fn default_height(key: NodeKey) -> f32 {
     match key {
         NodeKey::Settings => 200.0,
@@ -211,8 +198,8 @@ fn default_height(key: NodeKey) -> f32 {
     }
 }
 
-/// 제약 노드 높이 추정. 긴 문장은 입력칸 안에서 줄이 바뀌어 노드가 길어진다
-/// (한 줄에 전각 약 17자, ASCII는 절반 폭으로 친다).
+/// Estimated constraint node height. Long sentences wrap inside the text box, which makes the node taller
+/// (about 17 full-width characters per line; ASCII counts as half width).
 pub fn estimate_goal_height(text: &str) -> f32 {
     const PER_LINE: f32 = 17.0;
     const LINE_H: f32 = 17.0;
@@ -226,9 +213,9 @@ pub fn estimate_goal_height(text: &str) -> f32 {
     default_height(NodeKey::Goal(0)) + lines.saturating_sub(1) as f32 * LINE_H
 }
 
-/// 기본 배치. 왼쪽 열(설정·데이터·역할·출력)과 제약 열은 노드 높이만큼 쌓고,
-/// 컴파일러·결과·LLM 노드는 제약 열 가운데 높이에 둔다.
-/// height는 노드 높이(지난 프레임에 잰 값이나 추정치)를 돌려주고, None이면 기본 추정치를 쓴다.
+/// Default layout. The left column (settings, data, role, output) and the constraint column are stacked by node height,
+/// and the compiler, result and LLM nodes are placed at the middle height of the constraint column.
+/// height returns a node's height (measured in the last frame, or an estimate); None means the default estimate.
 pub fn layout_positions(goal_ids: &[u64], height: impl Fn(NodeKey) -> Option<f32>) -> Vec<(NodeKey, Pos2)> {
     let h = |k: NodeKey| {
         height(k)
@@ -255,8 +242,9 @@ pub fn layout_positions(goal_ids: &[u64], height: impl Fn(NodeKey) -> Option<f32
     out
 }
 
-/// 새 제약 노드의 자리: 가장 아래에 있는 제약 노드 바로 밑(같은 x). 제약이 없으면 제약 열 맨 위.
-/// nodes는 기존 제약 노드의 (위치, 높이).
+/// Place for a new constraint node: right below the lowest constraint node (same x). Without constraints, the top of
+/// the constraint column.
+/// nodes are the existing constraint nodes as (position, height).
 pub fn place_below(nodes: impl IntoIterator<Item = (Pos2, f32)>) -> Pos2 {
     nodes
         .into_iter()
@@ -264,14 +252,16 @@ pub fn place_below(nodes: impl IntoIterator<Item = (Pos2, f32)>) -> Pos2 {
         .map_or(Pos2::new(GOAL_X, 0.0), |(p, h)| Pos2::new(p.x, p.y + h + GAP))
 }
 
-/// 좌표를 허용 범위(blueprint::POS_LIMIT) 안으로 자른다. NaN·무한대면 None.
+/// Clamps a position to the allowed range (blueprint::POS_LIMIT). None for NaN or infinity.
 fn clamp_pos(p: Pos2) -> Option<Pos2> {
     blueprint::sanitize_pos([p.x, p.y]).map(|[x, y]| Pos2::new(x, y))
 }
 
-/// 격자 점의 (간격, x칸 번호 범위, y칸 번호 범위). 점이 max_dots를 넘지 않게 간격을 두 배씩 늘린다.
-/// 좌표가 아무리 커도 반드시 끝나도록 정수 칸 번호로 센다 (f32 누적 덧셈은 큰 좌표에서 더 나아가지 않는다).
-/// 보이는 영역이 비정상(NaN·무한대·빈 영역)이면 None.
+/// Grid dots as (spacing, x cell index range, y cell index range). The spacing is doubled until there are at most
+/// max_dots dots.
+/// Cells are counted with integer indices so this always ends, however large the coordinates (repeated f32 addition
+/// stops advancing at large coordinates).
+/// None if the visible area is invalid (NaN, infinity, empty).
 fn grid_cells(vis: Rect, base: f32, max_dots: i64) -> Option<(f32, Range<i64>, Range<i64>)> {
     if !vis.is_finite() || vis.width() <= 0.0 || vis.height() <= 0.0 || !base.is_finite() || base <= 0.0 {
         return None;
@@ -288,41 +278,42 @@ fn grid_cells(vis: Rect, base: f32, max_dots: i64) -> Option<(f32, Range<i64>, R
     None
 }
 
-/// 흐름 애니메이션용 다시 그리기 간격. 컴파일·로드·LLM 실행 중이거나 포인터가 캔버스 위에 있을 때만
-/// 최대 20fps로 움직이고, 그 밖에는 멈춘 화면을 그대로 두어 유휴 CPU를 쓰지 않는다.
+/// Repaint interval for the flow animation. It moves at up to 20 fps only while compiling, loading or running the LLM,
+/// or while the pointer is over the canvas; otherwise the still frame is left as is, so no idle CPU is used.
 pub fn flow_repaint(animate: bool, busy: bool, pointer_over: bool, focused: bool) -> Option<Duration> {
     (animate && focused && (busy || pointer_over)).then_some(FLOW_FRAME)
 }
 
-/// 실행 옵션 접기 제목에 붙는 요약: "2048 토큰 · 온도 기본값 · 시스템". 온도는 제공자 범위로 자른 실제 전송값이다.
+/// Summary appended to the collapsible run options title: "max 2048 · default temp · system". The temperature is the
+/// value actually sent, clamped to the provider's range.
 pub fn options_summary(o: &LlmOptions, temp_max: f32) -> String {
     let temp = o.temperature.map_or_else(
-        || tr!("온도 기본값", "default temp").to_string(),
-        |t| trf!("온도 {:.2}", "temp {:.2}", t.clamp(0.0, temp_max)),
+        || tr!("default temp").to_string(),
+        |t| trf!("temp {:.2}", t.clamp(0.0, temp_max)),
     );
     let system = if o.system.trim().is_empty() {
         ""
     } else {
-        tr!(" · 시스템", " · system")
+        tr!(" · system")
     };
-    trf!("{} 토큰 · {temp}{system}", "max {} · {temp}{system}", o.max_tokens)
+    trf!("max {} · {temp}{system}", o.max_tokens, temp = temp, system = system)
 }
 
-/// 이보다 큰 출력 한도는 응답이 길어져 LLM 호출 제한 시간에 걸릴 수 있어 안내한다.
+/// Output limits above this get a notice: replies grow longer and may hit the LLM call timeout.
 const LONG_REPLY_TOKENS: u32 = 8192;
 
-/// LLM 실행 옵션 입력. 캔버스 LLM 노드와 오른쪽 VIII이 같은 값을 편집한다 (salt로 입력칸 id를 나눈다).
+/// LLM run option inputs. The canvas LLM node and VIII on the right edit the same values (salt keeps the input ids
+/// apart).
 pub fn llm_options_ui(ui: &mut Ui, o: &mut LlmOptions, temp_max: f32, salt: &str, p: &Palette) {
     ui.horizontal(|ui| {
-        ui.label(tr!("출력 한도", "Max output"));
+        ui.label(tr!("Max output"));
         ui.add(
             egui::DragValue::new(&mut o.max_tokens)
                 .range(blueprint::MIN_LLM_MAX_TOKENS..=blueprint::MAX_LLM_MAX_TOKENS)
                 .speed(16.0)
-                .suffix(tr!(" 토큰", " tokens")),
+                .suffix(tr!(" tokens")),
         )
         .on_hover_text(trf!(
-            "응답이 이 토큰 수에서 잘립니다 ({}~{})",
             "The reply is cut off at this many tokens ({}-{})",
             blueprint::MIN_LLM_MAX_TOKENS,
             blueprint::MAX_LLM_MAX_TOKENS
@@ -330,31 +321,25 @@ pub fn llm_options_ui(ui: &mut Ui, o: &mut LlmOptions, temp_max: f32, salt: &str
     });
     if o.max_tokens > LONG_REPLY_TOKENS {
         ui.label(
-            RichText::new(tr!(
-                "⚠ 한도가 크면 응답이 길어져 호출 제한 시간을 넘을 수 있고, 모델마다 허용 한도가 다릅니다",
-                "⚠ A large limit makes replies longer and may exceed the call timeout; each model allows a different maximum"
-            ))
+            RichText::new(tr!("⚠ A large limit makes replies longer and may exceed the call timeout; each model allows a different maximum"))
             .small()
             .color(p.warn()),
         );
     }
     ui.horizontal(|ui| {
-        ui.label(tr!("온도", "Temperature"));
+        ui.label(tr!("Temperature"));
         let mut default = o.temperature.is_none();
         if ui
-            .checkbox(&mut default, tr!("기본값", "Default"))
-            .on_hover_text(tr!(
-                "제공자 기본 온도를 씁니다 (요청에 넣지 않음)",
-                "Use the provider's default temperature (not sent in the request)"
-            ))
+            .checkbox(&mut default, tr!("Default"))
+            .on_hover_text(tr!("Use the provider's default temperature (not sent in the request)"))
             .changed()
         {
             o.temperature = (!default).then_some(1.0_f32.min(temp_max));
         }
     });
     if let Some(t) = &mut o.temperature {
-        // 제공자 범위로 자른 값을 보여 주고 사용자가 움직일 때만 저장값을 바꾼다
-        // (GPT에서 1.5로 둔 값이 Claude로 바꿨다가 돌아와도 남아 있게).
+        // Show the value clamped to the provider's range and change the saved value only when the user moves the slider
+        // (so 1.5 set for GPT is still there after switching to Claude and back).
         let mut shown = t.clamp(0.0, temp_max);
         if ui
             .add(
@@ -363,34 +348,30 @@ pub fn llm_options_ui(ui: &mut Ui, o: &mut LlmOptions, temp_max: f32, salt: &str
                     .fixed_decimals(2),
             )
             .on_hover_text(trf!(
-                "0~{temp_max:.0} (제공자마다 범위가 다릅니다)",
-                "0-{temp_max:.0} (the range differs by provider)"
+                "0-{temp_max:.0} (the range differs by provider)",
+                temp_max = temp_max
             ))
             .changed()
         {
             *t = shown;
         }
     }
-    ui.label(
-        RichText::new(tr!("시스템 프롬프트 (선택)", "System prompt (optional)"))
-            .small()
-            .color(p.sub),
-    );
+    ui.label(RichText::new(tr!("System prompt (optional)")).small().color(p.sub));
     ui.add(
         egui::TextEdit::multiline(&mut o.system)
             .id_salt((salt, "llm-system"))
             .desired_rows(2)
             .desired_width(f32::INFINITY)
-            .hint_text(tr!("비워 두면 보내지 않습니다", "Not sent when empty")),
+            .hint_text(tr!("Not sent when empty")),
     );
 }
 
-/// 언어 선택 (상단 바와 설정 노드). 목록은 각 언어 이름(한국어 / English)으로 보여 주고,
-/// 다른 언어를 고르면 그 언어를 돌려준다. 바꾸는 일(저장·다시 컴파일)은 앱이 한다.
+/// Language picker (top bar and settings node). The list shows each language by its native name (Korean in Hangul,
+/// English), and returns the language when another one is picked. The app does the switching (saving, recompiling).
 pub fn lang_picker(ui: &mut Ui, id_salt: &str) -> Option<Lang> {
     let current = i18n::current();
     let mut chosen = current;
-    ui.label(tr!("언어", "Language"));
+    ui.label(tr!("Language"));
     egui::ComboBox::from_id_salt(id_salt)
         .selected_text(current.native_name())
         .show_ui(ui, |ui| {
@@ -399,26 +380,23 @@ pub fn lang_picker(ui: &mut Ui, id_salt: &str) -> Option<Lang> {
             }
         })
         .response
-        .on_hover_text(tr!(
-            "화면 언어 · 입력한 역할·제약은 바뀌지 않습니다",
-            "UI language · your role and constraint text stays as typed"
-        ));
+        .on_hover_text(tr!("UI language · your role and constraint text stays as typed"));
     (chosen != current).then_some(chosen)
 }
 
 pub struct Canvas {
     scene_rect: Rect,
     pos: HashMap<NodeKey, Pos2>,
-    /// 지난 프레임에 그린 노드 영역 (높이는 배치·새 제약 자리 계산에 쓴다)
+    /// Node areas drawn in the last frame (the heights are used for the layout and for placing new constraints)
     rects: HashMap<NodeKey, Rect>,
     pub snap: bool,
     pub animate: bool,
     selected: Option<NodeKey>,
     want_layout: bool,
     want_fit: bool,
-    /// 지난 프레임의 캔버스 화면 영역(배경 클릭/Delete 판정용).
+    /// The canvas's screen area in the last frame (for deciding background clicks and Delete).
     area: Rect,
-    /// 사용자가 캔버스를 직접 이동·확대했는지. 아니면 창 크기가 바뀔 때 다시 화면 맞춤을 한다.
+    /// Whether the user panned or zoomed the canvas. If not, the view is fitted again when the window size changes.
     user_view: bool,
 }
 
@@ -447,8 +425,9 @@ fn goal_color(kind: &ConstraintType) -> Color32 {
     }
 }
 
-/// 린트 진단이 컴파일 요청 안 위치 `i`의 제약을 가리키는지. 진단에 걸린 모든 입력 위치(제거는 지운 것·남긴 것,
-/// 모순 의심은 두 제약)로만 찾는다. 경고 문구는 수식어를 지운 본문을 인용하므로 원문 비교로는 찾을 수 없다.
+/// Whether a lint diagnostic points at the constraint at position `i` of the compile request. Only the input positions
+/// attached to the diagnostic are used (for a removal, the removed and the kept one; for a possible contradiction, both
+/// constraints). The warning text quotes the body with the fillers stripped, so comparing original texts misses it.
 fn lint_mentions(diags: &[LintDiagnostic], i: usize) -> bool {
     diags
         .iter()
@@ -468,8 +447,8 @@ impl Canvas {
         self.pos.get(&key).copied()
     }
 
-    /// 노드 위치를 정한다. 비정상 좌표(NaN·무한대)는 무시하고 먼 좌표는 허용 범위로 자른다.
-    /// 자동 배치 여부는 바꾸지 않으므로 블루프린트 위치는 reset_layout(또는 load_layout) 뒤에 덮어쓴다.
+    /// Sets a node position. Invalid coordinates (NaN, infinity) are ignored and far ones are clamped to the allowed
+    /// range. The auto-layout flag is unchanged, so blueprint positions go on top after reset_layout (or load_layout).
     pub fn set_pos(&mut self, key: NodeKey, p: Pos2) {
         if let Some(p) = clamp_pos(p) {
             self.pos.insert(key, p);
@@ -481,8 +460,8 @@ impl Canvas {
         self.user_view = false;
     }
 
-    /// 노드 배치를 기본값으로 되돌린다(스냅·애니메이션 설정은 유지). 기본 배치를 바로 계산하므로
-    /// 이어서 set_pos로 덮은 위치는 그대로 남고, 위치가 없는 노드가 원점에 쌓이지 않는다.
+    /// Resets the node layout to the default (keeping the snap and animation settings). The default layout is computed
+    /// right away, so positions set later with set_pos stay and nodes without a position do not pile up at the origin.
     pub fn reset_layout(&mut self, goals: &[Goal]) {
         self.pos.clear();
         self.rects.clear();
@@ -493,8 +472,8 @@ impl Canvas {
         self.user_view = false;
     }
 
-    /// 블루프린트를 적용할 때: 기본 배치를 먼저 계산하고 저장된 위치를 그 위에 덮는다.
-    /// 위치가 저장되지 않은 노드(v1 파일의 설정·데이터·LLM 노드 등)는 기본 자리에 남는다.
+    /// For applying a blueprint: computes the default layout first and puts the saved positions over it. Nodes without
+    /// a saved position (such as the settings, data and LLM nodes of v1 files) stay in their default place.
     pub fn load_layout(&mut self, goals: &[Goal], saved: impl IntoIterator<Item = (NodeKey, [f32; 2])>) {
         self.reset_layout(goals);
         for (k, [x, y]) in saved {
@@ -502,8 +481,8 @@ impl Canvas {
         }
     }
 
-    /// 삭제된 노드의 위치·선택 상태를 정리한다.
-    /// 위치(pos)는 남겨 두어 실행 취소로 되살리면 같은 자리에 나타난다.
+    /// Cleans up the layout and selection state of a deleted node.
+    /// Its position (pos) is kept, so it reappears in the same place when undo brings it back.
     pub fn forget(&mut self, key: NodeKey) {
         self.rects.remove(&key);
         if self.selected == Some(key) {
@@ -511,7 +490,7 @@ impl Canvas {
         }
     }
 
-    /// 지난 프레임에 잰 노드 높이
+    /// Node height measured in the last frame
     fn measured_height(&self, key: NodeKey) -> Option<f32> {
         self.rects
             .get(&key)
@@ -519,13 +498,13 @@ impl Canvas {
             .filter(|h| h.is_finite() && *h > 0.0)
     }
 
-    /// 제약 노드 높이: 지난 프레임에 잰 값, 없으면 문장 길이로 추정한 값.
+    /// Constraint node height: the value measured in the last frame, or else an estimate from the sentence length.
     fn goal_height(&self, g: &Goal) -> f32 {
         self.measured_height(NodeKey::Goal(g.id))
             .unwrap_or_else(|| estimate_goal_height(&g.text))
     }
 
-    /// 기본 배치. 지난 프레임에 잰 노드 높이를 쓰므로 줄이 바뀐 긴 제약도 겹치지 않는다.
+    /// Default layout. It uses the node heights measured in the last frame, so long wrapped constraints do not overlap.
     fn layout(&mut self, goals: &[Goal]) {
         let ids: Vec<u64> = goals.iter().map(|g| g.id).collect();
         let placed = layout_positions(&ids, |k| match k {
@@ -535,8 +514,9 @@ impl Canvas {
         self.pos.extend(placed);
     }
 
-    /// 위치가 없는 노드에 자리를 준다: 고정 노드는 기본 배치, 새 제약은 가장 아래 제약 노드 밑.
-    /// 앱이 매 프레임 호출하므로(캔버스를 보지 않을 때도) 저장할 블루프린트에 늘 위치가 들어간다.
+    /// Gives nodes without a position a place: fixed nodes get the default layout, new constraints go below the lowest
+    /// constraint node.
+    /// The app calls this every frame (even when the canvas is not shown), so a saved blueprint always has positions.
     pub fn ensure_positions(&mut self, goals: &[Goal]) {
         if NodeKey::FIXED.iter().any(|k| !self.pos.contains_key(k)) {
             let ids: Vec<u64> = goals.iter().map(|g| g.id).collect();
@@ -561,7 +541,8 @@ impl Canvas {
         }
     }
 
-    /// 위치가 없는 노드의 자리 (show()가 미리 채우므로 보통 쓰이지 않는다). 원점에 겹쳐 쌓이지 않게 한다.
+    /// Place for a node without a position (normally unused, since show() fills them in beforehand). Keeps nodes from
+    /// piling up at the origin.
     fn fallback_pos(&self, key: NodeKey) -> Pos2 {
         match key {
             NodeKey::Goal(_) => place_below(
@@ -604,11 +585,11 @@ impl Canvas {
         }
         let ctx = ui.ctx().clone();
         let pointer_in = ctx.pointer_hover_pos().is_some_and(|p| self.area.contains(p));
-        // 빈 곳을 클릭하면 선택 해제(노드 제목줄 클릭은 아래 node()에서 다시 선택한다)
+        // Clicking empty space clears the selection (a click on a node's title bar selects it again in node() below)
         if pointer_in && ctx.input(|i| i.pointer.primary_clicked()) {
             self.selected = None;
         }
-        // Delete는 포인터가 캔버스 위에 있고 글자 입력 중이 아닐 때만 동작한다.
+        // Delete works only while the pointer is over the canvas and no text is being typed.
         if let Some(NodeKey::Goal(id)) = self.selected
             && pointer_in
             && !ctx.egui_wants_keyboard_input()
@@ -617,7 +598,7 @@ impl Canvas {
             actions.push(Action::RemoveGoal(id));
             self.selected = None;
         }
-        // 흐름 애니메이션: 작업 중이거나 포인터가 캔버스 위에 있을 때만 다시 그린다.
+        // Flow animation: repaint only while working or while the pointer is over the canvas.
         let busy = m.compiling || m.loading || m.llm.running;
         if let Some(after) = flow_repaint(self.animate, busy, pointer_in, ctx.input(|i| i.focused)) {
             ctx.request_repaint_after(after);
@@ -653,7 +634,7 @@ impl Canvas {
 
     fn toolbar(&mut self, ui: &mut Ui, p: &Palette, actions: &mut Vec<Action>) {
         ui.horizontal_wrapped(|ui| {
-            ui.menu_button(tr!("＋ 제약 노드", "＋ Constraint"), |ui| {
+            ui.menu_button(tr!("＋ Constraint"), |ui| {
                 for (cat, items) in TEMPLATES {
                     ui.label(RichText::new(cat.get()).color(p.accent).strong());
                     for t in items {
@@ -664,17 +645,14 @@ impl Canvas {
                     }
                     ui.separator();
                 }
-                if ui.button(tr!("빈 제약 추가", "Add empty constraint")).clicked() {
+                if ui.button(tr!("Add empty constraint")).clicked() {
                     actions.push(Action::AddGoal(String::new()));
                     ui.close();
                 }
             });
-            ui.menu_button(tr!("🧩 블루프린트", "🧩 Blueprints"), |ui| {
+            ui.menu_button(tr!("🧩 Blueprints"), |ui| {
                 ui.label(
-                    RichText::new(tr!(
-                        "타겟·역할·제약·출력·샘플 행 수·테마를 한 번에 설정합니다 (현재 데이터는 유지)",
-                        "Sets target, role, constraints, output, sample rows and theme at once (keeps the current data)"
-                    ))
+                    RichText::new(tr!("Sets target, role, constraints, output, sample rows and theme at once (keeps the current data)"))
                     .small()
                     .color(p.sub),
                 );
@@ -689,12 +667,12 @@ impl Canvas {
                     }
                 }
                 ui.separator();
-                if ui.button(tr!("블루프린트 열기…", "Open blueprint…")).clicked() {
+                if ui.button(tr!("Open blueprint…")).clicked() {
                     actions.push(Action::LoadProject);
                     ui.close();
                 }
                 if ui
-                    .button(tr!("현재 설정을 블루프린트로 저장…", "Save current settings as blueprint…"))
+                    .button(tr!("Save current settings as blueprint…"))
                     .clicked()
                 {
                     actions.push(Action::SaveProject);
@@ -702,48 +680,39 @@ impl Canvas {
                 }
             });
             if ui
-                .button(tr!("자동 정렬", "Auto layout"))
-                .on_hover_text(tr!("노드를 기본 배치로 되돌립니다", "Move nodes back to the default layout"))
+                .button(tr!("Auto layout"))
+                .on_hover_text(tr!("Move nodes back to the default layout"))
                 .clicked()
             {
                 self.want_layout = true;
             }
-            if ui.button(tr!("화면 맞춤", "Fit view")).clicked() {
+            if ui.button(tr!("Fit view")).clicked() {
                 self.request_fit();
             }
-            ui.checkbox(&mut self.snap, tr!("격자 스냅", "Snap to grid"));
-            ui.checkbox(&mut self.animate, tr!("흐름 애니메이션", "Flow animation"))
-                .on_hover_text(tr!(
-                    "작업 중이거나 포인터가 캔버스 위에 있을 때만 움직입니다",
-                    "Moves only while working or while the pointer is over the canvas"
-                ));
+            ui.checkbox(&mut self.snap, tr!("Snap to grid"));
+            ui.checkbox(&mut self.animate, tr!("Flow animation"))
+                .on_hover_text(tr!("Moves only while working or while the pointer is over the canvas"));
             ui.separator();
             if ui
-                .button(tr!("블루프린트 저장", "Save blueprint"))
-                .on_hover_text(tr!(
-                    "Ctrl+S · 지금 블루프린트 파일에 저장합니다 (처음이면 위치를 고릅니다)\n데이터 경로·역할·제약·출력·타겟·샘플 행 수·테마·LLM 모델·실행 옵션·노드 배치",
-                    "Ctrl+S · saves to the current blueprint file (asks for a location the first time)\nData path, role, constraints, output, target, sample rows, theme, LLM models, run options, node layout"
-                ))
+                .button(tr!("Save blueprint"))
+                .on_hover_text(tr!("Ctrl+S · saves to the current blueprint file (asks for a location the first time)\nData path, role, constraints, output, target, sample rows, theme, LLM models, run options, node layout"))
                 .clicked()
             {
                 actions.push(Action::QuickSave);
             }
             if ui
-                .button(tr!("블루프린트 열기", "Open blueprint"))
+                .button(tr!("Open blueprint"))
                 .on_hover_text("Ctrl+O")
                 .clicked()
             {
                 actions.push(Action::LoadProject);
             }
-            if ui.button(tr!("결과 저장", "Save result")).clicked() {
+            if ui.button(tr!("Save result")).clicked() {
                 actions.push(Action::SaveOutput);
             }
         });
         ui.label(
-            RichText::new(tr!(
-                "노드 제목줄을 끌어 이동 · 빈 곳을 끌어 화면 이동 · Ctrl+휠 확대 · Delete로 선택한 제약 삭제 · 캔버스 전체가 블루프린트로 저장됩니다",
-                "Drag a node title to move it · drag empty space to pan · Ctrl+wheel to zoom · Delete removes the selected constraint · the whole canvas is saved as the blueprint"
-            ))
+            RichText::new(tr!("Drag a node title to move it · drag empty space to pan · Ctrl+wheel to zoom · Delete removes the selected constraint · the whole canvas is saved as the blueprint"))
             .small()
             .color(p.sub),
         );
@@ -820,7 +789,7 @@ impl Canvas {
     }
 
     fn draw(&mut self, ui: &mut Ui, m: &mut Model, p: &Palette, actions: &mut Vec<Action>) {
-        // 격자 점 (정수 칸 번호로 세어 어떤 좌표에서도 반드시 끝난다)
+        // Grid dots (counted with integer cell indices, so the loop ends at any coordinates)
         if let Some((step, xs, ys)) = grid_cells(ui.clip_rect(), GRID_STEP, MAX_GRID_DOTS) {
             let dot = p.line.gamma_multiply(0.7);
             let painter = ui.painter();
@@ -837,20 +806,20 @@ impl Canvas {
         self.rects
             .retain(|k, _| matches!(k, NodeKey::Goal(_)) && live_ids.contains(k) || !matches!(k, NodeKey::Goal(_)));
 
-        // 블루프린트 설정
+        // Blueprint settings
         self.node(
             ui,
             NodeKey::Settings,
-            tr!("⚙ 블루프린트 설정", "⚙ Blueprint settings"),
+            tr!("⚙ Blueprint settings"),
             SETTINGS_COLOR,
             250.0,
             p,
             false,
             |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(tr!("이름", "Name"));
-                    // 저장하지 않은 변경 표시(●). 자리를 늘 잡아 두고 입력칸에 고정 id를 주어,
-                    // 첫 글자를 칠 때 표시가 나타나도 입력칸의 포커스가 풀리지 않게 한다.
+                    ui.label(tr!("Name"));
+                    // Unsaved-changes mark (●). Its slot is always reserved and the text box has a fixed id,
+                    // so the text box keeps its focus when the mark appears as the first character is typed.
                     let (slot, resp) = ui.allocate_exact_size(egui::vec2(10.0, 18.0), Sense::hover());
                     if m.dirty {
                         ui.painter().text(
@@ -860,10 +829,7 @@ impl Canvas {
                             egui::FontId::proportional(12.0),
                             p.warn(),
                         );
-                        resp.on_hover_text(tr!(
-                            "저장하지 않은 변경 사항이 있습니다 (Ctrl+S로 저장)",
-                            "Unsaved changes (Ctrl+S to save)"
-                        ));
+                        resp.on_hover_text(tr!("Unsaved changes (Ctrl+S to save)"));
                     }
                     ui.add(
                         egui::TextEdit::singleline(m.project)
@@ -872,8 +838,9 @@ impl Canvas {
                     );
                 });
                 ui.horizontal(|ui| {
-                    ui.label(tr!("테마", "Theme"));
-                    // 긴 영어 이름은 남은 너비까지만 늘리고 줄인다 (노드 밖으로 나가지 않게, 목록에는 전체 이름)
+                    ui.label(tr!("Theme"));
+                    // Long English names grow only up to the remaining width and are truncated (so they stay inside the
+                    // node; the list shows the full name)
                     egui::ComboBox::from_id_salt("canvas-theme")
                         .width(170.0)
                         .truncate()
@@ -889,41 +856,32 @@ impl Canvas {
                         actions.push(Action::SetLang(lang));
                     }
                 });
-                ui.add_enabled(m.fog_theme, egui::Checkbox::new(m.fog, tr!("안개 효과", "Fog effect")))
-                    .on_hover_text(tr!(
-                        "움직이는 안개를 그립니다. 끄면 다시 그리기가 줄어듭니다",
-                        "Draws drifting fog. Turning it off reduces repaints"
-                    ))
-                    .on_disabled_hover_text(tr!(
-                        "안개 테마(06·07)에서만 쓰입니다",
-                        "Only used by the fog themes (06, 07)"
-                    ));
+                ui.add_enabled(m.fog_theme, egui::Checkbox::new(m.fog, tr!("Fog effect")))
+                    .on_hover_text(tr!("Draws drifting fog. Turning it off reduces repaints"))
+                    .on_disabled_hover_text(tr!("Only used by the fog themes (06, 07)"));
                 ui.horizontal(|ui| {
                     if ui
-                        .small_button(tr!("저장", "Save"))
-                        .on_hover_text(tr!(
-                            "Ctrl+S · 지금 블루프린트 파일에 저장",
-                            "Ctrl+S · save to the current blueprint file"
-                        ))
+                        .small_button(tr!("Save"))
+                        .on_hover_text(tr!("Ctrl+S · save to the current blueprint file"))
                         .clicked()
                     {
                         actions.push(Action::QuickSave);
                     }
-                    if ui.small_button(tr!("다른 이름으로…", "Save as…")).clicked() {
+                    if ui.small_button(tr!("Save as…")).clicked() {
                         actions.push(Action::SaveProject);
                     }
-                    if ui.small_button(tr!("열기", "Open")).clicked() {
+                    if ui.small_button(tr!("Open")).clicked() {
                         actions.push(Action::LoadProject);
                     }
                 });
             },
         );
 
-        // 데이터
+        // Data
         self.node(
             ui,
             NodeKey::Data,
-            tr!("◆ 데이터 소스", "◆ Data source"),
+            tr!("◆ Data source"),
             DATA_COLOR,
             250.0,
             p,
@@ -934,10 +892,7 @@ impl Canvas {
                         ui.label(RichText::new(&d.data.source_name).strong());
                         ui.label(format!("{} rows · {} columns", d.data.total_rows, d.data.columns.len()));
                         if !d.data.anomalies.is_empty() {
-                            ui.label(
-                                RichText::new(trf!("이상치 {}건 감지", "Outliers found: {}", d.data.anomalies.len()))
-                                    .color(p.warn()),
-                            );
+                            ui.label(RichText::new(trf!("Outliers found: {}", d.data.anomalies.len())).color(p.warn()));
                         }
                         ui.horizontal_wrapped(|ui| {
                             for c in d.data.columns.iter().take(6) {
@@ -951,29 +906,23 @@ impl Canvas {
                         });
                     }
                     None => {
-                        ui.label(RichText::new(tr!("데이터 없음", "No data")).color(p.sub));
+                        ui.label(RichText::new(tr!("No data")).color(p.sub));
                         ui.label(
-                            RichText::new(tr!(
-                                "파일을 창에 끌어다 놓아도 됩니다",
-                                "You can also drop a file on the window"
-                            ))
-                            .small()
-                            .color(p.sub),
+                            RichText::new(tr!("You can also drop a file on the window"))
+                                .small()
+                                .color(p.sub),
                         );
                     }
                 }
                 ui.horizontal(|ui| {
-                    ui.label(tr!("샘플 행", "Sample rows"));
+                    ui.label(tr!("Sample rows"));
                     let r = ui.add(egui::DragValue::new(m.sample_rows).range(0..=MAX_SAMPLE_ROWS));
                     if r.drag_stopped() || r.lost_focus() {
                         actions.push(Action::ReloadSample);
                     }
                 });
                 ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(!m.loading, egui::Button::new(tr!("📂 로드", "📂 Load")))
-                        .clicked()
-                    {
+                    if ui.add_enabled(!m.loading, egui::Button::new(tr!("📂 Load"))).clicked() {
                         actions.push(Action::PickFile);
                     }
                     if m.loading {
@@ -983,38 +932,26 @@ impl Canvas {
             },
         );
 
-        // 역할
-        self.node(
-            ui,
-            NodeKey::Role,
-            tr!("◆ 역할", "◆ Role"),
-            ROLE_COLOR,
-            250.0,
-            p,
-            false,
-            |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(m.role)
-                        .desired_rows(3)
-                        .desired_width(f32::INFINITY)
-                        .hint_text(tr!("역할을 입력", "Describe the role")),
-                );
-                ui.label(
-                    RichText::new(tr!(
-                        "수식어(매우, please…)는 린트가 자동 압축",
-                        "Lint trims fillers (very, please…)"
-                    ))
+        // Role
+        self.node(ui, NodeKey::Role, tr!("◆ Role"), ROLE_COLOR, 250.0, p, false, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(m.role)
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY)
+                    .hint_text(tr!("Describe the role")),
+            );
+            ui.label(
+                RichText::new(tr!("Lint trims fillers (very, please…)"))
                     .small()
                     .color(p.sub),
-                );
-            },
-        );
+            );
+        });
 
-        // 출력
+        // Output
         self.node(
             ui,
             NodeKey::Output,
-            tr!("◆ 출력 포맷", "◆ Output format"),
+            tr!("◆ Output format"),
             OUT_COLOR,
             250.0,
             p,
@@ -1022,20 +959,16 @@ impl Canvas {
             |ui| {
                 ui.horizontal(|ui| {
                     ui.radio_value(m.format, OutputFormat::StrictJson, "JSON");
-                    ui.radio_value(m.format, OutputFormat::MarkdownTable, tr!("표", "Table"));
+                    ui.radio_value(m.format, OutputFormat::MarkdownTable, tr!("Table"));
                 });
                 ui.add(
                     egui::TextEdit::singleline(m.fields_text)
                         .desired_width(f32::INFINITY)
-                        .hint_text(tr!("필드1,필드2", "field1,field2")),
+                        .hint_text(tr!("field1,field2")),
                 );
                 let fields = pipeline::parse_fields(m.fields_text);
                 if fields.is_empty() {
-                    ui.label(
-                        RichText::new(tr!("필수 필드가 비어 있음", "No required fields"))
-                            .small()
-                            .color(theme::ERR),
-                    );
+                    ui.label(RichText::new(tr!("No required fields")).small().color(theme::ERR));
                 } else {
                     let schema = OutputSchemaAst::render_schema(*m.format, &fields);
                     let short: String = schema.chars().take(70).collect();
@@ -1044,9 +977,10 @@ impl Canvas {
             },
         );
 
-        // 제약
-        // 린트 경고 배지는 진단이 가리키는 위치(컴파일 요청에 들어간, 사용 중이고 비어 있지 않은 제약의 순서)로 찾는다.
-        // 결과가 오래됐으면 위치가 어긋날 수 있으므로 표시하지 않는다.
+        // Constraints
+        // The lint warning badge is found by the position the diagnostic points at (the order among the constraints
+        // that are on and not empty, as sent in the compile request). It is not shown for a stale result, whose
+        // positions may no longer match.
         let mut active = 0usize;
         for g in m.goals.iter_mut() {
             let kind = ConstraintNode::classify(String::new(), &g.text).rule_type;
@@ -1057,7 +991,7 @@ impl Canvas {
             });
             let related =
                 !m.stale && pos.is_some_and(|i| m.result.is_some_and(|r| lint_mentions(&r.ast.lint_warnings, i)));
-            let title = trf!("● 제약 · {}", "● Constraint · {}", kind.tag());
+            let title = trf!("● Constraint · {}", kind.tag());
             let id = g.id;
             self.node(ui, NodeKey::Goal(id), &title, color, 260.0, p, !g.on, |ui| {
                 ui.add(
@@ -1065,37 +999,33 @@ impl Canvas {
                         .id_salt(("canvas-goal", id))
                         .desired_rows(1)
                         .desired_width(f32::INFINITY)
-                        .hint_text(tr!("제약 문장", "Constraint text")),
+                        .hint_text(tr!("Constraint text")),
                 );
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut g.on, tr!("사용", "On"));
-                    if ui.small_button(tr!("삭제", "Delete")).clicked() {
+                    ui.checkbox(&mut g.on, tr!("On"));
+                    if ui.small_button(tr!("Delete")).clicked() {
                         actions.push(Action::RemoveGoal(id));
                     }
                     if related {
-                        ui.label(
-                            RichText::new(tr!("⚠ 린트 경고", "⚠ Lint warning"))
-                                .small()
-                                .color(p.warn()),
-                        );
+                        ui.label(RichText::new(tr!("⚠ Lint warning")).small().color(p.warn()));
                     }
                 });
             });
         }
 
-        // 컴파일러(루트)
+        // Compiler (root)
         let active = m.goals.iter().filter(|g| g.on).count();
         self.node(
             ui,
             NodeKey::Root,
-            tr!("▶ RootPromptAST 컴파일러", "▶ RootPromptAST compiler"),
+            tr!("▶ RootPromptAST compiler"),
             p.accent,
             230.0,
             p,
             false,
             |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(tr!("타겟", "Target"));
+                    ui.label(tr!("Target"));
                     egui::ComboBox::from_id_salt("canvas-target")
                         .selected_text(m.target.label())
                         .show_ui(ui, |ui| {
@@ -1104,7 +1034,7 @@ impl Canvas {
                             }
                         });
                 });
-                ui.label(trf!("활성 제약 {active}개", "Active constraints: {active}"));
+                ui.label(trf!("Active constraints: {active}", active = active));
                 if theme::primary_button(ui, p, "⚡ Compile & Run", !m.compiling).clicked() {
                     actions.push(Action::Compile);
                 }
@@ -1112,7 +1042,7 @@ impl Canvas {
                     ui.spinner();
                 } else if m.stale && m.result.is_some() {
                     ui.label(
-                        RichText::new(tr!("● 입력이 바뀜 · 다시 컴파일", "● Inputs changed · recompile"))
+                        RichText::new(tr!("● Inputs changed · recompile"))
                             .small()
                             .color(p.warn()),
                     );
@@ -1120,11 +1050,11 @@ impl Canvas {
             },
         );
 
-        // 결과
+        // Result
         self.node(
             ui,
             NodeKey::Result,
-            tr!("★ 결과 · 토큰 절감", "★ Result · token savings"),
+            tr!("★ Result · token savings"),
             RESULT_COLOR,
             270.0,
             p,
@@ -1146,19 +1076,15 @@ impl Canvas {
                     let frac = (r.saving_pct / 100.0).clamp(0.0, 1.0) as f32;
                     let fill = Rect::from_min_size(bar.min, egui::vec2(bar.width() * frac, bar.height()));
                     ui.painter().rect_filled(fill, 4.0, p.accent);
-                    ui.label(trf!(
-                        "원본 {} → 압축 {} tokens",
-                        "Original {} → compressed {} tokens",
-                        r.orig_tokens,
-                        r.comp_tokens
-                    ));
-                    ui.label(RichText::new(trf!("절감 ${:.4}", "Saved ${:.4}", r.saved_usd)).color(p.sub));
+                    ui.label(trf!("Original {} → compressed {} tokens", r.orig_tokens, r.comp_tokens));
+                    ui.label(RichText::new(trf!("Saved ${:.4}", r.saved_usd)).color(p.sub));
                     let warns = r.ast.lint_warnings.iter().filter(|d| d.severity == "WARN").count();
                     let errs = r.ast.lint_warnings.iter().filter(|d| d.severity == "ERROR").count();
                     ui.label(
                         RichText::new(trf!(
-                            "린트 경고 {warns} · 오류 {errs}",
-                            "Lint warnings {warns} · errors {errs}"
+                            "Lint warnings {warns} · errors {errs}",
+                            warns = warns,
+                            errs = errs
                         ))
                         .color(if errs > 0 { theme::ERR } else { theme::OK }),
                     );
@@ -1166,21 +1092,21 @@ impl Canvas {
                         ui.add(egui::Label::new(RichText::new(line).monospace().small().color(p.sub)).truncate());
                     }
                     ui.horizontal(|ui| {
-                        if ui.small_button(tr!("복사", "Copy")).clicked() {
+                        if ui.small_button(tr!("Copy")).clicked() {
                             ui.ctx().copy_text(r.output.clone());
                         }
-                        if ui.small_button(tr!("저장", "Save")).clicked() {
+                        if ui.small_button(tr!("Save")).clicked() {
                             actions.push(Action::SaveOutput);
                         }
                     });
                 }
                 None => {
-                    ui.label(RichText::new(tr!("아직 컴파일하지 않았습니다", "Not compiled yet")).color(p.sub));
+                    ui.label(RichText::new(tr!("Not compiled yet")).color(p.sub));
                 }
             },
         );
 
-        // LLM 실행
+        // LLM run
         let has_result = m.result.is_some();
         let stale = m.stale;
         let compiling = m.compiling;
@@ -1188,7 +1114,7 @@ impl Canvas {
         self.node(
             ui,
             NodeKey::Llm,
-            tr!("✦ LLM 실행", "✦ LLM run"),
+            tr!("◆ LLM run"),
             LLM_COLOR,
             250.0,
             p,
@@ -1203,21 +1129,17 @@ impl Canvas {
                             .hint_text(llm.model_hint),
                     );
                 });
-                // 제목에 현재 값 요약이 붙어 바뀌므로 열림 상태는 고정 id로 기억한다.
-                egui::CollapsingHeader::new(trf!(
-                    "실행 옵션 · {}",
-                    "Options · {}",
-                    options_summary(llm.opts, llm.temp_max)
-                ))
-                .id_salt("canvas-llm-opts")
-                .show(ui, |ui| llm_options_ui(ui, llm.opts, llm.temp_max, "canvas", p));
-                // 입력이 바뀐 뒤의 오래된 결과로는 실행하지 않는다.
+                // The title includes a summary of the current values, so it changes; a fixed id keeps the open state.
+                egui::CollapsingHeader::new(trf!("Options · {}", options_summary(llm.opts, llm.temp_max)))
+                    .id_salt("canvas-llm-opts")
+                    .show(ui, |ui| llm_options_ui(ui, llm.opts, llm.temp_max, "canvas", p));
+                // Do not run with a stale result after the inputs changed.
                 let enabled = llm.has_key && has_result && !stale && !compiling && !llm.running;
                 ui.horizontal(|ui| {
                     let label = if llm.running {
-                        tr!("실행 중", "Running")
+                        tr!("Running")
                     } else {
-                        tr!("▶ 실제 실행", "▶ Run live")
+                        tr!("▶ Run live")
                     };
                     if theme::primary_button(ui, p, label, enabled).clicked() {
                         actions.push(Action::RunLlm);
@@ -1225,11 +1147,8 @@ impl Canvas {
                     if llm.running {
                         ui.spinner();
                         if ui
-                            .small_button(tr!("■ 취소", "■ Cancel"))
-                            .on_hover_text(tr!(
-                                "응답을 기다리지 않고 버립니다",
-                                "Discard the reply without waiting"
-                            ))
+                            .small_button(tr!("■ Cancel"))
+                            .on_hover_text(tr!("Discard the reply without waiting"))
                             .clicked()
                         {
                             actions.push(Action::CancelLlm);
@@ -1239,12 +1158,9 @@ impl Canvas {
                 match (&llm.verdict, llm.has_key, has_result) {
                     _ if has_result && stale && llm.has_key && !llm.running => {
                         ui.label(
-                            RichText::new(tr!(
-                                "입력이 바뀜 · 다시 컴파일한 뒤 실행",
-                                "Inputs changed · recompile, then run"
-                            ))
-                            .small()
-                            .color(p.warn()),
+                            RichText::new(tr!("Inputs changed · recompile, then run"))
+                                .small()
+                                .color(p.warn()),
                         );
                     }
                     (Some((ok, text)), _, _) => {
@@ -1256,30 +1172,19 @@ impl Canvas {
                     }
                     (None, false, _) => {
                         ui.label(
-                            RichText::new(trf!(
-                                "{} 설정 후 앱을 다시 시작하세요",
-                                "Set {} and restart the app",
-                                llm.key_env
-                            ))
-                            .small()
-                            .color(p.sub),
-                        );
-                    }
-                    (None, true, false) => {
-                        ui.label(
-                            RichText::new(tr!("먼저 컴파일하세요", "Compile first"))
+                            RichText::new(trf!("Set {} and restart the app", llm.key_env))
                                 .small()
                                 .color(p.sub),
                         );
                     }
+                    (None, true, false) => {
+                        ui.label(RichText::new(tr!("Compile first")).small().color(p.sub));
+                    }
                     (None, true, true) => {
                         ui.label(
-                            RichText::new(tr!(
-                                "응답은 출력 형식·필수 필드로 검증합니다",
-                                "Replies are checked for format and required fields"
-                            ))
-                            .small()
-                            .color(p.sub),
+                            RichText::new(tr!("Replies are checked for format and required fields"))
+                                .small()
+                                .color(p.sub),
                         );
                     }
                 }
@@ -1290,8 +1195,7 @@ impl Canvas {
                     && ui
                         .add_enabled(
                             enabled,
-                            egui::Button::new(trf!("한도 2배({limit})로 다시 실행", "Retry with 2× limit ({limit})"))
-                                .small(),
+                            egui::Button::new(trf!("Retry with 2× limit ({limit})", limit = limit)).small(),
                         )
                         .clicked()
                 {
@@ -1300,7 +1204,7 @@ impl Canvas {
             },
         );
 
-        // 연결선
+        // Wires
         let time = ui.ctx().input(|i| i.time) as f32;
         let mut shapes = Vec::new();
         if let Some(root) = self.rects.get(&NodeKey::Root).copied() {
@@ -1403,28 +1307,34 @@ mod tests {
             fields: vec!["a".into()],
             data: None,
         };
-        // 앞 제약이 모순으로 지워진다: 배지는 지워진 제약(위치 0)과 남긴 제약(위치 1)에 달린다. 경고 문구에 글자만
-        // 들어 있는 다른 제약(위치 2, "우선")에는 달리지 않는다(예전 부분 문자열 비교의 오탐).
-        let r = pipeline::compile(&req(&["이상치 우선 탐지", "이상치 탐지하지 마", "우선"]));
+        // The first constraint is removed as a contradiction: the badge goes on the removed constraint (position 0) and
+        // on the kept one (position 1). It does not go on another constraint whose text merely appears in the warning
+        // (position 2, a word of the first constraint): that was a false positive of the old substring comparison.
+        let r = pipeline::compile(&req(ko_fixture!("studio.lint_badge.clash")));
         let d = &r.ast.lint_warnings;
         assert!(lint_mentions(d, 0) && lint_mentions(d, 1), "{d:?}");
         assert!(!lint_mentions(d, 2), "{d:?}");
-        // 같은 문장 중복: 지운 쪽(위치 0)과 남긴 쪽(위치 1, 나중 것) 모두 위치로 찾는다.
-        let r = pipeline::compile(&req(&["금액   기준 정렬", "금액 기준 정렬"]));
+        // Duplicate sentence: both the removed one (position 0) and the kept one (position 1, the later one) are found
+        // by position.
+        let r = pipeline::compile(&req(ko_fixture!("studio.lint_badge.duplicate")));
         let d = &r.ast.lint_warnings;
         assert!(lint_mentions(d, 0) && lint_mentions(d, 1), "{d:?}");
-        // 리뷰 재현: 모순 의심 경고는 수식어를 지운 본문("값을 계산해")을 인용하므로, 원문("값을 정말 계산해")으로
-        // 찾던 예전 방식에서는 앞 제약에 배지가 달리지 않았다. 두 제약 모두에 달린다.
-        let r = pipeline::compile(&req(&["값을 정말 계산해", "값은 계산하지 마"]));
+        // Review repro: the possible-contradiction warning quotes the body with the filler stripped (`suspect_quote`),
+        // so the old lookup by the original text did not put a badge on the first constraint. Both constraints get it.
+        let suspect = ko_fixture!("studio.lint_badge.suspect");
+        let r = i18n::with_lang(Lang::Ko, || pipeline::compile(&req(suspect)));
         let d = &r.ast.lint_warnings;
-        assert!(
-            d.iter()
-                .any(|w| w.message.starts_with("모순 의심") && w.message.contains("\"값을 계산해\"")),
-            "{d:?}"
+        let warning = format!(
+            ko_text!(
+                "Possible contradiction (kept both): \"{}\" ↔ \"{}\". Check whether they give opposite instructions for the same thing"
+            ),
+            ko_fixture!("studio.lint_badge.suspect_quote"),
+            suspect[1]
         );
+        assert!(d.iter().any(|w| w.message == warning), "{d:?}");
         assert!(lint_mentions(d, 0) && lint_mentions(d, 1), "{d:?}");
-        // 경고가 없는 제약에는 달리지 않는다
-        let r = pipeline::compile(&req(&["이상치 우선 탐지", "결측치 제외"]));
+        // No badge on constraints without warnings
+        let r = pipeline::compile(&req(ko_fixture!("studio.lint_badge.clean")));
         assert!(!lint_mentions(&r.ast.lint_warnings, 0) && !lint_mentions(&r.ast.lint_warnings, 1));
     }
 
@@ -1432,7 +1342,7 @@ mod tests {
         ids.iter()
             .map(|&id| Goal {
                 id,
-                text: format!("제약 {id}"),
+                text: format!("{} {id}", ko_fixture!("studio.canvas.goal_label")),
                 on: true,
             })
             .collect()
@@ -1444,7 +1354,7 @@ mod tests {
 
     #[test]
     fn grid_loop_terminates_at_huge_and_bad_coordinates() {
-        // y=1.5e9에서는 f32의 y += 40이 더 나아가지 않아 예전 루프가 멈추지 않았다.
+        // At y=1.5e9, f32 y += 40 no longer advances, so the old loop never ended.
         for top in [0.0_f32, 1.5e9, -3.0e9, 1.0e30] {
             let vis = Rect::from_min_size(Pos2::new(-200.0, top), egui::vec2(1300.0, 700.0));
             match grid_cells(vis, GRID_STEP, MAX_GRID_DOTS) {
@@ -1455,11 +1365,11 @@ mod tests {
                         "top={top}: {n} dots, step {step}"
                     );
                 }
-                // 1e30에서는 높이 700이 f32 정밀도에 묻혀 빈 영역이 된다: 점을 그리지 않는다
+                // At 1e30 the height of 700 is lost in f32 precision and the area becomes empty: no dots are drawn
                 None => assert!(top.abs() > 1.0e20, "top={top}"),
             }
         }
-        // 아주 넓은 영역은 간격을 늘려 점 수를 제한한다
+        // A very wide area gets a larger spacing that limits the number of dots
         let wide = Rect::from_min_size(Pos2::ZERO, egui::vec2(1.0e6, 1.0e6));
         let (step, xs, ys) = grid_cells(wide, GRID_STEP, MAX_GRID_DOTS).unwrap();
         assert!((xs.end - xs.start) * (ys.end - ys.start) <= MAX_GRID_DOTS && step > GRID_STEP);
@@ -1481,14 +1391,15 @@ mod tests {
         assert_eq!(c.pos_of(NodeKey::Root), Some(Pos2::new(0.0, blueprint::POS_LIMIT)));
         let before = c.pos_of(NodeKey::Data);
         c.set_pos(NodeKey::Data, Pos2::new(f32::NAN, 1.0));
-        assert_eq!(c.pos_of(NodeKey::Data), before); // NaN은 무시
+        assert_eq!(c.pos_of(NodeKey::Data), before); // NaN is ignored
     }
 
     #[test]
     fn default_layout_matches_previous_fixed_spacing() {
         let placed: HashMap<NodeKey, Pos2> = layout_positions(&[1, 2, 3], |_| None).into_iter().collect();
         assert_eq!(placed[&NodeKey::Settings], Pos2::new(0.0, 0.0));
-        // 설정 노드에 언어 선택 줄이 생겨 추정 높이가 150 → 200이 되었다 (왼쪽 열이 50씩 내려간다)
+        // The settings node got a language picker row, so its estimated height went from 150 to 200 (the left column
+        // moves down by 50)
         assert_eq!(placed[&NodeKey::Data], Pos2::new(0.0, 220.0));
         assert_eq!(placed[&NodeKey::Role], Pos2::new(0.0, 450.0));
         assert_eq!(placed[&NodeKey::Output], Pos2::new(0.0, 630.0));
@@ -1503,27 +1414,36 @@ mod tests {
         let gs = goals(&[1, 2, 3]);
         let mut c = Canvas::default();
         c.reset_layout(&gs);
-        // 지난 프레임: 1번 제약이 줄이 바뀌어 300px
+        // Last frame: constraint 1 wrapped and is 300 px tall
         c.rects.insert(NodeKey::Goal(1), rect_of(&c, NodeKey::Goal(1), 300.0));
         c.rects.insert(NodeKey::Goal(2), rect_of(&c, NodeKey::Goal(2), 92.0));
         c.layout(&gs);
         assert_eq!(c.pos_of(NodeKey::Goal(2)), Some(Pos2::new(290.0, 320.0)));
-        // 잰 높이가 없으면 문장 길이로 추정한다
-        assert!(estimate_goal_height(&"가".repeat(60)) > estimate_goal_height("짧은 제약"));
-        assert_eq!(estimate_goal_height("짧은 제약"), default_height(NodeKey::Goal(0)));
-        assert!(estimate_goal_height("한 줄\n두 줄\n세 줄") > estimate_goal_height("한 줄"));
+        // Without a measured height, it is estimated from the sentence length
+        assert!(
+            estimate_goal_height(&ko_fixture!("studio.canvas.wide_char").repeat(60))
+                > estimate_goal_height(ko_fixture!("studio.canvas.short_goal"))
+        );
+        assert_eq!(
+            estimate_goal_height(ko_fixture!("studio.canvas.short_goal")),
+            default_height(NodeKey::Goal(0))
+        );
+        assert!(
+            estimate_goal_height(ko_fixture!("studio.canvas.three_lines"))
+                > estimate_goal_height(ko_fixture!("studio.canvas.one_line"))
+        );
     }
 
     #[test]
     fn new_goal_goes_below_the_lowest_goal() {
-        // 세 개 중 첫 번째를 지우고 하나 추가: 예전에는 index*112 = 224에 놓여 마지막 제약과 겹쳤다.
+        // Remove the first of three and add one: it used to land at index*112 = 224, on top of the last constraint.
         let mut c = Canvas::default();
         c.reset_layout(&goals(&[1, 2, 3]));
         let mut live = goals(&[2, 3]);
         c.forget(NodeKey::Goal(1));
         live.push(Goal {
             id: 4,
-            text: "새 제약".into(),
+            text: ko_fixture!("studio.canvas.new_goal").into(),
             on: true,
         });
         c.ensure_positions(&live);
@@ -1533,7 +1453,7 @@ mod tests {
         for id in [2, 3] {
             assert!(!new_rect.intersects(rect_of(&c, NodeKey::Goal(id), 92.0)), "{id}");
         }
-        // 지난 프레임에 잰 높이(줄바꿈으로 길어진 노드)를 쓴다
+        // Uses the height measured in the last frame (a node made taller by wrapping)
         c.rects.insert(NodeKey::Goal(3), rect_of(&c, NodeKey::Goal(3), 200.0));
         live.push(Goal {
             id: 5,
@@ -1541,10 +1461,10 @@ mod tests {
             on: true,
         });
         c.ensure_positions(&live);
-        // 가장 아래 노드는 4번(336~428): 그 밑
+        // The lowest node is number 4 (336-428): right below it
         assert_eq!(c.pos_of(NodeKey::Goal(5)), Some(Pos2::new(290.0, 336.0 + 92.0 + GAP)));
         assert_eq!(place_below(std::iter::empty()), Pos2::new(GOAL_X, 0.0));
-        // 사용자가 옮긴 열 아래에 붙는다
+        // It goes below a column the user moved
         assert_eq!(
             place_below([(Pos2::new(700.0, 40.0), 100.0), (Pos2::new(290.0, 0.0), 92.0)]),
             Pos2::new(700.0, 160.0)
@@ -1553,7 +1473,7 @@ mod tests {
 
     #[test]
     fn v1_layout_without_fixed_positions_does_not_pile_at_origin() {
-        // v1 프로젝트 파일: 제약 하나와 root만 위치가 있다. 나머지는 기본 배치를 따라야 한다.
+        // v1 project file: only one constraint and root have positions. The rest must follow the default layout.
         let gs = goals(&[7, 8]);
         let mut c = Canvas::default();
         c.load_layout(&gs, [(NodeKey::Goal(7), [1.0, 2.0]), (NodeKey::Root, [1.0, 2.0])]);
@@ -1574,7 +1494,7 @@ mod tests {
         for k in [NodeKey::Data, NodeKey::Role, NodeKey::Llm, NodeKey::Result] {
             assert_ne!(c.pos_of(k), Some(Pos2::ZERO), "{k:?}");
         }
-        // 화면을 그리기 전에 모든 노드 위치가 있으므로 저장해도 같은 배치가 남는다
+        // Every node has a position before anything is drawn, so saving keeps the same layout
         assert!(NodeKey::FIXED.iter().all(|k| c.pos_of(*k).is_some()));
         assert_eq!(c.fallback_pos(NodeKey::Llm), defaults[&NodeKey::Llm]);
     }
@@ -1589,27 +1509,44 @@ mod tests {
 
     #[test]
     fn flow_animation_repaints_only_when_needed() {
-        assert_eq!(flow_repaint(true, false, false, true), None); // 유휴: 다시 그리지 않음
-        assert_eq!(flow_repaint(true, true, false, true), Some(FLOW_FRAME)); // 작업 중
-        assert_eq!(flow_repaint(true, false, true, true), Some(FLOW_FRAME)); // 포인터가 캔버스 위
-        assert_eq!(flow_repaint(false, true, true, true), None); // 애니메이션 끔
-        assert_eq!(flow_repaint(true, true, true, false), None); // 포커스 없음
-        assert!(FLOW_FRAME >= Duration::from_millis(50)); // 최대 20fps
+        assert_eq!(flow_repaint(true, false, false, true), None); // idle: no repaint
+        assert_eq!(flow_repaint(true, true, false, true), Some(FLOW_FRAME)); // working
+        assert_eq!(flow_repaint(true, false, true, true), Some(FLOW_FRAME)); // pointer over the canvas
+        assert_eq!(flow_repaint(false, true, true, true), None); // animation off
+        assert_eq!(flow_repaint(true, true, true, false), None); // not focused
+        assert!(FLOW_FRAME >= Duration::from_millis(50)); // at most 20 fps
     }
 
     #[test]
     fn llm_options_summary() {
+        let summary = |max: u32, temperature: &str, system: &str| {
+            format!(
+                ko_text!("max {} · {temp}{system}"),
+                max,
+                temp = temperature,
+                system = system
+            )
+        };
+        let temp = |t: f32| format!(ko_text!("temp {:.2}"), t);
         let mut o = LlmOptions::default();
-        assert_eq!(options_summary(&o, 1.0), "2048 토큰 · 온도 기본값");
-        o.temperature = Some(1.5);
-        o.system = "시스템".into();
-        o.max_tokens = 4096;
-        assert_eq!(options_summary(&o, 2.0), "4096 토큰 · 온도 1.50 · 시스템");
-        // Anthropic(최대 1.0)에서는 실제로 보내는 값을 보여 준다
-        assert_eq!(options_summary(&o, 1.0), "4096 토큰 · 온도 1.00 · 시스템");
+        i18n::with_lang(Lang::Ko, || {
+            assert_eq!(options_summary(&o, 1.0), summary(2048, ko_text!("default temp"), ""));
+            o.temperature = Some(1.5);
+            o.system = ko_fixture!("studio.canvas.system_prompt").into();
+            o.max_tokens = 4096;
+            assert_eq!(
+                options_summary(&o, 2.0),
+                summary(4096, &temp(1.5), ko_text!(" · system"))
+            );
+            // For Anthropic (max 1.0) the value actually sent is shown
+            assert_eq!(
+                options_summary(&o, 1.0),
+                summary(4096, &temp(1.0), ko_text!(" · system"))
+            );
+        });
     }
 
-    /// 그릴 때 쓰는 화면 상태. full이면 데이터·컴파일 결과·LLM 판정·긴 문구가 모두 나오는 상태다.
+    /// Screen state used for drawing. With full, data, a compile result, an LLM verdict and long texts are all shown.
     struct Scenario {
         role: String,
         goals: Vec<Goal>,
@@ -1628,7 +1565,7 @@ mod tests {
     }
 
     impl Scenario {
-        /// 지금 스레드의 언어로 내장 블루프린트 0번을 적용한 상태
+        /// Built-in blueprint 0 applied in the current thread's language
         fn new(full: bool) -> Scenario {
             let bp = PRESETS[0].to_blueprint();
             let loaded = full.then(|| {
@@ -1661,7 +1598,7 @@ mod tests {
                 fields: bp.fields.clone(),
                 target: bp.target,
                 project: bp.project.clone(),
-                theme_idx: 6, // 가장 긴 테마 이름
+                theme_idx: 6, // longest theme name
                 fog: true,
                 sample_rows: 8,
                 llm_model: "claude-sonnet-4-5".into(),
@@ -1672,11 +1609,12 @@ mod tests {
             }
         }
 
-        /// 화면 없이 캔버스를 몇 프레임 그리고 노드 영역을 돌려준다 (실제 앱처럼 한글 글꼴을 덧붙인다).
+        /// Draws the canvas for a few frames without a window and returns the node areas (adds the Korean font, like
+        /// the real app).
         fn render(&mut self) -> HashMap<NodeKey, Rect> {
             let ctx = egui::Context::default();
             crate::app::install_korean_font(&ctx);
-            theme::apply(&ctx, &THEMES[self.theme_idx]); // 실제 앱의 간격·버튼 여백
+            theme::apply(&ctx, &THEMES[self.theme_idx]); // the real app's spacing and button padding
             let mut canvas = Canvas::default();
             canvas.reset_layout(&self.goals);
             for frame in 0..3 {
@@ -1736,7 +1674,7 @@ mod tests {
         }
     }
 
-    /// 노드 영역의 테두리(1.5px)까지 넣은 너비가 정한 너비를 넘지 않는다 (글자가 노드 밖으로 밀어내지 않았다).
+    /// The node width including its border (1.5 px) does not exceed the set width (no text pushed the node wider).
     fn assert_within_width(rects: &HashMap<NodeKey, Rect>, what: &str) {
         assert!(!rects.is_empty(), "{what}");
         for (k, r) in rects {
@@ -1753,7 +1691,7 @@ mod tests {
     fn nodes_keep_their_width_in_both_languages() {
         for lang in Lang::ALL {
             for full in [false, true] {
-                // 기본 실행 옵션과, 온도를 정한 경우 (요약이 실행 옵션 제목에 붙는다)
+                // Default run options, and a set temperature (the summary is appended to the run options title)
                 for temperature in [None, Some(0.7)] {
                     let rects = i18n::with_lang(lang, || {
                         let mut s = Scenario::new(full);
@@ -1771,7 +1709,8 @@ mod tests {
 
     #[test]
     fn startup_layout_estimates_cover_measured_heights() {
-        // 시작할 때 배치는 그리기 전의 추정 높이로 계산하므로, 실제 높이가 추정치 + 간격을 넘으면 노드가 겹친다.
+        // The startup layout is computed from the estimated heights before drawing, so nodes overlap if a real height
+        // exceeds the estimate plus the gap.
         for lang in Lang::ALL {
             let mut s = i18n::with_lang(lang, || Scenario::new(false));
             let rects = i18n::with_lang(lang, || s.render());
@@ -1794,7 +1733,7 @@ mod tests {
 
     #[test]
     fn templates_exist_in_both_languages() {
-        let hangul = |s: &str| s.chars().any(|c| ('가'..='힣').contains(&c));
+        let hangul = |s: &str| s.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c));
         for (cat, items) in TEMPLATES {
             assert!(!items.is_empty(), "{cat:?}");
             for t in std::iter::once(&cat).chain(items) {
@@ -1802,10 +1741,13 @@ mod tests {
                 assert!(hangul(t.ko()) && !hangul(t.en()), "{t:?}");
             }
         }
-        // 고르면 지금 언어의 문장이 제약이 된다 (메뉴와 같은 값)
+        // Picking one makes the sentence in the current language the constraint (the same value as the menu)
         let (_, items) = TEMPLATES[1];
         assert_eq!(i18n::with_lang(Lang::En, || items[0].get()), "Detect outliers first");
-        assert_eq!(i18n::with_lang(Lang::Ko, || items[0].get()), "이상치 우선 탐지");
+        assert_eq!(
+            i18n::with_lang(Lang::Ko, || items[0].get()),
+            ko_text!("Detect outliers first")
+        );
     }
 
     #[test]

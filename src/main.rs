@@ -1,6 +1,6 @@
-//! Candy-Corn: 인자 없으면 GUI, `--cli` 는 터미널 린터, `--mcp` 는 stdio MCP 서버.
+//! Candy-Corn: the GUI without arguments, `--cli` is the terminal linter, `--mcp` is the stdio MCP server.
 
-// tr!/trf! 매크로를 다른 모듈보다 먼저 정의해야 하므로 맨 앞에 둔다.
+// Declared first: the tr!/trf! macros must be defined before the other modules.
 #[macro_use]
 mod i18n;
 mod app;
@@ -8,6 +8,7 @@ mod ast;
 mod blueprint;
 mod canvas;
 mod history;
+mod lexicon;
 mod mcp_server;
 mod pipeline;
 mod profiler;
@@ -39,63 +40,64 @@ enum FormatArg {
 #[command(
     name = "Candy-Corn",
     version,
-    about = "프롬프트 압축/린트 스튜디오 (인자 없으면 GUI 실행)"
+    about = "Prompt compression/lint studio (opens the GUI without arguments)"
 )]
 struct Cli {
-    /// GUI 시작 시 바로 불러올 CSV/JSON 파일 (.kiro 파일이면 블루프린트로 연다).
-    /// --canvas와 함께 쓰면 캔버스 그래프 JSON 파일이다.
+    /// CSV/JSON file to load when the GUI starts (a .kiro file opens as a blueprint).
+    /// With --canvas it is a canvas graph JSON file
     #[arg(conflicts_with_all = ["cli", "mcp", "run_graph"])]
     file: Option<PathBuf>,
-    /// 블루프린트(.kiro): 전체 설정을 한 번에 적용한다. --cli 없이 쓰면 GUI를 그 설정으로 연다.
-    /// --cli와 함께 쓰면 그 설정으로 컴파일한다. 이때 --data는 블루프린트의 데이터 경로를 대신하고,
-    /// --constraint/--steering은 제약을 추가한다.
+    /// Blueprint (.kiro) that applies every setting at once. Without --cli it opens the GUI with those settings;
+    /// with --cli it compiles with them (--data replaces the blueprint's data path, --constraint/--steering add
+    /// constraints)
     #[arg(long, value_name = "FILE", conflicts_with_all = ["mcp", "canvas", "run_graph", "file"])]
     blueprint: Option<PathBuf>,
-    /// GUI 테마 번호 1~7 (디자인샘플 01~07)
+    /// GUI theme number 1-7 (design samples 01-07)
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=7))]
     theme: Option<u8>,
-    /// 터미널 린터 모드
+    /// Terminal linter mode
     #[arg(long, conflicts_with = "mcp")]
     cli: bool,
-    /// stdio JSON-RPC MCP 서버 모드
+    /// stdio JSON-RPC MCP server mode
     #[arg(long)]
     mcp: bool,
-    /// 노드 캔버스 GUI (프롬프트/LLM/MCP 연결·테스트). 그래프 파일은 위치 인자나 --graph 로 함께 열 수 있다
+    /// Node canvas GUI (connect and test prompt/LLM/MCP nodes). Open a graph file with the positional argument or
+    /// --graph
     #[arg(long, conflicts_with_all = ["cli", "mcp", "run_graph"])]
     canvas: bool,
-    /// --canvas: 열 캔버스 그래프 JSON 파일 (위치 인자로 줘도 된다)
+    /// --canvas: canvas graph JSON file to open (the positional argument also works)
     #[arg(
         long,
         requires = "canvas",
         conflicts_with_all = ["file", "cli", "mcp", "run_graph", "blueprint"]
     )]
     graph: Option<PathBuf>,
-    /// 그래프를 헤드리스로 실행하고 최종 출력을 stdout에 쓴다
+    /// Run a graph headless and write the final output to stdout
     #[arg(long, value_name = "FILE", conflicts_with_all = ["cli", "mcp"])]
     run_graph: Option<PathBuf>,
-    /// --run-graph: 테스트 입력 노드(그래프에 저장된 test_node, 없으면 첫 Text 노드)의 값을 대체할 테스트 입력
-    /// (`-`로 시작해도 된다)
+    /// --run-graph: test input that replaces the value of the test input node (the graph's saved test_node, else
+    /// the first Text node; may start with '-')
     #[arg(long, requires = "run_graph", allow_hyphen_values = true)]
     input: Option<String>,
-    /// --run-graph: MCP 노드의 로컬 프로세스 실행 허용
+    /// --run-graph: allow MCP nodes to start local processes
     #[arg(long, requires = "run_graph")]
     allow_mcp: bool,
-    /// --run-graph: LLM 노드의 사용자 지정 Base URL 허용 (API 키가 그 주소로 전송된다. https 또는 localhost만)
+    /// --run-graph: allow custom LLM Base URLs (the API key is sent there; https or localhost only)
     #[arg(long, requires = "run_graph")]
     allow_custom_endpoint: bool,
-    /// CSV/JSON/NDJSON 데이터 파일
+    /// CSV/TSV/JSON/NDJSON data file
     #[arg(long, requires = "cli")]
     data: Option<PathBuf>,
-    /// 역할 지시문
+    /// Role instruction
     #[arg(long, default_value = "Data analyst", requires = "cli", conflicts_with = "blueprint")]
     role: String,
-    /// 제약 조건 (여러 번 지정 가능)
+    /// Constraint (repeatable)
     #[arg(long = "constraint", requires = "cli")]
     constraints: Vec<String>,
-    /// steering 마크다운 (`- ` 불릿을 제약으로 읽음)
+    /// Steering markdown (`- ` bullets are read as constraints)
     #[arg(long, requires = "cli")]
     steering: Option<PathBuf>,
-    /// 타겟 모델
+    /// Target model
     #[arg(
         long,
         value_enum,
@@ -104,7 +106,7 @@ struct Cli {
         conflicts_with = "blueprint"
     )]
     target: TargetArg,
-    /// 출력 포맷
+    /// Output format
     #[arg(
         long,
         value_enum,
@@ -113,15 +115,15 @@ struct Cli {
         conflicts_with = "blueprint"
     )]
     format: FormatArg,
-    /// 필수 출력 필드 (쉼표 구분)
+    /// Required output fields (comma separated)
     #[arg(long, default_value = pipeline::DEFAULT_FIELDS, requires = "cli", conflicts_with = "blueprint")]
     fields: String,
-    /// 샘플 행 수 (최대 50, 넘으면 50으로 줄이고 경고)
+    /// Sample rows (max 50; larger values are capped with a warning)
     #[arg(long, default_value_t = 8, requires = "cli", conflicts_with = "blueprint")]
     sample_rows: usize,
-    /// 화면·메시지 언어: ko(한국어) 또는 en(English). GUI는 생략하면 저장된 설정(없으면 ko),
-    /// --cli/--mcp/--run-graph는 생략하면 ko(스크립트 출력이 설정에 따라 바뀌지 않게).
-    #[arg(long, value_name = "ko|en", value_parser = parse_lang)]
+    /// UI and message language: en (English) or ko (Korean). The GUI defaults to the saved setting (else en);
+    /// --cli/--mcp/--run-graph default to en so script output does not depend on settings
+    #[arg(long, value_name = "en|ko", value_parser = parse_lang)]
     lang: Option<i18n::Lang>,
 }
 
@@ -129,76 +131,90 @@ fn parse_lang(s: &str) -> Result<i18n::Lang, String> {
     let codes = i18n::Lang::ALL
         .map(|l| format!("{} ({})", l.code(), l.native_name()))
         .join(", ");
-    i18n::Lang::parse(s).ok_or_else(|| {
-        trf!(
-            "지원하지 않는 언어: {s} (가능: {codes})",
-            "unsupported language: {s} (available: {codes})"
-        )
-    })
+    i18n::Lang::parse(s).ok_or_else(|| trf!("unsupported language: {s} (available: {codes})", s = s, codes = codes))
 }
 
-/// 영어 도움말: (인자 id, 설명). id는 Cli 필드 이름이다.
-const EN_HELP: &[(&str, &str)] = &[
+/// Korean help: (argument id, text). The id is the Cli field name. English is the derive doc comments above.
+const KO_HELP: &[(&str, &str)] = &[
     (
         "file",
-        "CSV/JSON file to load when the GUI starts (a .kiro file opens as a blueprint). With --canvas it is a canvas graph JSON file",
+        ko_text!(
+            "CSV/JSON file to load when the GUI starts (a .kiro file opens as a blueprint). With --canvas it is a canvas graph JSON file"
+        ),
     ),
     (
         "blueprint",
-        "Blueprint (.kiro) that applies every setting at once. Without --cli it opens the GUI with those settings; with --cli it compiles with them (--data replaces the blueprint's data path, --constraint/--steering add constraints)",
+        ko_text!(
+            "Blueprint (.kiro) that applies every setting at once. Without --cli it opens the GUI with those settings; with --cli it compiles with them (--data replaces the blueprint's data path, --constraint/--steering add constraints)"
+        ),
     ),
-    ("theme", "GUI theme number 1-7 (design samples 01-07)"),
-    ("cli", "Terminal linter mode"),
-    ("mcp", "stdio JSON-RPC MCP server mode"),
+    ("theme", ko_text!("GUI theme number 1-7 (design samples 01-07)")),
+    ("cli", ko_text!("Terminal linter mode")),
+    ("mcp", ko_text!("stdio JSON-RPC MCP server mode")),
     (
         "canvas",
-        "Node canvas GUI (connect and test prompt/LLM/MCP nodes). Open a graph file with the positional argument or --graph",
+        ko_text!(
+            "Node canvas GUI (connect and test prompt/LLM/MCP nodes). Open a graph file with the positional argument or --graph"
+        ),
     ),
     (
         "graph",
-        "--canvas: canvas graph JSON file to open (the positional argument also works)",
+        ko_text!("--canvas: canvas graph JSON file to open (the positional argument also works)"),
     ),
-    ("run_graph", "Run a graph headless and write the final output to stdout"),
+    (
+        "run_graph",
+        ko_text!("Run a graph headless and write the final output to stdout"),
+    ),
     (
         "input",
-        "--run-graph: test input that replaces the value of the test input node (the graph's saved test_node, else the first Text node; may start with '-')",
+        ko_text!(
+            "--run-graph: test input that replaces the value of the test input node (the graph's saved test_node, else the first Text node; may start with '-')"
+        ),
     ),
-    ("allow_mcp", "--run-graph: allow MCP nodes to start local processes"),
+    (
+        "allow_mcp",
+        ko_text!("--run-graph: allow MCP nodes to start local processes"),
+    ),
     (
         "allow_custom_endpoint",
-        "--run-graph: allow custom LLM Base URLs (the API key is sent there; https or localhost only)",
+        ko_text!("--run-graph: allow custom LLM Base URLs (the API key is sent there; https or localhost only)"),
     ),
-    ("data", "CSV/TSV/JSON/NDJSON data file"),
-    ("role", "Role instruction"),
-    ("constraints", "Constraint (repeatable)"),
-    ("steering", "Steering markdown (`- ` bullets are read as constraints)"),
-    ("target", "Target model"),
-    ("format", "Output format"),
-    ("fields", "Required output fields (comma separated)"),
+    ("data", ko_text!("CSV/TSV/JSON/NDJSON data file")),
+    ("role", ko_text!("Role instruction")),
+    ("constraints", ko_text!("Constraint (repeatable)")),
+    (
+        "steering",
+        ko_text!("Steering markdown (`- ` bullets are read as constraints)"),
+    ),
+    ("target", ko_text!("Target model")),
+    ("format", ko_text!("Output format")),
+    ("fields", ko_text!("Required output fields (comma separated)")),
     (
         "sample_rows",
-        "Sample rows (max 50; larger values are capped with a warning)",
+        ko_text!("Sample rows (max 50; larger values are capped with a warning)"),
     ),
     (
         "lang",
-        "UI and message language: ko (Korean) or en (English). The GUI defaults to the saved setting (else ko); --cli/--mcp/--run-graph default to ko so script output does not depend on settings",
+        ko_text!(
+            "UI and message language: en (English) or ko (Korean). The GUI defaults to the saved setting (else en); --cli/--mcp/--run-graph default to en so script output does not depend on settings"
+        ),
     ),
 ];
 
-/// 언어에 맞는 명령줄 정의. 한국어는 doc 주석 그대로, 영어는 설명을 바꿔 끼운다.
+/// Command-line definition for a language. English is the derive doc comments; Korean swaps in `KO_HELP`.
 fn cli_command(lang: i18n::Lang) -> clap::Command {
     use clap::CommandFactory;
     let cmd = Cli::command();
-    if lang == i18n::Lang::Ko {
+    if lang == i18n::Lang::En {
         return cmd;
     }
-    EN_HELP.iter().fold(
-        cmd.about("Prompt compression/lint studio (opens the GUI without arguments)"),
+    KO_HELP.iter().fold(
+        cmd.about(tr!("Prompt compression/lint studio (opens the GUI without arguments)")),
         |c, (id, help)| c.mut_arg(*id, |a| a.help(*help)),
     )
 }
-
-/// 명령줄을 읽는다. `--lang`을 먼저 보고 도움말·값 오류 문구를 그 언어로 만든다(clap 자체 문구는 영어).
+/// Reads the command line. Looks at `--lang` first so the help and value errors are in that language (clap's
+/// own text stays English).
 fn parse_cli() -> Cli {
     use clap::FromArgMatches;
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
@@ -208,7 +224,8 @@ fn parse_cli() -> Cli {
     Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit())
 }
 
-/// 실행 모드에 맞는 언어. GUI는 사용자가 고른 설정을 따르고, 터미널 모드는 `--lang`이 없으면 한국어로 고정한다.
+/// Language for the run mode. The GUI follows the user's saved choice; the terminal modes use English unless
+/// `--lang` is given.
 fn mode_lang(cli: &Cli) -> i18n::Lang {
     let terminal = cli.cli || cli.mcp || cli.run_graph.is_some();
     if terminal {
@@ -218,13 +235,13 @@ fn mode_lang(cli: &Cli) -> i18n::Lang {
     }
 }
 
-/// 릴리스 빌드에서 GUI 실행 시 같이 뜨는 콘솔 창을 닫는다(디버그 빌드는 로그 확인용으로 유지).
+/// In release builds, closes the console window that opens with the GUI (debug builds keep it for logs).
 #[cfg(all(windows, not(debug_assertions)))]
 fn detach_console() {
     unsafe extern "system" {
         fn FreeConsole() -> i32;
     }
-    // SAFETY: 인자 없는 Win32 호출이며 실패해도 무해하다.
+    // SAFETY: a Win32 call without arguments; a failure is harmless.
     unsafe {
         FreeConsole();
     }
@@ -233,16 +250,13 @@ fn detach_console() {
 #[cfg(not(all(windows, not(debug_assertions))))]
 fn detach_console() {}
 
-/// 창 아이콘(제목 표시줄·작업 표시줄·Alt+Tab). exe 파일 아이콘은 build.rs가 assets/icon.ico로 넣는다.
+/// Window icon (title bar, taskbar, Alt+Tab). build.rs embeds the exe file icon from assets/icon.ico.
 fn window_icon() -> eframe::egui::ViewportBuilder {
     let vb = eframe::egui::ViewportBuilder::default();
     match eframe::icon_data::from_png_bytes(theme::ICON_PNG) {
         Ok(icon) => vb.with_icon(std::sync::Arc::new(icon)),
         Err(e) => {
-            eprintln!(
-                "{}",
-                trf!("창 아이콘 로드 실패: {e}", "failed to load window icon: {e}")
-            );
+            eprintln!("{}", trf!("failed to load window icon: {e}", e = e));
             vb
         }
     }
@@ -255,7 +269,7 @@ fn main() -> ExitCode {
         return match mcp_server::run() {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("{}", trf!("MCP 서버 오류: {e}", "mcp error: {e}"));
+                eprintln!("{}", trf!("mcp error: {e}", e = e));
                 ExitCode::FAILURE
             }
         };
@@ -282,12 +296,12 @@ fn main() -> ExitCode {
         ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("{}", trf!("GUI 실행 실패: {e}", "failed to start GUI: {e}"));
+                eprintln!("{}", trf!("failed to start GUI: {e}", e = e));
                 ExitCode::FAILURE
             }
         };
     }
-    // .kiro 파일을 위치 인자로 넘기면(탐색기에서 연결 프로그램으로 열기 등) 블루프린트로 연다.
+    // A .kiro file passed as the positional argument (e.g. "Open with" in Explorer) opens as a blueprint.
     let (startup_file, startup_blueprint) = match (cli.file.clone(), cli.blueprint.clone()) {
         (Some(f), None) if f.extension().is_some_and(|e| e.eq_ignore_ascii_case("kiro")) => (None, Some(f)),
         (f, b) => (f, b),
@@ -315,18 +329,18 @@ fn main() -> ExitCode {
     ) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("{}", trf!("GUI 실행 실패: {e}", "failed to start GUI: {e}"));
+            eprintln!("{}", trf!("failed to start GUI: {e}", e = e));
             ExitCode::FAILURE
         }
     }
 }
 
-/// --canvas로 열 그래프 파일: 위치 인자 또는 --graph (둘을 함께 주는 것은 clap이 막는다).
+/// Graph file to open with --canvas: the positional argument or --graph (clap rejects both together).
 fn canvas_file(cli: &Cli) -> Option<PathBuf> {
     cli.file.clone().or_else(|| cli.graph.clone())
 }
 
-/// `--cli --sample-rows`의 상한. 블루프린트와 같은 `MAX_SAMPLE_ROWS`로 맞춘다.
+/// Upper bound of `--cli --sample-rows`: the same `MAX_SAMPLE_ROWS` as blueprints.
 fn clamp_sample_rows(n: usize) -> usize {
     n.min(blueprint::MAX_SAMPLE_ROWS)
 }
@@ -336,7 +350,7 @@ fn run_cli(cli: Cli) -> ExitCode {
         Some(p) => match blueprint::Blueprint::load(p) {
             Ok(b) => Some(b),
             Err(e) => {
-                eprintln!("{}", trf!("블루프린트 로드 실패: {e}", "failed to load blueprint: {e}"));
+                eprintln!("{}", trf!("failed to load blueprint: {e}", e = e));
                 return ExitCode::FAILURE;
             }
         },
@@ -344,14 +358,11 @@ fn run_cli(cli: Cli) -> ExitCode {
     };
     let mut constraints = cli.constraints;
     if let Some(p) = &cli.steering {
-        // GUI와 같이 UTF-8(BOM 포함)·UTF-16 BOM·CP949를 자동 판별한다.
+        // Detects UTF-8 (with or without BOM), UTF-16 BOM and CP949 like the GUI.
         match pipeline::read_text_auto(p) {
             Ok(md) => constraints.extend(pipeline::parse_steering_rules(&md)),
             Err(e) => {
-                eprintln!(
-                    "{}",
-                    trf!("steering 읽기 실패: {e}", "failed to read steering file: {e}")
-                );
+                eprintln!("{}", trf!("failed to read steering file: {e}", e = e));
                 return ExitCode::FAILURE;
             }
         }
@@ -364,9 +375,9 @@ fn run_cli(cli: Cli) -> ExitCode {
                 eprintln!(
                     "{}",
                     trf!(
-                        "경고: 샘플 행 수는 최대 {n}행입니다 ({} → {n})",
                         "warning: sample rows are capped at {n} ({} → {n})",
-                        cli.sample_rows
+                        cli.sample_rows,
+                        n = n
                     )
                 );
             }
@@ -381,7 +392,7 @@ fn run_cli(cli: Cli) -> ExitCode {
         Some(p) => match pipeline::load_data(p, sample_rows) {
             Ok(d) => Some(d),
             Err(e) => {
-                eprintln!("{}", trf!("데이터 로드 실패: {e}", "failed to load data: {e}"));
+                eprintln!("{}", trf!("failed to load data: {e}", e = e));
                 return ExitCode::FAILURE;
             }
         },
@@ -437,12 +448,13 @@ fn run_graph_cli(
     {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("{}", trf!("그래프 로드 실패: {e}", "failed to load graph: {e}"));
+            eprintln!("{}", trf!("failed to load graph: {e}", e = e));
             return ExitCode::FAILURE;
         }
     };
     let input_override = input.and_then(|t| {
-        // GUI 테스트 실행기와 같은 노드: 그래프에 저장된 테스트 입력 노드(test_node)가 Text 노드면 그것, 아니면 첫 Text 노드
+        // Same node as the GUI test runner: the graph's saved test input node (test_node) if it is a Text node,
+        // else the first Text node
         let is_text = |n: &&graph::Node| matches!(n.kind, NodeKind::Text { .. });
         let target = g
             .test_node
@@ -450,13 +462,7 @@ fn run_graph_cli(
             .filter(is_text)
             .or_else(|| g.nodes.iter().find(is_text));
         if target.is_none() {
-            eprintln!(
-                "{}",
-                tr!(
-                    "경고: --input을 받을 Text 노드가 없어 무시합니다",
-                    "warning: no Text node to receive --input; ignored"
-                )
-            );
+            eprintln!("{}", tr!("warning: no Text node to receive --input; ignored"));
         }
         target.map(|n| (n.id, t))
     });
@@ -464,7 +470,7 @@ fn run_graph_cli(
         allow_mcp,
         allow_custom_endpoint,
         input_override,
-        // Prompt 노드의 상대 data_path는 그래프 파일이 있는 폴더 기준이다.
+        // A Prompt node's relative data_path is relative to the folder of the graph file.
         base_dir: exec::base_dir_of(path),
         cancel: None,
     };
@@ -478,14 +484,14 @@ fn run_graph_cli(
         exec::Event::Started(_) => {}
     }) {
         Ok(r) => {
-            // 실패한 실행이 빈 줄을 stdout에 남기지 않게 한다. 성공한 빈 결과는 빈 줄로 낸다.
+            // A failed run leaves no empty line on stdout; a successful empty result prints an empty line.
             if r.ok() || !r.final_text.is_empty() {
                 println!("{}", r.final_text);
             }
             if r.ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
         }
         Err(e) => {
-            eprintln!("{}", trf!("실행 실패: {e}", "run failed: {e}"));
+            eprintln!("{}", trf!("run failed: {e}", e = e));
             ExitCode::FAILURE
         }
     }
@@ -512,7 +518,7 @@ mod tests {
     fn graph_flag_needs_canvas_and_excludes_the_positional_file() {
         assert!(
             parse(&["--graph", "g.json"]).is_err(),
-            "--canvas 없이는 스튜디오가 열리면 안 된다"
+            "without --canvas the studio must not open"
         );
         assert!(parse(&["--canvas", "--graph", "g.json", "other.json"]).is_err());
         for other in [
@@ -523,22 +529,23 @@ mod tests {
         ] {
             let mut args = other.to_vec();
             args.extend(["--graph", "g.json"]);
-            assert!(parse(&args).is_err(), "{other:?} --graph 는 조용히 무시되면 안 된다");
+            assert!(parse(&args).is_err(), "{other:?} --graph must not be silently ignored");
         }
     }
 
     #[test]
     fn graph_files_are_not_studio_files() {
-        // --run-graph와 위치 인자를 함께 주면 위치 인자가 조용히 무시되므로 막는다.
+        // With --run-graph a positional argument would be silently ignored, so it is rejected.
         assert!(parse(&["--run-graph", "a.json", "b.json"]).is_err());
         assert!(parse(&["--canvas", "--run-graph", "a.json"]).is_err());
     }
 
     #[test]
     fn input_may_start_with_a_hyphen() {
-        let cli = parse(&["--run-graph", "g.json", "--input", "-5% 증가 --x"]).unwrap();
-        assert_eq!(cli.input.as_deref(), Some("-5% 증가 --x"));
-        assert!(parse(&["--input", "x"]).is_err(), "--run-graph가 필요하다");
+        let input = ko_fixture!("cli.hyphen_input");
+        let cli = parse(&["--run-graph", "g.json", "--input", input]).unwrap();
+        assert_eq!(cli.input.as_deref(), Some(input));
+        assert!(parse(&["--input", "x"]).is_err(), "needs --run-graph");
     }
 
     #[test]
@@ -562,22 +569,22 @@ mod tests {
     }
 
     #[test]
-    fn lang_flag_parses_and_terminal_modes_default_to_korean() {
+    fn lang_flag_parses_and_terminal_modes_default_to_english() {
         use i18n::Lang;
         assert_eq!(parse(&["--cli", "--lang", "en"]).unwrap().lang, Some(Lang::En));
         assert_eq!(parse(&["--mcp", "--lang=ko"]).unwrap().lang, Some(Lang::Ko));
         assert!(parse(&["--cli", "--lang", "fr"]).is_err());
-        // 터미널 모드는 저장된 GUI 설정과 관계없이 --lang이 없으면 한국어다
+        // Terminal modes ignore the saved GUI setting: without --lang they are English
         for args in [["--cli"].as_slice(), &["--mcp"], &["--run-graph", "g.json"]] {
-            assert_eq!(mode_lang(&parse(args).unwrap()), Lang::Ko, "{args:?}");
+            assert_eq!(mode_lang(&parse(args).unwrap()), Lang::En, "{args:?}");
         }
-        assert_eq!(mode_lang(&parse(&["--cli", "--lang", "en"]).unwrap()), Lang::En);
-        // GUI 모드에서 --lang을 주면 그 언어가 저장된 설정보다 우선한다
-        assert_eq!(mode_lang(&parse(&["--lang", "en"]).unwrap()), Lang::En);
+        assert_eq!(mode_lang(&parse(&["--cli", "--lang", "ko"]).unwrap()), Lang::Ko);
+        // In GUI mode an explicit --lang wins over the saved setting
+        assert_eq!(mode_lang(&parse(&["--lang", "ko"]).unwrap()), Lang::Ko);
     }
 
     #[test]
-    fn english_help_covers_every_argument() {
+    fn korean_help_covers_every_argument() {
         use clap::CommandFactory;
         let ids: Vec<String> = Cli::command()
             .get_arguments()
@@ -585,15 +592,15 @@ mod tests {
             .filter(|id| id != "help" && id != "version")
             .collect();
         for id in &ids {
-            assert!(EN_HELP.iter().any(|(k, _)| k == id), "영어 도움말 없음: {id}");
+            assert!(KO_HELP.iter().any(|(k, _)| k == id), "missing Korean help: {id}");
         }
-        for (k, _) in EN_HELP {
-            assert!(ids.iter().any(|id| id == k), "없는 인자의 도움말: {k}");
+        for (k, _) in KO_HELP {
+            assert!(ids.iter().any(|id| id == k), "Korean help for an unknown argument: {k}");
         }
-        // 영어 명령 정의는 도움말을 만들 수 있고(mut_arg 오타면 여기서 패닉) 한국어 문구가 없다
-        let help = cli_command(i18n::Lang::En).render_long_help().to_string();
-        assert!(help.contains("Terminal linter mode") && !help.chars().any(|c| ('가'..='힣').contains(&c)));
+        // The Korean command can render help (a typo in mut_arg panics here); the English one has no Hangul
         let ko = cli_command(i18n::Lang::Ko).render_long_help().to_string();
-        assert!(ko.contains("터미널 린터 모드"));
+        assert!(ko.contains(ko_text!("Terminal linter mode")));
+        let en = cli_command(i18n::Lang::En).render_long_help().to_string();
+        assert!(en.contains("Terminal linter mode") && !en.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c)));
     }
 }

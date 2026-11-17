@@ -1,16 +1,16 @@
-# 빌드 산출물 (.cargo/config.toml이 C:/cargo-target 으로 보내지만 기본 경로도 막아 둔다)
+# Build output (.cargo/config.toml sends it to C:/cargo-target, but the default path is ignored too)
 /target
 **/*.rs.bk
 
-# 편집기/OS
+# Editors/OS
 .vscode/
 .idea/
 Thumbs.db
 desktop.ini
 
-# 로컬 비밀값
+# Local secrets
 .env
 *.key
 
-# 배포용 실행 파일 복사본 (cargo build --release 산출물)
+# Copy of the release executable (cargo build --release output)
 /Candy-Corn.exe

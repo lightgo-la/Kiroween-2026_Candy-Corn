@@ -1,6 +1,6 @@
 {
   "name": "candy-corn-dev",
-  "description": "Candy-Corn(Rust/egui) 개발 에이전트. steering 문서를 읽고 cargo 명령은 승인 없이 실행한다.",
+  "description": "Development agent for Candy-Corn (Rust/egui). Reads the steering docs and runs cargo commands without asking for approval.",
   "tools": ["read", "write", "shell", "subagent"],
   "resources": ["file://.kiro/steering/**/*.md"],
   "permissions": {

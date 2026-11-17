@@ -1,4 +1,4 @@
-//! 단호박 할로윈 테마 7종 (디자인샘플 01~07). 상단 바에서 즉시 전환할 수 있다.
+//! Seven pumpkin Halloween themes (design samples 01-07). They can be switched instantly from the top bar.
 
 use crate::i18n::Tr;
 use eframe::egui::{
@@ -7,9 +7,9 @@ use eframe::egui::{
 
 #[derive(Clone, Copy)]
 pub struct Palette {
-    /// 테마 이름 (선택 목록에 보여 줄 때 `.get()`으로 현재 언어를 고른다)
+    /// Theme name (`.get()` picks the current language when it is shown in the picker)
     pub name: Tr,
-    /// 로고 아래 영문 태그라인 (두 언어 모두 같은 문구)
+    /// English tagline under the logo (the same text in both languages)
     pub tag: Tr,
     pub light: bool,
     pub fog: bool,
@@ -31,8 +31,8 @@ const fn c(r: u8, g: u8, b: u8) -> Color32 {
 
 pub const THEMES: [Palette; 7] = [
     Palette {
-        name: Tr("01 클래식 할로윈 나이트", "01 Classic Halloween"),
-        tag: Tr("CLASSIC · NIGHT", "CLASSIC · NIGHT"),
+        name: trp!("01 Classic Halloween"),
+        tag: trp!("CLASSIC · NIGHT"),
         light: false,
         fog: false,
         bg: c(0x14, 0x09, 0x1f),
@@ -47,8 +47,8 @@ pub const THEMES: [Palette; 7] = [
         on_accent: c(0x1a, 0x0b, 0x00),
     },
     Palette {
-        name: Tr("02 잭오랜턴 글로우", "02 Jack-o'-Lantern Glow"),
-        tag: Tr("JACK · GLOW", "JACK · GLOW"),
+        name: trp!("02 Jack-o'-Lantern Glow"),
+        tag: trp!("JACK · GLOW"),
         light: false,
         fog: false,
         bg: c(0x07, 0x05, 0x07),
@@ -63,8 +63,8 @@ pub const THEMES: [Palette; 7] = [
         on_accent: c(0x12, 0x07, 0x00),
     },
     Palette {
-        name: Tr("03 펌프킨패치 라이트", "03 Pumpkin Patch Light"),
-        tag: Tr("PATCH · LIGHT", "PATCH · LIGHT"),
+        name: trp!("03 Pumpkin Patch Light"),
+        tag: trp!("PATCH · LIGHT"),
         light: true,
         fog: false,
         bg: c(0xff, 0xf6, 0xe8),
@@ -79,8 +79,8 @@ pub const THEMES: [Palette; 7] = [
         on_accent: Color32::WHITE,
     },
     Palette {
-        name: Tr("04 프리미엄 느와르 오렌지", "04 Premium Noir"),
-        tag: Tr("NOIR · ORANGE · PUMPKIN", "NOIR · ORANGE · PUMPKIN"),
+        name: trp!("04 Premium Noir"),
+        tag: trp!("NOIR · ORANGE · PUMPKIN"),
         light: false,
         fog: false,
         bg: c(0x0b, 0x09, 0x07),
@@ -95,8 +95,8 @@ pub const THEMES: [Palette; 7] = [
         on_accent: c(0x1a, 0x0f, 0x02),
     },
     Palette {
-        name: Tr("05 프리미엄 벨벳 오렌지", "05 Premium Velvet"),
-        tag: Tr("VELVET · ORANGE · PUMPKIN", "VELVET · ORANGE · PUMPKIN"),
+        name: trp!("05 Premium Velvet"),
+        tag: trp!("VELVET · ORANGE · PUMPKIN"),
         light: false,
         fog: false,
         bg: c(0x12, 0x07, 0x09),
@@ -111,8 +111,8 @@ pub const THEMES: [Palette; 7] = [
         on_accent: c(0x22, 0x0a, 0x00),
     },
     Palette {
-        name: Tr("06 안개 묘지 오렌지", "06 Misty Graveyard"),
-        tag: Tr("MIST · GRAVEYARD · EMBER", "MIST · GRAVEYARD · EMBER"),
+        name: trp!("06 Misty Graveyard"),
+        tag: trp!("MIST · GRAVEYARD · EMBER"),
         light: false,
         fog: true,
         bg: c(0x2b, 0x17, 0x09),
@@ -127,8 +127,8 @@ pub const THEMES: [Palette; 7] = [
         on_accent: c(0x1a, 0x09, 0x00),
     },
     Palette {
-        name: Tr("07 안개 유령저택 오렌지", "07 Misty Haunted Manor"),
-        tag: Tr("MIST · MANOR · EMBER", "MIST · MANOR · EMBER"),
+        name: trp!("07 Misty Haunted Manor"),
+        tag: trp!("MIST · MANOR · EMBER"),
         light: false,
         fog: true,
         bg: c(0x34, 0x12, 0x0a),
@@ -144,7 +144,7 @@ pub const THEMES: [Palette; 7] = [
     },
 ];
 
-/// 앱 아이콘 원본(pumpkin_premium.png를 256px로 줄인 것). 창 아이콘과 헤더 로고에 쓴다.
+/// App icon source (pumpkin_premium.png scaled down to 256 px). Used for the window icon and the header logo.
 pub const ICON_PNG: &[u8] = include_bytes!("../assets/icon-256.png");
 
 pub const OK: Color32 = c(0x8f, 0xd1, 0x9e);
@@ -157,7 +157,7 @@ impl Palette {
 }
 
 pub fn apply(ctx: &egui::Context, p: &Palette) {
-    // 테마를 고정해 OS 다크/라이트 전환 시 기본 비주얼로 돌아가지 않게 한다.
+    // Pin the theme so that an OS dark/light switch does not revert to the default visuals.
     ctx.set_theme(if p.light { egui::Theme::Light } else { egui::Theme::Dark });
     let mut v = if p.light {
         egui::Visuals::light()
@@ -201,7 +201,7 @@ pub fn apply(ctx: &egui::Context, p: &Palette) {
     });
 }
 
-/// 샘플의 `section` 카드: 둥근 모서리, 얇은 테두리, 그림자.
+/// The samples' `section` card: rounded corners, a thin border, a shadow.
 pub fn card(p: &Palette) -> Frame {
     Frame::new()
         .fill(p.panel)
@@ -216,12 +216,12 @@ pub fn card(p: &Palette) -> Frame {
         })
 }
 
-/// 패널 바깥 여백(투명: 아래의 paint_backdrop 그라데이션이 보이게 한다).
+/// Outer panel margin (transparent, so the paint_backdrop gradient below shows through).
 pub fn backdrop(_p: &Palette) -> Frame {
     Frame::new().inner_margin(Margin::same(8))
 }
 
-/// `I · 데이터 소스` 같은 섹션 제목과 밑줄.
+/// A section title such as `I · Data source`, with an underline.
 pub fn section_title(ui: &mut Ui, p: &Palette, roman: &str, title: &str) {
     ui.add_space(2.0);
     ui.label(
@@ -236,7 +236,7 @@ pub fn section_title(ui: &mut Ui, p: &Palette, roman: &str, title: &str) {
     ui.add_space(4.0);
 }
 
-/// 주요 버튼: 채워진 주황 + 바깥 글로우.
+/// Primary button: filled orange plus an outer glow.
 pub fn primary_button(ui: &mut Ui, p: &Palette, text: &str, enabled: bool) -> egui::Response {
     let btn = egui::Button::new(RichText::new(text).color(p.on_accent).strong())
         .fill(p.accent)
@@ -284,7 +284,7 @@ fn paint_v_gradient(painter: &Painter, rect: Rect, top: Color32, bottom: Color32
     painter.add(m);
 }
 
-/// 샘플 04~07의 호박 로고를 도형으로 그린다.
+/// Draws the pumpkin logo of samples 04-07 from shapes.
 pub fn pumpkin_logo(painter: &Painter, center: Pos2, size: f32, p: &Palette) {
     let s = size / 100.0;
     let at = |x: f32, y: f32| center + egui::vec2((x - 50.0) * s, (y - 50.0) * s);
@@ -332,7 +332,7 @@ pub fn pumpkin_logo(painter: &Painter, center: Pos2, size: f32, p: &Palette) {
     ));
 }
 
-/// 창 전체 배경: 위에서 아래로 번지는 그라데이션과 오른쪽 위 주황 글로우.
+/// Whole-window background: a gradient spreading from top to bottom and an orange glow in the top right.
 pub fn paint_backdrop(painter: &Painter, rect: Rect, p: &Palette) {
     let lift = if p.light {
         p.bg
@@ -349,16 +349,16 @@ pub fn paint_backdrop(painter: &Painter, rect: Rect, p: &Palette) {
     }
 }
 
-/// 안개 애니메이션 프레임 간격 (최대 10fps). 천천히 흐르는 효과라 이 정도면 충분하고 유휴 CPU를 줄인다.
+/// Fog animation frame interval (at most 10 fps). The fog drifts slowly, so this is enough, and it saves idle CPU.
 pub const FOG_FRAME: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// 안개를 움직이기 위한 다시 그리기 간격. 안개 테마가 아니거나 꺼 두었거나 창이 포커스를 잃으면 None.
+/// Repaint interval for the moving fog. None if the theme has no fog, the fog is turned off, or the window lost focus.
 pub fn fog_repaint(p: &Palette, enabled: bool, focused: bool) -> Option<std::time::Duration> {
     (p.fog && enabled && focused).then_some(FOG_FRAME)
 }
 
-/// 안개 테마(06/07): 아래에서 올라오는 주황빛 안개와 천천히 흐르는 연기 덩어리.
-/// enabled가 false면(설정 노드의 "안개 효과") 그리지 않고 다시 그리기도 예약하지 않는다.
+/// Fog themes (06/07): an orange haze rising from the bottom and slowly drifting puffs of smoke.
+/// When enabled is false ("Fog effect" in the settings node), nothing is drawn and no repaint is scheduled.
 pub fn paint_fog(ctx: &egui::Context, p: &Palette, enabled: bool) {
     if !p.fog || !enabled {
         return;
@@ -385,25 +385,26 @@ mod tests {
 
     #[test]
     fn fog_repaints_at_most_10_fps_and_only_when_on() {
-        let fog = THEMES.iter().find(|t| t.fog).expect("안개 테마");
-        let plain = THEMES.iter().find(|t| !t.fog).expect("일반 테마");
-        let after = fog_repaint(fog, true, true).expect("안개 테마는 움직인다");
+        let fog = THEMES.iter().find(|t| t.fog).expect("fog theme");
+        let plain = THEMES.iter().find(|t| !t.fog).expect("plain theme");
+        let after = fog_repaint(fog, true, true).expect("fog themes move");
         assert!(after >= std::time::Duration::from_millis(100));
-        assert_eq!(fog_repaint(fog, false, true), None); // 안개 효과 끔
-        assert_eq!(fog_repaint(fog, true, false), None); // 포커스 없음
+        assert_eq!(fog_repaint(fog, false, true), None); // fog effect off
+        assert_eq!(fog_repaint(fog, true, false), None); // not focused
         assert_eq!(fog_repaint(plain, true, true), None);
     }
 
     #[test]
     fn theme_names_and_tags_exist_in_both_languages() {
         use crate::i18n::{Lang, with_lang};
-        let hangul = |s: &str| s.chars().any(|c| ('가'..='힣').contains(&c));
+        let hangul = |s: &str| s.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c));
         for (i, t) in THEMES.iter().enumerate() {
             let number = format!("{:02} ", i + 1);
             for s in [t.name.ko(), t.name.en(), t.tag.ko(), t.tag.en()] {
                 assert!(!s.trim().is_empty(), "{i}");
             }
-            // 번호는 두 언어에서 같고(--theme 1~7, 블루프린트 theme 번호와 맞는다), 영어 문구에는 한글이 없다
+            // The number is the same in both languages (it matches --theme 1-7 and the blueprint theme number), and the
+            // English text has no Hangul
             assert!(
                 t.name.ko().starts_with(&number) && t.name.en().starts_with(&number),
                 "{i}"

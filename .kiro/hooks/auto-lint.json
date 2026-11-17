@@ -3,7 +3,7 @@
   "hooks": [
     {
       "name": "auto-lint-test",
-      "description": "AST 코드나 compiler-rules.md가 바뀌면 cargo test(QC 포함)를 실행한다",
+      "description": "Runs cargo test (including QC) when the AST code or compiler-rules.md changes",
       "trigger": "PostFileSave",
       "matcher": "(src[\\\\/]ast[\\\\/].*\\.rs|compiler-rules\\.md)$",
       "action": { "type": "command", "command": "cargo test --quiet" },
@@ -11,7 +11,7 @@
     },
     {
       "name": "auto-lint-cli",
-      "description": "같은 변경에 대해 steering 규칙으로 CLI 린트를 돌린다 (ERROR 진단이면 실패)",
+      "description": "On the same changes, runs the CLI lint with the steering rules (fails on an ERROR diagnostic)",
       "trigger": "PostFileSave",
       "matcher": "(src[\\\\/]ast[\\\\/].*\\.rs|compiler-rules\\.md)$",
       "action": {
