@@ -1,6 +1,8 @@
 //! 블루프린트: 스튜디오 전체 설정을 담는 파일(.kiro, JSON).
-//! 데이터 경로·역할·제약·출력 포맷·필드·타겟·샘플 행 수·테마·LLM 모델·노드 배치를 한 번에 저장/적용한다.
+//! 데이터 경로·역할·제약·출력 포맷·필드·타겟·샘플 행 수·테마·LLM 모델·LLM 실행 옵션·노드 배치를 한 번에 저장/적용한다.
 //! GUI(캔버스 메뉴, 열기/저장)와 CLI(`--cli --blueprint 파일`)가 같은 형식을 쓴다.
+//!
+//! 버전: v1(프로젝트 파일) → v2(llm_models) → v3(llm_options). 빠진 항목은 기본값으로 읽으므로 예전 파일도 열린다.
 
 use crate::ast::{OutputFormat, TargetModel};
 use crate::canvas::graph::Provider;
@@ -8,7 +10,67 @@ use crate::pipeline::{self, CompileRequest, LoadedData};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
+
+/// 노드 좌표의 허용 범위(±). 이보다 먼 좌표는 f32 정밀도가 떨어져 캔버스 계산(격자, 화면 맞춤)이 망가진다.
+pub const POS_LIMIT: f32 = 100_000.0;
+
+/// 저장된 노드 좌표를 검사한다. NaN·무한대가 있으면 버리고(None), 너무 먼 값은 ±POS_LIMIT로 자른다.
+pub fn sanitize_pos(p: [f32; 2]) -> Option<[f32; 2]> {
+    p.iter()
+        .all(|v| v.is_finite())
+        .then(|| p.map(|v| v.clamp(-POS_LIMIT, POS_LIMIT)))
+}
+
+pub const MIN_LLM_MAX_TOKENS: u32 = 256;
+pub const MAX_LLM_MAX_TOKENS: u32 = 32_000;
+pub const DEFAULT_LLM_MAX_TOKENS: u32 = 2048;
+
+/// LLM 실행 옵션 (v3부터 저장). v1/v2 파일에는 없으므로 기본값으로 읽는다.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LlmOptions {
+    /// 출력 토큰 한도 (MIN_LLM_MAX_TOKENS..=MAX_LLM_MAX_TOKENS)
+    pub max_tokens: u32,
+    /// 온도. None이면 요청에 넣지 않아 제공자 기본값을 쓴다
+    pub temperature: Option<f32>,
+    /// 시스템 프롬프트. 비어 있으면 보내지 않는다
+    pub system: String,
+}
+
+impl Default for LlmOptions {
+    fn default() -> Self {
+        LlmOptions {
+            max_tokens: DEFAULT_LLM_MAX_TOKENS,
+            temperature: None,
+            system: String::new(),
+        }
+    }
+}
+
+/// 제공자별 온도 상한 (Anthropic 0~1, OpenAI·Gemini 0~2).
+pub fn temperature_max(p: Provider) -> f32 {
+    match p {
+        Provider::Anthropic => 1.0,
+        Provider::OpenAi | Provider::Gemini => 2.0,
+    }
+}
+
+impl LlmOptions {
+    /// 범위를 벗어난 값을 바로잡는다. 온도는 제공자와 상관없는 최대 범위(0~2)로만 자르고,
+    /// 제공자별 범위는 보낼 때(effective_temperature) 맞춘다.
+    pub fn normalized(mut self) -> LlmOptions {
+        self.max_tokens = self.max_tokens.clamp(MIN_LLM_MAX_TOKENS, MAX_LLM_MAX_TOKENS);
+        self.temperature = self.temperature.filter(|t| t.is_finite()).map(|t| t.clamp(0.0, 2.0));
+        self
+    }
+
+    /// 제공자에게 실제로 보낼 온도. 저장된 값은 그대로 두고 제공자 범위로 자른 값을 쓴다
+    /// (GPT에서 1.5로 둔 값을 Claude로 바꿔 1.0으로 보내도, 다시 GPT로 돌아오면 1.5가 남아 있다).
+    pub fn effective_temperature(&self, p: Provider) -> Option<f32> {
+        self.temperature.map(|t| t.clamp(0.0, temperature_max(p)))
+    }
+}
 
 /// 필드가 빠진 예전 파일(v1 프로젝트 파일 포함)도 읽을 수 있게 모든 필드에 기본값을 둔다.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -30,6 +92,8 @@ pub struct Blueprint {
     pub positions: Vec<(String, [f32; 2])>,
     /// 제공자별 LLM 모델 이름
     pub llm_models: Vec<(Provider, String)>,
+    /// LLM 실행 옵션: 출력 토큰 한도, 온도, 시스템 프롬프트 (v3)
+    pub llm_options: LlmOptions,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
@@ -55,6 +119,7 @@ impl Default for Blueprint {
             data_path: None,
             positions: vec![],
             llm_models: vec![],
+            llm_options: LlmOptions::default(),
         }
     }
 }
@@ -89,11 +154,25 @@ impl Blueprint {
         std::fs::write(path, text).map_err(|e| format!("저장 실패: {e}"))
     }
 
-    /// 범위를 벗어난 값을 바로잡는다.
+    /// 범위를 벗어난 값을 바로잡는다. 노드 좌표는 NaN·무한대를 버리고 ±POS_LIMIT로 자른다
+    /// (아주 먼 좌표는 캔버스의 화면 맞춤·격자 계산을 망가뜨린다).
     pub fn normalized(mut self) -> Blueprint {
         self.sample_rows = self.sample_rows.min(MAX_SAMPLE_ROWS);
         self.theme = self.theme.min(crate::theme::THEMES.len() - 1);
+        for g in &mut self.goals {
+            g.pos = g.pos.and_then(sanitize_pos);
+        }
+        self.positions = std::mem::take(&mut self.positions)
+            .into_iter()
+            .filter_map(|(name, p)| Some((name, sanitize_pos(p)?)))
+            .collect();
+        self.llm_options = std::mem::take(&mut self.llm_options).normalized();
         self
+    }
+
+    /// 저장하지 않은 변경을 찾기 위한 비교용 직렬화 (전체 내용).
+    pub fn fingerprint(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
     }
 
     /// 데이터 경로를 블루프린트 파일 위치 기준으로 해석한다.
@@ -375,6 +454,134 @@ mod tests {
             assert!(bp.theme < crate::theme::THEMES.len());
             let r = pipeline::compile(&bp.to_request(vec![], None));
             assert!(!r.ast.lint_warnings.iter().any(|d| d.severity == "ERROR"), "{}", p.name);
+        }
+    }
+
+    #[test]
+    fn v3_llm_options_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("sc_bp3_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("v3.kiro");
+        let mut bp = PRESETS[0].to_blueprint();
+        bp.llm_options = LlmOptions {
+            max_tokens: 8192,
+            temperature: Some(0.7),
+            system: "너는 신중한 분석가다.\n숫자는 근거와 함께.".into(),
+        };
+        bp.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("\"version\": 3") && text.contains("\"llm_options\""),
+            "{text}"
+        );
+        let back = Blueprint::load(&path).unwrap();
+        assert_eq!(back, bp);
+        assert_eq!(back.llm_options.temperature, Some(0.7));
+        assert_eq!(back.fingerprint(), bp.fingerprint());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v1_and_v2_files_get_default_llm_options() {
+        let v2 = r#"{"version":2,"target":"Gpt","role":"r","llm_models":[["openai","gpt-x"]]}"#;
+        let bp = Blueprint::parse(v2).unwrap();
+        assert_eq!(bp.llm_options, LlmOptions::default());
+        assert_eq!(bp.llm_options.max_tokens, DEFAULT_LLM_MAX_TOKENS);
+        assert_eq!(bp.llm_model(Provider::OpenAi), Some("gpt-x"));
+        let v1 = r#"{"version":1,"role":"r","goals":[{"text":"g","on":true,"pos":[1.0,2.0]}],"positions":[["root",[3.0,4.0]]]}"#;
+        let bp = Blueprint::parse(v1).unwrap();
+        assert_eq!(bp.llm_options, LlmOptions::default());
+        assert_eq!(bp.goals[0].pos, Some([1.0, 2.0]));
+        assert_eq!(bp.positions, vec![("root".to_string(), [3.0, 4.0])]);
+        // 일부만 있는 llm_options도 나머지는 기본값
+        let partial = r#"{"version":3,"llm_options":{"temperature":0.3}}"#;
+        let o = Blueprint::parse(partial).unwrap().llm_options;
+        assert_eq!((o.max_tokens, o.temperature, o.system.as_str()), (2048, Some(0.3), ""));
+    }
+
+    #[test]
+    fn llm_options_are_clamped() {
+        let bad = r#"{"version":3,"llm_options":{"max_tokens":10,"temperature":5.0}}"#;
+        let o = Blueprint::parse(bad).unwrap().llm_options;
+        assert_eq!((o.max_tokens, o.temperature), (MIN_LLM_MAX_TOKENS, Some(2.0)));
+        let big = r#"{"version":3,"llm_options":{"max_tokens":999999,"temperature":-1.0}}"#;
+        let o = Blueprint::parse(big).unwrap().llm_options;
+        assert_eq!((o.max_tokens, o.temperature), (MAX_LLM_MAX_TOKENS, Some(0.0)));
+        let nan = LlmOptions {
+            temperature: Some(f32::NAN),
+            ..LlmOptions::default()
+        };
+        assert_eq!(nan.normalized().temperature, None);
+        // 제공자 범위로 자른 값을 보내되, 저장된 값은 바꾸지 않는다
+        let o = LlmOptions {
+            temperature: Some(1.6),
+            ..LlmOptions::default()
+        };
+        assert_eq!(o.effective_temperature(Provider::OpenAi), Some(1.6));
+        assert_eq!(o.effective_temperature(Provider::Anthropic), Some(1.0));
+        assert_eq!(o.temperature, Some(1.6));
+        assert_eq!(LlmOptions::default().effective_temperature(Provider::Gemini), None);
+        assert_eq!(temperature_max(Provider::Gemini), 2.0);
+    }
+
+    #[test]
+    fn node_positions_are_sanitized() {
+        // 3e9 같은 먼 좌표는 캔버스 격자 루프를 멈추게 했다: 허용 범위로 자른다. 1e39(f32 무한대)는 버린다.
+        let text = r#"{"version":2,"goals":[{"text":"a","on":true,"pos":[0.0,3e9]},{"text":"b","on":true,"pos":[1e39,0.0]}],
+            "positions":[["root",[-5e9,10.0]],["data",[1e39,1.0]],["llm",[5.0,6.0]]]}"#;
+        let bp = Blueprint::parse(text).unwrap();
+        assert_eq!(bp.goals[0].pos, Some([0.0, POS_LIMIT]));
+        assert_eq!(bp.goals[1].pos, None);
+        assert_eq!(
+            bp.positions,
+            vec![
+                ("root".to_string(), [-POS_LIMIT, 10.0]),
+                ("llm".to_string(), [5.0, 6.0])
+            ]
+        );
+        let direct = Blueprint {
+            goals: vec![GoalSpec {
+                text: "x".into(),
+                on: true,
+                pos: Some([f32::NAN, 1.0]),
+            }],
+            positions: vec![("role".into(), [f32::INFINITY, 0.0]), ("root".into(), [1.0, 2.0])],
+            ..Blueprint::default()
+        }
+        .normalized();
+        assert_eq!(direct.goals[0].pos, None);
+        assert_eq!(direct.positions, vec![("root".to_string(), [1.0, 2.0])]);
+        assert_eq!(sanitize_pos([12.5, -3.0]), Some([12.5, -3.0]));
+    }
+
+    #[test]
+    fn fingerprint_tracks_every_saved_setting() {
+        let base = PRESETS[0].to_blueprint();
+        let fp = base.fingerprint();
+        assert_eq!(base.clone().fingerprint(), fp);
+        let changed = [
+            Blueprint {
+                role: "다른 역할".into(),
+                ..base.clone()
+            },
+            Blueprint {
+                positions: vec![("root".into(), [1.0, 2.0])],
+                ..base.clone()
+            },
+            Blueprint {
+                llm_options: LlmOptions {
+                    max_tokens: 4096,
+                    ..LlmOptions::default()
+                },
+                ..base.clone()
+            },
+            Blueprint {
+                theme: 0,
+                ..base.clone()
+            },
+        ];
+        for c in changed {
+            assert_ne!(c.fingerprint(), fp);
         }
     }
 }

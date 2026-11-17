@@ -2,16 +2,22 @@
 
 ## Flow
 Form / steering / data profile -> `pipeline::compile` -> RootPromptAst -> `linter::lint` (Visitor passes) -> `codegen::generate` -> `tokenizer::count`.
+LLM run: compiled prompt -> `canvas::llm::call` (retries 429/5xx/529, no redirects) -> `LlmReply { text, stop_reason, usage }` -> `pipeline::check_reply`.
 
 ## Modules
-- `ast/mod.rs`: RootPromptAst, DataSubAst, ConstraintNode, OutputSchemaAst, LintDiagnostic.
+- `ast/mod.rs`: RootPromptAst, DataSubAst, ConstraintNode, OutputSchemaAst, LintDiagnostic (`indices`: input positions of the constraints a diagnostic is about).
 - `ast/linter.rs`: `AstVisitor` + `walk`; passes Filler, Dedup, Contradiction, Schema.
-- `ast/codegen.rs`: Claude XML, GPT Markdown, Gemini sections.
-- `profiler/csv_profiler.rs`: streaming Welford stats, reservoir sampling, z-score (>3) outliers.
-- `app.rs`: egui 3-pane (left form, center AST X-ray + lint log, right output/benchmark). Workers send results over `mpsc`.
-- `main.rs`: clap dual mode (GUI default, `--cli`, `--mcp`).
+- `ast/codegen.rs`: Claude XML, GPT Markdown, Gemini sections. Data-derived text is sanitized (control chars, CSV-quoted sample header, fence longer than any backtick run, `\` before lines that would open a section/heading).
+- `profiler/csv_profiler.rs`: streaming Welford stats, reservoir sampling, z-score (>3) outliers. BOM-first encoding detection (UTF-8/UTF-16/CP949, shared `detect_text_encoding`), delimiter sniffing (`,` `;` tab `|`), binary rejection.
+- `pipeline.rs`: shared compile, steering parser (skips code fences), `check_output`/`check_reply` (JSON; GFM tables with or without outer pipes), raw-token cache.
+- `app.rs` + `studio_canvas.rs`: egui 3-pane studio and blueprint canvas. Workers send results over `mpsc` with generation counters.
+- `canvas/`: graph tool (Scene canvas, run generation + cancel, trust gates for MCP and custom LLM endpoints).
+- `main.rs`: clap modes (GUI default, `--blueprint`, `--cli`, `--mcp`, `--canvas`, `--run-graph`).
 
 ## Notes
-- Contradiction detection is a heuristic: negation markers + Jaccard >= 0.6 on stemmed tokens. Korean tokens are cut to 2 chars.
-- LLM preview is a local mock of the output schema; no LLM is called.
+- Contradiction detection is a heuristic over lexed, stemmed content words (English word-boundary negation markers; Korean particle/ending stripping instead of truncation). A pair is removed only when it is certain: opposite polarity and the negative rule's content covers the positive one in order (with no extra exception words such as instead/대신), or a directive antonym pair (제외/포함, include/exclude, allow/forbid) over identical content. Later instruction wins. Uncertain pairs (descriptive antonyms such as 증가/감소, subset matches) keep both rules and get a "모순 의심(둘 다 유지)" WARN.
+- Dedup keeps the last copy so a restated rule still wins over an earlier contradiction. Every removal WARN names the removed text.
+- Graph Prompt nodes compile with an ASCII sentinel in place of `{{input}}` and substitute the input afterwards with the same guards codegen applies to role text, so upstream text is not filler-compressed.
+- A reply cut off by `max_tokens`/`length`/`MAX_TOKENS` (or stopped by a filter/refusal) is reported as cut off, never as a pass.
+- LLM preview is a local mock of the output schema when no API key is set.
 - Build cache is redirected to `C:/cargo-target/candy-corn` (`.cargo/config.toml`).

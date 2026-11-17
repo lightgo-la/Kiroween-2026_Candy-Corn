@@ -1,5 +1,5 @@
-//! 시나리오 테스트 21개: 입력 파일 준비 → 실제 실행 파일 실행 → 출력 검증까지 한 번에 확인한다.
-//! 블루프린트 CLI, 데이터 경로 해석, 린트, 인코딩, MCP 서버 경로를 다룬다. `cargo test`에 포함된다.
+//! 시나리오 테스트 29개: 입력 파일 준비 → 실제 실행 파일 실행 → 출력 검증까지 한 번에 확인한다.
+//! 블루프린트 CLI, 데이터 경로 해석, 린트, 인코딩·구분자·바이너리 데이터, MCP 서버 경로를 다룬다. `cargo test`에 포함된다.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -49,16 +49,21 @@ fn write(p: &Path, text: &str) {
 
 /// 실행 파일을 돌리고 30초 안에 끝나지 않으면 종료시킨다(예: 옵션 검사가 깨져 GUI가 뜨는 경우).
 /// 출력은 별도 스레드에서 읽어 파이프가 가득 차 멈추지 않게 한다.
-fn run_cmd(mut cmd: Command, input: Option<&str>) -> Run {
+fn run_cmd(cmd: Command, input: Option<&str>) -> Run {
+    run_cmd_bytes(cmd, input.map(str::as_bytes))
+}
+
+/// `run_cmd`와 같지만 표준 입력을 바이트로 준다(UTF-8이 아닌 입력 시험용).
+fn run_cmd_bytes(mut cmd: Command, input: Option<&[u8]>) -> Run {
     let mut child = cmd
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    if let Some(text) = input {
+    if let Some(bytes) = input {
         // 쓰고 나서 닫아야(drop) 서버가 입력 끝을 본다
-        child.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+        child.stdin.take().unwrap().write_all(bytes).unwrap();
     }
     let drain = |mut r: Box<dyn Read + Send>| {
         std::thread::spawn(move || {
@@ -370,4 +375,239 @@ fn s21_mcp_compress_prompt_with_data() {
     assert!(text.contains("# Role") && text.contains("rows: 3"));
     assert!(text.contains("모순 지시 자동제거"));
     assert_eq!(v["result"]["isError"], false);
+}
+
+/// MCP 서버에 입력 바이트를 보내고, 정상 종료를 확인한 뒤 응답 줄들을 JSON으로 읽는다.
+fn mcp(input: &[u8]) -> Vec<serde_json::Value> {
+    let mut cmd = Command::new(BIN);
+    cmd.arg("--mcp");
+    let r = run_cmd_bytes(cmd, Some(input));
+    ok(&r);
+    r.out
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("JSON 아님: {l} ({e})")))
+        .collect()
+}
+
+fn tool_call(id: u32, args: serde_json::Value) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0", "id": id, "method": "tools/call",
+        "params": { "name": "compress_prompt", "arguments": args }
+    })
+    .to_string()
+}
+
+#[test]
+fn s22_mcp_invalid_utf8_line_then_request_answered() {
+    // CP949 바이트("한")가 섞인 줄: 예전에는 서버가 종료 코드 1로 끝나 뒤의 요청에 답하지 못했다
+    let mut input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"x\":\"\xc7\xd1\"}\n".to_vec();
+    input.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n");
+    let lines = mcp(&input);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0]["error"]["code"], -32700);
+    assert!(lines[0]["id"].is_null());
+    assert_eq!(lines[1]["id"], 2);
+    assert_eq!(lines[1]["result"], serde_json::json!({}));
+}
+
+#[test]
+fn s23_mcp_bad_target_is_invalid_params_and_aliases_work() {
+    let input = format!(
+        "{}\n{}\n{}\n",
+        tool_call(1, serde_json::json!({ "role": "r", "target": "llama" })),
+        tool_call(2, serde_json::json!({ "role": "r", "format": "yaml" })),
+        tool_call(
+            3,
+            serde_json::json!({ "role": "Analyst", "target": "OpenAI", "format": "Markdown", "fields": " cause , fix " })
+        ),
+    );
+    let lines = mcp(input.as_bytes());
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    for (line, arg) in [(&lines[0], "target"), (&lines[1], "format")] {
+        assert_eq!(line["error"]["code"], -32602, "{line}");
+        assert!(line["error"]["message"].as_str().unwrap().contains(arg), "{line}");
+    }
+    let text = lines[2]["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("# Role") && text.contains("| cause | fix |"), "{text}");
+    let tokens = text.lines().last().unwrap();
+    assert!(
+        tokens.starts_with("--- tokens: ") && (tokens.contains("(+") || tokens.contains("(-")),
+        "{tokens}"
+    );
+}
+
+#[test]
+fn s24_mcp_ignores_responses_and_notifications() {
+    let input = concat!(
+        "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{}}\n",
+        "{\"jsonrpc\":\"2.0\",\"id\":6,\"error\":{\"code\":-1,\"message\":\"x\"}}\n",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"no/such/notification\"}\n",
+        "[{\"jsonrpc\":\"2.0\",\"method\":\"a\"},{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":1}]\n",
+        "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"ping\"}\n",
+    );
+    assert_eq!(
+        mcp(input.as_bytes()),
+        [serde_json::json!({ "jsonrpc": "2.0", "id": 9, "result": {} })]
+    );
+}
+
+#[test]
+fn s25_mcp_invalid_requests_get_32600() {
+    let input = "1\n[1,2]\n{\"jsonrpc\":\"2.0\",\"id\":3}\n[]\n{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"nope\"}\n";
+    let lines = mcp(input.as_bytes());
+    assert_eq!(lines.len(), 5, "{lines:?}");
+    assert_eq!(lines[0]["error"]["code"], -32600);
+    assert!(lines[0]["id"].is_null());
+    let batch = lines[1].as_array().unwrap();
+    assert!(batch.len() == 2 && batch.iter().all(|e| e["error"]["code"] == -32600 && e["id"].is_null()));
+    assert_eq!(
+        (&lines[2]["error"]["code"], &lines[2]["id"]),
+        (&serde_json::json!(-32600), &serde_json::json!(3))
+    );
+    assert_eq!(lines[3]["error"]["code"], -32600);
+    assert_eq!(lines[4]["error"]["code"], -32601);
+}
+
+#[test]
+fn s26_mcp_initialize_negotiates_version_and_lists_schema() {
+    let input = concat!(
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",",
+        "\"capabilities\":{},\"clientInfo\":{\"name\":\"t\",\"version\":\"1\"}}}\n",
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2099-01-01\"}}\n",
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/list\"}\n",
+    );
+    let lines = mcp(input.as_bytes());
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    let init = &lines[0]["result"];
+    assert_eq!(init["protocolVersion"], "2025-03-26");
+    assert!(init["capabilities"]["tools"].is_object());
+    assert_eq!(init["serverInfo"]["name"], "candy-corn");
+    assert_eq!(lines[1]["result"]["protocolVersion"], "2025-06-18");
+    let schema = &lines[2]["result"]["tools"][0]["inputSchema"];
+    let props = schema["properties"].as_object().unwrap();
+    for k in [
+        "role",
+        "constraints",
+        "target",
+        "format",
+        "fields",
+        "data_path",
+        "sample_rows",
+    ] {
+        assert!(props.contains_key(k), "{k}");
+    }
+    assert_eq!(props.len(), 7);
+    assert_eq!(schema["additionalProperties"], false);
+}
+
+#[test]
+fn s27_cli_rejects_binary_and_blueprint_data() {
+    let w = work("s27");
+    let png = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon-256.png");
+    let r = run_in(&w.join("cwd"), &["--cli", "--data", png]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.err.contains("바이너리 파일은 프로파일링할 수 없습니다"), "{}", r.err);
+    let bp = w.join("proj/plan.kiro");
+    write(&bp, &gpt_bp(""));
+    let r = run_in(&w.join("cwd"), &["--cli", "--data", s(&bp)]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(
+        r.err.contains("블루프린트(.kiro) 파일은 데이터가 아닙니다"),
+        "{}",
+        r.err
+    );
+}
+
+#[test]
+fn s28_cli_late_cp949_rows_and_utf16_csv() {
+    let w = work("s28");
+    // 64KiB가 넘는 ASCII 행 뒤에 처음 나오는 CP949 행
+    let mut csv = String::from("id,memo\n");
+    for i in 1..=70 {
+        csv += &format!("{i},{}\n", "a".repeat(1000));
+    }
+    for i in 71..=170 {
+        csv += &format!("{i},홍길동\n");
+    }
+    std::fs::write(w.join("proj/late.csv"), encoding_rs::EUC_KR.encode(&csv).0).unwrap();
+    let late = w.join("proj/late.csv");
+    let r = run_in(
+        &w.join("cwd"),
+        &["--cli", "--target", "gemini", "--sample-rows", "50", "--data", s(&late)],
+    );
+    ok(&r);
+    assert!(r.out.contains("170 rows") && r.out.contains("홍길동"), "{}", r.out);
+    assert!(!r.out.contains('\u{FFFD}'), "{}", r.out);
+    // NDJSON: 예전에는 "stream did not contain valid UTF-8"로 실패했다
+    let mut nd = String::new();
+    for i in 0..1200 {
+        nd += &format!("{{\"id\":{i},\"t\":\"{}\"}}\n", "b".repeat(60));
+    }
+    nd += "{\"id\":9999,\"t\":\"김철수\"}\n";
+    std::fs::write(w.join("proj/late.ndjson"), encoding_rs::EUC_KR.encode(&nd).0).unwrap();
+    let r = run_in(
+        &w.join("cwd"),
+        &["--cli", "--target", "gemini", "--data", s(&w.join("proj/late.ndjson"))],
+    );
+    ok(&r);
+    assert!(r.out.contains("1201 rows"), "{}", r.out);
+    // UTF-16LE(BOM) CSV: 예전에는 컬럼 이름이 깨졌다
+    let utf16: Vec<u8> = [0xFF, 0xFE]
+        .into_iter()
+        .chain(
+            "이름,금액\r\n가,1\r\n나,2\r\n"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes),
+        )
+        .collect();
+    std::fs::write(w.join("proj/u16.csv"), utf16).unwrap();
+    let r = run_in(
+        &w.join("cwd"),
+        &["--cli", "--target", "gemini", "--data", s(&w.join("proj/u16.csv"))],
+    );
+    ok(&r);
+    assert!(
+        r.out.contains("* 이름 [text]") && r.out.contains("* 금액 [numeric]"),
+        "{}",
+        r.out
+    );
+}
+
+#[test]
+fn s29_cli_semicolon_and_tab_delimited_numbers() {
+    let w = work("s29");
+    // 세미콜론 구분 + 소수점 쉼표: "1,5"는 천 단위 구분이 아니므로 숫자로 읽지 않는다(15가 되면 안 된다)
+    write(
+        &w.join("proj/eu.csv"),
+        "id;amount;rate;city\n1;10;1,5;Seoul\n2;20;2,25;Busan\n3;30;0,75;Daegu\n",
+    );
+    let r = run_in(
+        &w.join("cwd"),
+        &["--cli", "--target", "gemini", "--data", s(&w.join("proj/eu.csv"))],
+    );
+    ok(&r);
+    assert!(
+        r.out
+            .contains("* amount [numeric] null=0.0% min:10, max:30, mean:20, std:8.165"),
+        "{}",
+        r.out
+    );
+    assert!(
+        r.out.contains("* rate [text]") && r.out.contains("* city [text]"),
+        "{}",
+        r.out
+    );
+    write(&w.join("proj/t.tsv"), "id\tamount\n1\t1,000\n2\t2,500\n");
+    let r = run_in(
+        &w.join("cwd"),
+        &["--cli", "--target", "gemini", "--data", s(&w.join("proj/t.tsv"))],
+    );
+    ok(&r);
+    assert!(
+        r.out
+            .contains("* amount [numeric] null=0.0% min:1000, max:2500, mean:1750, std:750"),
+        "{}",
+        r.out
+    );
 }

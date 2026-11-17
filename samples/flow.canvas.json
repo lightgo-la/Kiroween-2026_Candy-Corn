@@ -1,1 +1,35 @@
-{"nodes":[{"id":1,"title":"in","pos":[0,0],"kind":{"type":"text","text":"x"}},{"id":2,"title":"p","pos":[0,0],"kind":{"type":"prompt","role":"분석: {{input}}","constraints":"추론 금지","fields":"summary","target":"claude","format":"json"}},{"id":3,"title":"l","pos":[0,0],"kind":{"type":"llm","provider":"openai","model":"gpt-4o","key_env":"OPENAI_API_KEY","max_tokens":100}},{"id":4,"title":"o","pos":[0,0],"kind":{"type":"output"}}],"edges":[{"from":1,"to":2},{"from":2,"to":3},{"from":3,"to":4}]}
+{
+  "nodes": [
+    { "id": 1, "title": "in", "pos": [0, 0], "kind": { "type": "text", "text": "x" } },
+    {
+      "id": 2,
+      "title": "p",
+      "pos": [280, 0],
+      "kind": {
+        "type": "prompt",
+        "role": "분석: {{input}}",
+        "constraints": "추론 금지",
+        "fields": "summary",
+        "target": "claude",
+        "format": "json"
+      }
+    },
+    {
+      "id": 3,
+      "title": "l",
+      "pos": [560, 0],
+      "kind": { "type": "llm", "provider": "openai", "model": "gpt-4o", "key_env": "OPENAI_API_KEY", "max_tokens": 100 }
+    },
+    { "id": 4, "title": "o", "pos": [840, 0], "kind": { "type": "output" } }
+  ],
+  "edges": [
+    { "from": 1, "to": 2 },
+    { "from": 2, "to": 3 },
+    { "from": 3, "to": 4 }
+  ],
+  "tests": [
+    { "name": "기본", "input": "3분기 매출이 급감한 원인을 분석해줘", "expect": "dry-run" },
+    { "name": "영문 입력", "input": "Why did Q3 revenue drop?", "expect": "" }
+  ],
+  "test_node": 1
+}

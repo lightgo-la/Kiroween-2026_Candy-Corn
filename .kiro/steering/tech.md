@@ -5,7 +5,7 @@
 - 한글 폰트: 시작 시 `C:\Windows\Fonts\malgun.ttf`를 fallback으로 등록한다.
 - CLI: clap 4 (derive). 데이터: csv, serde_json(preserve_order), encoding_rs(UTF-8/CP949 자동 판별).
 - 토큰: tiktoken-rs o200k_base. 모든 벤더에 같은 근사치를 쓴다.
-- 파일 대화상자: rfd. 캔버스 LLM 호출: ureq 3.
+- 파일 대화상자: rfd. LLM 호출: ureq 3 (429/5xx/529 재시도 2회, 리디렉션 끔, 제한 시간은 max_tokens에 비례 120~900초).
 - exe 아이콘: build.rs + winresource (Windows SDK의 rc.exe 필요, 없으면 경고만).
 - 빌드 산출물: `C:/cargo-target/candy-corn` (`.cargo/config.toml`, OneDrive 동기화 충돌 방지).
 
@@ -16,7 +16,7 @@
 - `cargo clippy --all-targets -- -D warnings`와 `cargo fmt --all -- --check`가 통과해야 한다.
 
 ## 명령
-- `cargo test`: 단위 테스트 + QC(시드 고정 무작위 10,000건, 약 20초) + 시나리오 21개 + 블루프린트 CLI
+- `cargo test`: 단위 테스트 + QC(시드 고정 무작위 12,000건: 컴파일 6,000·프로파일러 4,000·LLM 응답 검사 2,000, 약 20초) + 시나리오 29개 + 그래프 e2e 15개 + 블루프린트 CLI
 - 핵심 기능을 바꾸면 그 기능의 테스트를 함께 추가·수정한다. 테스트가 통과해야 완료다 (Stop 훅이 검사).
 - `cargo test --test qa -- --ignored`: QA(실제 바이너리 1,000회 실행, 약 50초)
 - `cargo run -- --cli --data samples/sales.csv --constraint "..."`

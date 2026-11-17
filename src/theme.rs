@@ -346,9 +346,18 @@ pub fn paint_backdrop(painter: &Painter, rect: Rect, p: &Palette) {
     }
 }
 
+/// 안개 애니메이션 프레임 간격 (최대 10fps). 천천히 흐르는 효과라 이 정도면 충분하고 유휴 CPU를 줄인다.
+pub const FOG_FRAME: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// 안개를 움직이기 위한 다시 그리기 간격. 안개 테마가 아니거나 꺼 두었거나 창이 포커스를 잃으면 None.
+pub fn fog_repaint(p: &Palette, enabled: bool, focused: bool) -> Option<std::time::Duration> {
+    (p.fog && enabled && focused).then_some(FOG_FRAME)
+}
+
 /// 안개 테마(06/07): 아래에서 올라오는 주황빛 안개와 천천히 흐르는 연기 덩어리.
-pub fn paint_fog(ctx: &egui::Context, p: &Palette) {
-    if !p.fog {
+/// enabled가 false면(설정 노드의 "안개 효과") 그리지 않고 다시 그리기도 예약하지 않는다.
+pub fn paint_fog(ctx: &egui::Context, p: &Palette, enabled: bool) {
+    if !p.fog || !enabled {
         return;
     }
     let screen = ctx.content_rect();
@@ -362,7 +371,23 @@ pub fn paint_fog(ctx: &egui::Context, p: &Palette) {
         let y = screen.bottom() - 20.0 - (f * 17.0) % 80.0;
         painter.circle_filled(Pos2::new(x, y), 100.0 + f * 12.0, p.accent.gamma_multiply(0.03));
     }
-    if ctx.input(|i| i.focused) {
-        ctx.request_repaint_after(std::time::Duration::from_millis(50));
+    if let Some(after) = fog_repaint(p, enabled, ctx.input(|i| i.focused)) {
+        ctx.request_repaint_after(after);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fog_repaints_at_most_10_fps_and_only_when_on() {
+        let fog = THEMES.iter().find(|t| t.fog).expect("안개 테마");
+        let plain = THEMES.iter().find(|t| !t.fog).expect("일반 테마");
+        let after = fog_repaint(fog, true, true).expect("안개 테마는 움직인다");
+        assert!(after >= std::time::Duration::from_millis(100));
+        assert_eq!(fog_repaint(fog, false, true), None); // 안개 효과 끔
+        assert_eq!(fog_repaint(fog, true, false), None); // 포커스 없음
+        assert_eq!(fog_repaint(plain, true, true), None);
     }
 }
