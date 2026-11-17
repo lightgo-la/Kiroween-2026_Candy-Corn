@@ -1,4 +1,5 @@
 //! GUI / CLI / MCP가 공유하는 컴파일 파이프라인: AST 구성 → 린트 → 직렬화 → 토큰 계산.
+//! 린트 진단·검사 결과 문구는 UI 언어를 따르고, 컴파일된 프롬프트와 토큰 수는 UI 언어와 관계없이 같다.
 
 use crate::ast::{
     ConstraintNode, DataSubAst, OutputFormat, OutputSchemaAst, RoleNode, RootPromptAst, TargetModel, codegen, linter,
@@ -87,7 +88,13 @@ fn raw_file_tokens(path: &Path) -> Result<(usize, bool), String> {
 /// UTF-8로 본다) 아니면 CP949(EUC-KR)로 읽는다. steering 파일처럼 메모장에서 ANSI(CP949)로 저장한 한글 문서도
 /// 깨지지 않게 한다.
 pub fn read_text_auto(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("파일을 읽을 수 없음: {e}"))?;
+    let bytes = std::fs::read(path).map_err(|e| {
+        trf!(
+            "파일을 읽을 수 없음: {}",
+            "cannot read file: {}",
+            csv_profiler::io_error_text(&e)
+        )
+    })?;
     Ok(decode_text_auto(&bytes))
 }
 
@@ -298,11 +305,18 @@ pub fn check_reply(format: OutputFormat, fields: &[String], reply: &LlmReply, ma
     let mut c = check_output(format, fields, &reply.text);
     let reason = reply.stop_reason.as_deref().unwrap_or_default();
     c.cut_off = match reply.finish() {
-        Finish::MaxTokens => Some(format!(
-            "출력 토큰 한도({max_tokens})에 도달해 응답이 잘렸습니다 ({reason})"
+        Finish::MaxTokens => Some(trf!(
+            "출력 토큰 한도({max_tokens})에 도달해 응답이 잘렸습니다 ({reason})",
+            "Reached the output token limit ({max_tokens}); the response was cut off ({reason})"
         )),
-        Finish::ContextWindow => Some(format!("모델 컨텍스트 창이 가득 차 응답이 잘렸습니다 ({reason})")),
-        Finish::Stopped => Some(format!("응답이 끝까지 생성되지 않았습니다 (종료 이유: {reason})")),
+        Finish::ContextWindow => Some(trf!(
+            "모델 컨텍스트 창이 가득 차 응답이 잘렸습니다 ({reason})",
+            "The model's context window is full; the response was cut off ({reason})"
+        )),
+        Finish::Stopped => Some(trf!(
+            "응답이 끝까지 생성되지 않았습니다 (종료 이유: {reason})",
+            "The response did not finish (stop reason: {reason})"
+        )),
         Finish::Complete | Finish::Unknown => None,
     };
     c.ok &= c.cut_off.is_none();
@@ -339,14 +353,14 @@ pub fn check_output(format: OutputFormat, fields: &[String], text: &str) -> Outp
                 pretty: body.to_string(),
                 ok: false,
                 missing: fields.to_vec(),
-                error: Some("JSON 객체가 아닙니다".into()),
+                error: Some(tr!("JSON 객체가 아닙니다", "Not a JSON object").into()),
                 ..OutputCheck::default()
             },
             Err(e) => OutputCheck {
                 pretty: text.to_string(),
                 ok: false,
                 missing: fields.to_vec(),
-                error: Some(format!("JSON 파싱 실패: {e}")),
+                error: Some(trf!("JSON 파싱 실패: {e}", "JSON parse error: {e}")),
                 ..OutputCheck::default()
             },
         },
@@ -357,7 +371,9 @@ pub fn check_output(format: OutputFormat, fields: &[String], text: &str) -> Outp
             OutputCheck {
                 pretty: body.to_string(),
                 ok: table.is_some() && missing.is_empty(),
-                error: table.is_none().then(|| "Markdown 표를 찾지 못했습니다".to_string()),
+                error: table
+                    .is_none()
+                    .then(|| tr!("Markdown 표를 찾지 못했습니다", "No Markdown table found").to_string()),
                 missing,
                 table_rows: table.map(|t| t.rows),
                 ..OutputCheck::default()
@@ -865,5 +881,196 @@ mod tests {
             let want = tokenizer::cost_usd(single.comp_tokens, c.target.usd_per_million_input());
             assert!((c.cost_usd - want).abs() < 1e-12);
         }
+    }
+
+    /// 큰따옴표로 인용한 사용자 문장을 뺀 나머지에 한글이 있는가
+    fn hangul_outside_quotes(s: &str) -> bool {
+        s.split('"')
+            .step_by(2)
+            .any(|part| part.chars().any(|c| ('가'..='힣').contains(&c)))
+    }
+
+    /// UI 언어는 사용자에게 보이는 문구만 바꾼다. 같은 요청(데이터 포함)을 한국어와 영어로 컴파일하면
+    /// 프롬프트(모델용 글: 프로파일 통계·이상치·샘플·스키마 포함), 토큰 수, 미리보기, 진단의 개수·심각도·위치가 같다.
+    #[test]
+    fn compile_is_identical_in_both_languages_except_messages() {
+        use crate::i18n::{Lang, with_lang};
+        let dir = std::env::temp_dir().join(format!("cc_lang_compile_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("매출.csv");
+        let mut csv = String::from("order_id,지역,amount,메모\n");
+        for i in 0..60 {
+            csv += &format!("{i},R{},{},\"메모, {i}\"\n", i % 4, 1000 + (i * 37) % 900);
+        }
+        csv += "60,R1,9000000,이상 거래\n";
+        std::fs::write(&p, csv).unwrap();
+        let rules: Vec<String> = [
+            "매우 중요: 이상치 우선 탐지",
+            "이상치 탐지하지 마",
+            "Detect outliers first",
+            "detect outliers first.",
+            "결측치 제외",
+            "결측치 포함",
+            "값을 계산해",
+            "값은 계산하지 마",
+            "데이터에 없는 내용은 추론하지 마",
+        ]
+        .map(String::from)
+        .to_vec();
+        let mut seen = std::collections::BTreeSet::new();
+        for target in TargetModel::ALL {
+            for format in [OutputFormat::StrictJson, OutputFormat::MarkdownTable] {
+                for fields in [f(&["root_causes", "outliers", "outliers", " "]), vec![]] {
+                    let run = |lang| {
+                        with_lang(lang, || {
+                            let data = load_data(&p, 5).unwrap();
+                            compile(&CompileRequest {
+                                target,
+                                role: "Please analyze very carefully".into(),
+                                constraints: rules.clone(),
+                                format,
+                                fields: fields.clone(),
+                                data: Some(data),
+                            })
+                        })
+                    };
+                    let (ko, en) = (run(Lang::Ko), run(Lang::En));
+                    let case = format!("{target:?} {format:?} {fields:?}");
+                    assert_eq!(ko.output, en.output, "{case}");
+                    assert_eq!(
+                        (ko.orig_tokens, ko.comp_tokens),
+                        (en.orig_tokens, en.comp_tokens),
+                        "{case}"
+                    );
+                    assert_eq!(ko.preview, en.preview, "{case}");
+                    assert_eq!(
+                        serde_json::to_string(&ko.ast.data_sub_ast).unwrap(),
+                        serde_json::to_string(&en.ast.data_sub_ast).unwrap(),
+                        "{case}"
+                    );
+                    let shape = |r: &CompileResult| {
+                        r.ast
+                            .lint_warnings
+                            .iter()
+                            .map(|d| (d.severity.clone(), d.indices.clone()))
+                            .collect::<Vec<_>>()
+                    };
+                    assert_eq!(shape(&ko), shape(&en), "{case}");
+                    for (k, e) in ko.ast.lint_warnings.iter().zip(&en.ast.lint_warnings) {
+                        assert_ne!(k.message, e.message, "{case}: 번역되지 않음");
+                        assert!(!hangul_outside_quotes(&e.message), "{case}: {}", e.message);
+                        seen.insert(e.severity.clone());
+                    }
+                    // 프롬프트에 프로파일 결과가 실제로 들어 있다(모델용 영어 표기 그대로)
+                    assert!(
+                        en.output.contains("amount") && en.output.contains("9000000 (z="),
+                        "{case}"
+                    );
+                }
+            }
+        }
+        assert_eq!(seen.into_iter().collect::<Vec<_>>(), ["ERROR", "INFO", "WARN"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_messages_follow_the_language() {
+        use crate::i18n::{Lang, with_lang};
+        let fields = f(&["a", "b"]);
+        let replies = [
+            reply("{\"a\": \"긴 설명", Some("max_tokens")),
+            reply("| a | b |\n|---|---|\n| 1 | 미완", Some("length")),
+            reply(r#"{"a":1}"#, Some("model_context_window_exceeded")),
+            reply("", Some("content_filter")),
+            reply("[1,2]", Some("stop")),
+            reply("표 없음", Some("stop")),
+            reply(r#"{"a":1,"b":null}"#, Some("end_turn")),
+        ];
+        let formats = [
+            OutputFormat::StrictJson,
+            OutputFormat::MarkdownTable,
+            OutputFormat::StrictJson,
+            OutputFormat::StrictJson,
+            OutputFormat::StrictJson,
+            OutputFormat::MarkdownTable,
+            OutputFormat::StrictJson,
+        ];
+        let checks = |lang| {
+            with_lang(lang, || {
+                replies
+                    .iter()
+                    .zip(formats)
+                    .map(|(r, fmt)| {
+                        check_reply(
+                            fmt,
+                            &fields,
+                            r,
+                            if fmt == OutputFormat::MarkdownTable { 512 } else { 2048 },
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        let (ko, en) = (checks(Lang::Ko), checks(Lang::En));
+        assert_eq!(
+            en[0].cut_off.as_deref(),
+            Some("Reached the output token limit (2048); the response was cut off (max_tokens)")
+        );
+        assert!(
+            en[0]
+                .error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("JSON parse error: ")),
+            "{:?}",
+            en[0]
+        );
+        assert_eq!(
+            en[1].cut_off.as_deref(),
+            Some("Reached the output token limit (512); the response was cut off (length)")
+        );
+        assert_eq!(
+            en[2].cut_off.as_deref(),
+            Some("The model's context window is full; the response was cut off (model_context_window_exceeded)")
+        );
+        assert_eq!(
+            en[3].cut_off.as_deref(),
+            Some("The response did not finish (stop reason: content_filter)")
+        );
+        assert_eq!(en[4].error.as_deref(), Some("Not a JSON object"));
+        assert_eq!(en[5].error.as_deref(), Some("No Markdown table found"));
+        assert!(en[6].ok && en[6].error.is_none() && en[6].cut_off.is_none());
+        // 한국어 문구는 그대로이고, 판정(통과·누락·빈 값·종료 이유·표 행 수·한도 도달)은 언어와 관계없다
+        assert_eq!(ko[4].error.as_deref(), Some("JSON 객체가 아닙니다"));
+        for (k, e) in ko.iter().zip(&en) {
+            assert_eq!(
+                (&k.pretty, k.ok, &k.missing, &k.nulls, &k.stop_reason, k.table_rows),
+                (&e.pretty, e.ok, &e.missing, &e.nulls, &e.stop_reason, e.table_rows)
+            );
+            assert_eq!(k.hit_max_tokens(), e.hit_max_tokens());
+            assert_eq!(k.cut_off.is_some(), e.cut_off.is_some());
+            assert_eq!(k.error.is_some(), e.error.is_some());
+            for m in e.cut_off.iter().chain(&e.error) {
+                assert!(!m.chars().any(|c| ('가'..='힣').contains(&c)), "{m}");
+            }
+        }
+    }
+
+    #[test]
+    fn read_errors_follow_the_language() {
+        use crate::i18n::{Lang, with_lang};
+        let p = std::env::temp_dir().join(format!("cc_missing_steering_{}.md", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(
+            with_lang(Lang::En, || read_text_auto(&p)),
+            Err("cannot read file: no such file or directory (os error 2)".to_string())
+        );
+        let os = std::fs::read(&p).unwrap_err();
+        assert_eq!(
+            with_lang(Lang::Ko, || read_text_auto(&p)),
+            Err(format!("파일을 읽을 수 없음: {os}"))
+        );
+        // 데이터 로드 오류는 프로파일러 문구가 그대로 올라온다
+        let e = with_lang(Lang::En, || load_data(&p.with_extension("csv"), 2).unwrap_err());
+        assert_eq!(e, "cannot open file: no such file or directory (os error 2)");
     }
 }

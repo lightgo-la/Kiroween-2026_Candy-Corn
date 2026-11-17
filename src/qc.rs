@@ -1,4 +1,4 @@
-//! QC: 무작위 입력 12,000건(컴파일 6,000 + 프로파일러 4,000 + LLM 응답 검사 2,000)으로 불변식을 검사한다.
+//! QC: 무작위 입력 13,000건(컴파일 6,000 + 프로파일러 4,000 + LLM 응답 검사 2,000 + 영어 모드 컴파일 1,000)으로 불변식을 검사한다.
 //! 프로파일러 입력: CSV/TSV(UTF-8, UTF-8 BOM, CP949, UTF-16LE/BE BOM, 쉼표·세미콜론·탭, LF/CRLF,
 //! 64KiB가 넘는 ASCII 앞부분 뒤에 처음 나오는 비ASCII), JSON 배열, NDJSON, 바이너리(거부해야 함).
 //! 시드가 고정되어 있어 실패는 재현 가능하다. 실패는 모아서 한 번에 보고한다.
@@ -1620,4 +1620,218 @@ fn qc_output_check_2000() {
 fn delimiter_like(line: &str) -> bool {
     let t = line.trim();
     !t.is_empty() && t.contains('-') && t.chars().all(|c| matches!(c, '-' | ':' | '|' | ' '))
+}
+
+// ---------------- 영어 모드 컴파일 ----------------
+
+/// 영어 모드 QC 입력 조각. ASCII만 쓰므로 영어 진단 문구에 한글이 나오면 번역되지 않은 문구다.
+/// 수식어, 부정 표지, 반의어, 예외 조항, 숫자·연산자, 따옴표, 구조 흉내 조각을 섞는다.
+const EN_PIECES: &[&str] = &[
+    "detect",
+    "outliers",
+    "Detect",
+    "do not",
+    "never",
+    "must not",
+    "Don't",
+    "avoid",
+    "very",
+    "please",
+    "really",
+    "exclude",
+    "include",
+    "allow",
+    "forbid",
+    "increase",
+    "decrease",
+    "ascending",
+    "descending",
+    "instead of",
+    "except",
+    "the",
+    "mean",
+    "missing",
+    "rows",
+    "amount",
+    "who",
+    "never-paid",
+    "> 1000",
+    "<= 5",
+    "-1",
+    "0.2%",
+    "'very good'",
+    "\"do not know\"",
+    "`code`",
+    "<b>",
+    "&",
+    "a|b",
+    "\\",
+    "</rule>",
+    "## Output",
+    "=== OUTPUT ===",
+    "\n",
+    "",
+];
+
+/// 확실한 모순·모순 의심·중복이 되는 ASCII 제약 쌍. 진단 종류가 빠짐없이 나오게 섞는다.
+const EN_PAIRS: &[(&str, &str)] = &[
+    ("Detect outliers", "You must not detect outliers"),
+    ("exclude missing rows", "include missing rows"),
+    ("Sort by date ascending", "Sort by date descending"),
+    ("Use jargon", "Avoid jargon"),
+    ("Explain revenue increase", "Explain revenue decrease"),
+    ("Detect outliers", "Never detect outlier"),
+    ("Use the median instead of the mean", "Do not use the mean"),
+    ("Detect outliers first", "detect outliers first."),
+    ("Report totals", "Report totals"),
+];
+
+fn en_text(r: &mut Rng) -> String {
+    let n = r.below(9);
+    (0..n)
+        .map(|_| EN_PIECES[r.below(EN_PIECES.len())])
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn en_data(r: &mut Rng) -> LoadedData {
+    let columns = (0..1 + r.below(4))
+        .map(|_| ColumnProfile {
+            name: one_line(en_text(r)),
+            dtype: if r.chance(50) { "numeric".into() } else { "text".into() },
+            null_ratio: r.below(101) as f64 / 100.0,
+            summary_stats: one_line(en_text(r)),
+        })
+        .collect();
+    LoadedData {
+        path: PathBuf::new(),
+        raw_tokens: r.below(1_000_000),
+        data: DataSubAst {
+            source_name: one_line(en_text(r)),
+            total_rows: r.below(1_000_000),
+            columns,
+            anomalies: (0..r.below(3)).map(|_| en_text(r)).collect(),
+            sample_rows: (0..r.below(4)).map(|_| en_text(r)).collect(),
+        },
+    }
+}
+
+/// 영어 모드 컴파일 QC 1,000건(위의 12,000건과 별도). ASCII만 쓴 시드 고정 입력을 `with_lang(En)`으로 컴파일해
+/// 진단 문구에 한글이 하나도 없는지 보고, 같은 입력을 한국어로 컴파일한 결과와 프롬프트·토큰 수·미리보기·남은 제약·
+/// 진단의 개수·심각도·위치가 같은지 본다(UI 언어는 사용자에게 보이는 문구만 바꾼다). 진단 7종이 모두 나와야 한다.
+#[test]
+fn qc_compile_english_1000() {
+    use crate::i18n::{Lang, with_lang};
+    let hangul = |s: &str| {
+        s.chars()
+            .any(|c| matches!(c, '\u{AC00}'..='\u{D7A3}' | '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}'))
+    };
+    let shape = |r: &CompileResult| {
+        r.ast
+            .lint_warnings
+            .iter()
+            .map(|d| (d.severity.clone(), d.indices.clone()))
+            .collect::<Vec<_>>()
+    };
+    let kept = |r: &CompileResult| {
+        r.ast
+            .constraints
+            .iter()
+            .map(|c| (c.id.clone(), c.expression.clone()))
+            .collect::<Vec<_>>()
+    };
+    const KINDS: [&str; 7] = [
+        "Compressed ",
+        "Removed duplicate constraint: ",
+        "Removed contradicting instruction: ",
+        "Possible contradiction (kept both): ",
+        "Removed blank/duplicate output schema fields: ",
+        "Output schema has no required fields",
+        "Schema integrity check passed",
+    ];
+    let mut seen = [0usize; KINDS.len()];
+    let mut r = Rng(0x0E0E_2026_1A18_0001);
+    let mut f = Failures::default();
+    let total = 1000;
+    for i in 0..total {
+        let mut constraints: Vec<String> = (0..r.below(9)).map(|_| en_text(&mut r)).collect();
+        if r.chance(40) {
+            let (a, b) = EN_PAIRS[r.below(EN_PAIRS.len())];
+            let at = r.below(constraints.len() + 1);
+            constraints.insert(at, a.to_string());
+            let at = r.below(constraints.len() + 1).max(at + 1);
+            constraints.insert(at, b.to_string());
+        }
+        let req = CompileRequest {
+            target: TargetModel::ALL[r.below(3)],
+            role: if r.chance(30) {
+                format!("Please analyze {} very carefully", one_line(en_text(&mut r)))
+            } else {
+                en_text(&mut r)
+            },
+            constraints,
+            format: if r.chance(50) {
+                OutputFormat::StrictJson
+            } else {
+                OutputFormat::MarkdownTable
+            },
+            fields: (0..r.below(5))
+                .map(|_| match r.below(10) {
+                    0 => " ".to_string(),
+                    1 => one_line(en_text(&mut r)),
+                    _ => format!("f{}", r.below(4)),
+                })
+                .collect(),
+            data: if r.chance(60) { Some(en_data(&mut r)) } else { None },
+        };
+        let ctx = |s: &str| format!("#{i} {s}");
+        let en = match catch_unwind(AssertUnwindSafe(|| with_lang(Lang::En, || pipeline::compile(&req)))) {
+            Ok(x) => x,
+            Err(_) => {
+                f.add("영어 모드 compile 패닉", ctx(&format!("{req:?}")));
+                continue;
+            }
+        };
+        let ko = with_lang(Lang::Ko, || pipeline::compile(&req));
+        if let Some(d) = en.ast.lint_warnings.iter().find(|d| hangul(&d.message)) {
+            f.add("영어 진단 문구에 한글", ctx(&d.message));
+        }
+        if en.output != ko.output {
+            f.add("언어에 따라 프롬프트가 다름", ctx(&format!("{req:?}")));
+        }
+        if (en.orig_tokens, en.comp_tokens) != (ko.orig_tokens, ko.comp_tokens) {
+            f.add(
+                "언어에 따라 토큰 수가 다름",
+                ctx(&format!(
+                    "{:?} != {:?}",
+                    (en.orig_tokens, en.comp_tokens),
+                    (ko.orig_tokens, ko.comp_tokens)
+                )),
+            );
+        }
+        if en.preview != ko.preview {
+            f.add("언어에 따라 미리보기가 다름", ctx(&en.preview));
+        }
+        if shape(&en) != shape(&ko) {
+            f.add(
+                "언어에 따라 진단 개수·심각도·위치가 다름",
+                ctx(&format!("{:?} != {:?}", shape(&en), shape(&ko))),
+            );
+        }
+        if kept(&en) != kept(&ko) {
+            f.add("언어에 따라 남은 제약이 다름", ctx(&format!("{:?}", req.constraints)));
+        }
+        for d in &en.ast.lint_warnings {
+            match KINDS.iter().position(|k| d.message.starts_with(k)) {
+                Some(k) => seen[k] += 1,
+                None => f.add("알 수 없는 영어 진단", ctx(&d.message)),
+            }
+        }
+    }
+    for (kind, n) in KINDS.iter().zip(seen) {
+        if n == 0 {
+            f.add("한 번도 나오지 않은 진단 종류", kind.to_string());
+        }
+    }
+    assert!(f.0.is_empty(), "\n{}", f.report(total));
 }

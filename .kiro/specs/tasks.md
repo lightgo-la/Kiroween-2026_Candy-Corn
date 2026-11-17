@@ -27,6 +27,9 @@
 - [x] LLM client: stop reasons, usage, retries, redirects off, timeout scaled by max_tokens
 - [x] Tests: QC 12,000 (compile 6,000 + profiler 4,000 + response check 2,000), 29 scenarios, 15 graph e2e, QA 1,000
 
+## Round 6 (language)
+- [x] Korean/English UI: tr!/trf!/Tr, language switcher in studio and canvas (saved to settings.json), `--lang` for every mode, English `--help`, bilingual presets/templates/themes/defaults, translation coverage test, English-mode QC 1,000, scenarios s30–s33
+
 ## Open
 - [ ] Windows Job Object for MCP child processes (survive a GUI crash today)
 - [ ] Graph canvas: undo/redo, parallel branches

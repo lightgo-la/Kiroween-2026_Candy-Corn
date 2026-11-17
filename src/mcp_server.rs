@@ -3,6 +3,7 @@
 //!
 //! 잘못된 줄(UTF-8 아님, JSON 아님, 요청 형식 아님)에는 오류로 답하고 다음 줄을 계속 처리한다.
 //! notification(id 없음)과 클라이언트가 보낸 응답 객체(result/error)에는 답하지 않는다.
+//! 오류 메시지와 결과의 lint 줄은 프로세스 언어(`--mcp --lang en`)를 따르고, 도구 설명(tools/list)은 언제나 영어다.
 
 use crate::ast::{OutputFormat, TargetModel};
 use crate::pipeline::{self, CompileRequest};
@@ -62,7 +63,10 @@ fn handle_line(raw: &[u8]) -> Option<Value> {
         return Some(error(
             Value::Null,
             PARSE_ERROR,
-            "JSON 파싱 오류: UTF-8이 아닌 입력입니다",
+            tr!(
+                "JSON 파싱 오류: UTF-8이 아닌 입력입니다",
+                "JSON parse error: input is not valid UTF-8"
+            ),
         ));
     };
     // 일부 셸이 붙이는 BOM과 줄 끝 \r 제거
@@ -72,10 +76,20 @@ fn handle_line(raw: &[u8]) -> Option<Value> {
     }
     let msg: Value = match serde_json::from_str(text) {
         Ok(v) => v,
-        Err(e) => return Some(error(Value::Null, PARSE_ERROR, &format!("JSON 파싱 오류: {e}"))),
+        Err(e) => {
+            return Some(error(
+                Value::Null,
+                PARSE_ERROR,
+                &trf!("JSON 파싱 오류: {e}", "JSON parse error: {e}"),
+            ));
+        }
     };
     match msg {
-        Value::Array(items) if items.is_empty() => Some(error(Value::Null, INVALID_REQUEST, "잘못된 요청: 빈 배치")),
+        Value::Array(items) if items.is_empty() => Some(error(
+            Value::Null,
+            INVALID_REQUEST,
+            tr!("잘못된 요청: 빈 배치", "Invalid request: empty batch"),
+        )),
         // 배치: 항목마다 처리하고, 답할 항목이 하나도 없으면(모두 notification 등) 아무것도 보내지 않는다
         Value::Array(items) => {
             let replies: Vec<Value> = items.iter().filter_map(handle_message).collect();
@@ -88,7 +102,14 @@ fn handle_line(raw: &[u8]) -> Option<Value> {
 /// 메시지 하나를 처리한다. notification과 클라이언트가 보낸 응답 객체에는 None.
 fn handle_message(msg: &Value) -> Option<Value> {
     let Some(obj) = msg.as_object() else {
-        return Some(error(Value::Null, INVALID_REQUEST, "잘못된 요청: JSON 객체가 아닙니다"));
+        return Some(error(
+            Value::Null,
+            INVALID_REQUEST,
+            tr!(
+                "잘못된 요청: JSON 객체가 아닙니다",
+                "Invalid request: not a JSON object"
+            ),
+        ));
     };
     let Some(method) = obj.get("method") else {
         // method 없이 result나 error가 있으면 클라이언트가 보낸 응답이다: 답하지 않는다
@@ -98,7 +119,7 @@ fn handle_message(msg: &Value) -> Option<Value> {
         return Some(error(
             request_id(obj),
             INVALID_REQUEST,
-            "잘못된 요청: method가 없습니다",
+            tr!("잘못된 요청: method가 없습니다", "Invalid request: method is missing"),
         ));
     };
     // MCP의 id는 문자열 또는 정수다(null·소수 불가)
@@ -109,7 +130,10 @@ fn handle_message(msg: &Value) -> Option<Value> {
             return Some(error(
                 Value::Null,
                 INVALID_REQUEST,
-                "잘못된 요청: id는 문자열 또는 정수여야 합니다",
+                tr!(
+                    "잘못된 요청: id는 문자열 또는 정수여야 합니다",
+                    "Invalid request: id must be a string or an integer"
+                ),
             ));
         }
     };
@@ -117,7 +141,10 @@ fn handle_message(msg: &Value) -> Option<Value> {
         return Some(error(
             id.unwrap_or(Value::Null),
             INVALID_REQUEST,
-            "잘못된 요청: method는 문자열이어야 합니다",
+            tr!(
+                "잘못된 요청: method는 문자열이어야 합니다",
+                "Invalid request: method must be a string"
+            ),
         ));
     };
     let id = id?; // notification(id 없음)에는 답하지 않는다
@@ -127,7 +154,11 @@ fn handle_message(msg: &Value) -> Option<Value> {
         "ping" => ok(id, json!({})),
         "tools/list" => ok(id, json!({ "tools": [tool_def()] })),
         "tools/call" => call_tool(id, params),
-        _ => error(id, METHOD_NOT_FOUND, &format!("메서드를 찾을 수 없습니다: {method}")),
+        _ => error(
+            id,
+            METHOD_NOT_FOUND,
+            &trf!("메서드를 찾을 수 없습니다: {method}", "Method not found: {method}"),
+        ),
     })
 }
 
@@ -227,11 +258,12 @@ impl ToolArgs {
         let args = match args {
             None | Some(Value::Null) => &empty,
             Some(Value::Object(m)) => m,
-            Some(_) => return Err("arguments 값은 객체여야 합니다".into()),
+            Some(_) => return Err(tr!("arguments 값은 객체여야 합니다", "arguments must be an object").into()),
         };
         if let Some(k) = args.keys().find(|k| !ARG_NAMES.contains(&k.as_str())) {
-            return Err(format!(
+            return Err(trf!(
                 "알 수 없는 인자: {k} (사용할 수 있는 인자: {})",
+                "Unknown argument: {k} (allowed: {})",
                 ARG_NAMES.join(", ")
             ));
         }
@@ -239,34 +271,51 @@ impl ToolArgs {
         let get = |k: &str| args.get(k).filter(|v| !v.is_null());
         let role = match get("role") {
             Some(Value::String(s)) => s.clone(),
-            Some(_) => return Err("role 인자는 문자열이어야 합니다".into()),
-            None => return Err("role 인자가 필요합니다 (문자열)".into()),
+            Some(_) => return Err(tr!("role 인자는 문자열이어야 합니다", "role must be a string").into()),
+            None => return Err(tr!("role 인자가 필요합니다 (문자열)", "role is required (string)").into()),
         };
         let constraints = match get("constraints") {
             None => vec![],
             Some(Value::Array(items)) => string_items("constraints", items)?,
-            Some(_) => return Err("constraints 인자는 문자열 배열이어야 합니다".into()),
+            Some(_) => {
+                return Err(tr!(
+                    "constraints 인자는 문자열 배열이어야 합니다",
+                    "constraints must be an array of strings"
+                )
+                .into());
+            }
         };
         let target = match get("target") {
             None => TargetModel::Claude,
             Some(Value::String(s)) => parse_target(s).ok_or_else(|| {
-                format!(
-                    "target 인자 값이 올바르지 않습니다: {s:?} (claude/anthropic, gpt/openai, gemini/google 중 하나)"
+                trf!(
+                    "target 인자 값이 올바르지 않습니다: {s:?} (claude/anthropic, gpt/openai, gemini/google 중 하나)",
+                    "Invalid target: {s:?} (expected one of claude/anthropic, gpt/openai, gemini/google)"
                 )
             })?,
-            Some(_) => return Err("target 인자는 문자열이어야 합니다".into()),
+            Some(_) => return Err(tr!("target 인자는 문자열이어야 합니다", "target must be a string").into()),
         };
         let format = match get("format") {
             None => OutputFormat::StrictJson,
-            Some(Value::String(s)) => parse_format(s)
-                .ok_or_else(|| format!("format 인자 값이 올바르지 않습니다: {s:?} (json, table/markdown 중 하나)"))?,
-            Some(_) => return Err("format 인자는 문자열이어야 합니다".into()),
+            Some(Value::String(s)) => parse_format(s).ok_or_else(|| {
+                trf!(
+                    "format 인자 값이 올바르지 않습니다: {s:?} (json, table/markdown 중 하나)",
+                    "Invalid format: {s:?} (expected one of json, table/markdown)"
+                )
+            })?,
+            Some(_) => return Err(tr!("format 인자는 문자열이어야 합니다", "format must be a string").into()),
         };
         let fields = match get("fields") {
             None => vec![],
             Some(Value::String(s)) => pipeline::parse_fields(s),
             Some(Value::Array(items)) => string_items("fields", items)?,
-            Some(_) => return Err("fields 인자는 문자열 배열이나 쉼표로 구분한 문자열이어야 합니다".into()),
+            Some(_) => {
+                return Err(tr!(
+                    "fields 인자는 문자열 배열이나 쉼표로 구분한 문자열이어야 합니다",
+                    "fields must be an array of strings or a comma-separated string"
+                )
+                .into());
+            }
         };
         let fields = if fields.is_empty() {
             pipeline::parse_fields(pipeline::DEFAULT_FIELDS)
@@ -276,11 +325,14 @@ impl ToolArgs {
         let data_path = match get("data_path") {
             None => None,
             Some(Value::String(s)) => Some(s.trim().to_string()).filter(|s| !s.is_empty()),
-            Some(_) => return Err("data_path 인자는 문자열이어야 합니다".into()),
+            Some(_) => return Err(tr!("data_path 인자는 문자열이어야 합니다", "data_path must be a string").into()),
         };
         let sample_rows = match get("sample_rows") {
             None => DEFAULT_SAMPLE_ROWS,
-            Some(v) => parse_sample_rows(v).ok_or("sample_rows 인자는 정수여야 합니다 (0~50)")?,
+            Some(v) => parse_sample_rows(v).ok_or(tr!(
+                "sample_rows 인자는 정수여야 합니다 (0~50)",
+                "sample_rows must be an integer (0-50)"
+            ))?,
         };
         Ok(ToolArgs {
             role,
@@ -298,7 +350,9 @@ impl ToolArgs {
 fn string_items(arg: &str, items: &[Value]) -> Result<Vec<String>, String> {
     let mut out = Vec::with_capacity(items.len());
     for (i, v) in items.iter().enumerate() {
-        let s = v.as_str().ok_or_else(|| format!("{arg}[{i}] 값이 문자열이 아닙니다"))?;
+        let s = v
+            .as_str()
+            .ok_or_else(|| trf!("{arg}[{i}] 값이 문자열이 아닙니다", "{arg}[{i}] is not a string"))?;
         let s = s.trim();
         if !s.is_empty() {
             out.push(s.to_string());
@@ -335,12 +389,34 @@ fn parse_sample_rows(v: &Value) -> Option<usize> {
 
 fn call_tool(id: Value, params: Option<&Value>) -> Value {
     let Some(params) = params.and_then(Value::as_object) else {
-        return error(id, INVALID_PARAMS, "params는 name과 arguments를 담은 객체여야 합니다");
+        return error(
+            id,
+            INVALID_PARAMS,
+            tr!(
+                "params는 name과 arguments를 담은 객체여야 합니다",
+                "params must be an object with name and arguments"
+            ),
+        );
     };
     match params.get("name").and_then(Value::as_str) {
         Some("compress_prompt") => {}
-        Some(other) => return error(id, INVALID_PARAMS, &format!("알 수 없는 도구: {other}")),
-        None => return error(id, INVALID_PARAMS, "params.name(도구 이름)이 없습니다"),
+        Some(other) => {
+            return error(
+                id,
+                INVALID_PARAMS,
+                &trf!("알 수 없는 도구: {other}", "Unknown tool: {other}"),
+            );
+        }
+        None => {
+            return error(
+                id,
+                INVALID_PARAMS,
+                tr!(
+                    "params.name(도구 이름)이 없습니다",
+                    "params.name (tool name) is missing"
+                ),
+            );
+        }
     }
     let args = match ToolArgs::parse(params.get("arguments")) {
         Ok(a) => a,
@@ -352,17 +428,21 @@ fn call_tool(id: Value, params: Option<&Value>) -> Value {
         Err(_) => error(
             id,
             INTERNAL_ERROR,
-            "내부 오류: 프롬프트를 만드는 중 패닉이 발생했습니다",
+            tr!(
+                "내부 오류: 프롬프트를 만드는 중 패닉이 발생했습니다",
+                "Internal error: panic while building the prompt"
+            ),
         ),
     }
 }
 
 /// compress_prompt 실행. 데이터 파일을 읽지 못하면 isError 결과(도구 실행 오류)로 알린다.
+/// 결과 텍스트의 프롬프트 부분은 UI 언어와 관계없이 같고, lint 줄만 UI 언어를 따른다.
 fn compress(args: ToolArgs) -> Value {
     let data = match &args.data_path {
         Some(p) => match pipeline::load_data(Path::new(p), args.sample_rows) {
             Ok(d) => Some(d),
-            Err(e) => return tool_text(&format!("데이터 로드 실패: {e}"), true),
+            Err(e) => return tool_text(&trf!("데이터 로드 실패: {e}", "Failed to load data: {e}"), true),
         },
         None => None,
     };
@@ -669,5 +749,158 @@ mod tests {
             line.starts_with("--- tokens: ") && (line.contains("(+") || line.contains("(-")),
             "{line}"
         );
+    }
+
+    fn has_hangul(s: &str) -> bool {
+        s.chars().any(|c| ('가'..='힣').contains(&c))
+    }
+
+    /// `--mcp --lang en`: JSON-RPC 오류 메시지는 영어이고 인자 이름·값을 그대로 담는다.
+    #[test]
+    fn english_mode_error_messages() {
+        use crate::i18n::{Lang, with_lang};
+        let msg = |v: &Value| v["error"]["message"].as_str().unwrap_or_default().to_string();
+        with_lang(Lang::En, || {
+            let lines: [(&[u8], i64, &str); 8] = [
+                (b"\xff\xfe", PARSE_ERROR, "JSON parse error: input is not valid UTF-8"),
+                (b"[]", INVALID_REQUEST, "Invalid request: empty batch"),
+                (b"1", INVALID_REQUEST, "Invalid request: not a JSON object"),
+                (
+                    br#"{"jsonrpc":"2.0","id":3}"#,
+                    INVALID_REQUEST,
+                    "Invalid request: method is missing",
+                ),
+                (
+                    br#"{"jsonrpc":"2.0","id":1.5,"method":"ping"}"#,
+                    INVALID_REQUEST,
+                    "Invalid request: id must be a string or an integer",
+                ),
+                (
+                    br#"{"jsonrpc":"2.0","id":4,"method":7}"#,
+                    INVALID_REQUEST,
+                    "Invalid request: method must be a string",
+                ),
+                (
+                    br#"{"jsonrpc":"2.0","id":5,"method":"no/such"}"#,
+                    METHOD_NOT_FOUND,
+                    "Method not found: no/such",
+                ),
+                (
+                    br#"{"jsonrpc":"2.0","id":6,"method":"tools/call"}"#,
+                    INVALID_PARAMS,
+                    "params must be an object with name and arguments",
+                ),
+            ];
+            for (line, code, want) in lines {
+                let v = handle_line(line).unwrap();
+                assert_eq!((v["error"]["code"].as_i64(), msg(&v)), (Some(code), want.to_string()));
+            }
+            let v = reply("not json").unwrap();
+            assert!(msg(&v).starts_with("JSON parse error: "), "{v}");
+            let tool = |params: &str| {
+                reply(&format!(
+                    r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{params}}}"#
+                ))
+                .unwrap()
+            };
+            assert_eq!(msg(&tool(r#"{"name":"nope"}"#)), "Unknown tool: nope");
+            assert_eq!(msg(&tool("{}")), "params.name (tool name) is missing");
+            for (args, want) in [
+                (
+                    json!({ "role": "r", "target": "llama" }),
+                    "Invalid target: \"llama\" (expected one of claude/anthropic, gpt/openai, gemini/google)",
+                ),
+                (
+                    json!({ "role": "r", "format": "xml" }),
+                    "Invalid format: \"xml\" (expected one of json, table/markdown)",
+                ),
+                (json!({ "role": 3 }), "role must be a string"),
+                (json!({}), "role is required (string)"),
+                (
+                    json!({ "role": "r", "constraints": "x" }),
+                    "constraints must be an array of strings",
+                ),
+                (
+                    json!({ "role": "r", "constraints": ["a", 1] }),
+                    "constraints[1] is not a string",
+                ),
+                (json!({ "role": "r", "target": 1 }), "target must be a string"),
+                (json!({ "role": "r", "format": 1 }), "format must be a string"),
+                (
+                    json!({ "role": "r", "fields": 3 }),
+                    "fields must be an array of strings or a comma-separated string",
+                ),
+                (
+                    json!({ "role": "r", "fields": ["a", null] }),
+                    "fields[1] is not a string",
+                ),
+                (json!({ "role": "r", "data_path": 1 }), "data_path must be a string"),
+                (
+                    json!({ "role": "r", "sample_rows": "8" }),
+                    "sample_rows must be an integer (0-50)",
+                ),
+                (
+                    json!({ "role": "r", "steering": "x.md" }),
+                    "Unknown argument: steering (allowed: role, constraints, target, format, fields, data_path, sample_rows)",
+                ),
+                (Value::Array(vec![]), "arguments must be an object"),
+            ] {
+                let v = call(args.clone());
+                assert_eq!(v["error"]["code"], INVALID_PARAMS, "{args}");
+                assert_eq!(msg(&v), want, "{args}");
+            }
+        });
+        // 기본 언어(한국어)는 예전 문구 그대로
+        assert_eq!(msg(&call(json!({ "role": 3 }))), "role 인자는 문자열이어야 합니다");
+    }
+
+    /// 영어 모드의 도구 결과: 프롬프트 부분과 tools/list·initialize는 한국어 모드와 같고, lint 줄과 데이터 오류만 영어다.
+    #[test]
+    fn english_mode_tool_results() {
+        use crate::i18n::{Lang, with_lang};
+        let args = json!({
+            "role": "Analyst",
+            "constraints": ["Detect outliers", "You must not detect outliers"],
+            "fields": "a,a"
+        });
+        let (ko, en) = (call(args.clone()), with_lang(Lang::En, || call(args.clone())));
+        let split = |v: &Value| {
+            let (prompt, rest) = text_of(v).split_once("\n\n--- lint ---\n").unwrap();
+            (prompt.to_string(), rest.to_string())
+        };
+        let ((ko_prompt, ko_lint), (en_prompt, en_lint)) = (split(&ko), split(&en));
+        assert_eq!(ko_prompt, en_prompt);
+        assert_eq!(ko["result"]["isError"], en["result"]["isError"]);
+        assert_eq!(ko_lint.lines().count(), en_lint.lines().count());
+        assert_eq!(ko_lint.lines().last(), en_lint.lines().last(), "토큰 줄은 같다");
+        assert!(
+            en_lint.contains(
+                "[WARN] Removed contradicting instruction: \"Detect outliers\" ↔ \"You must not detect outliers\" (kept the later one)"
+            ) && en_lint.contains("[WARN] Removed blank/duplicate output schema fields: duplicate \"a\"")
+                && en_lint.contains("[INFO] Schema integrity check passed"),
+            "{en_lint}"
+        );
+        assert!(
+            !has_hangul(&en_lint) && ko_lint.contains("[WARN] 모순 지시 자동제거"),
+            "{en_lint}\n{ko_lint}"
+        );
+        // 데이터 로드 실패는 isError 결과로, 프로파일러 문구까지 영어다
+        let missing = std::env::temp_dir().join(format!("cc_mcp_en_missing_{}.csv", std::process::id()));
+        let _ = std::fs::remove_file(&missing);
+        let v = with_lang(Lang::En, || {
+            call(json!({ "role": "r", "data_path": missing.display().to_string() }))
+        });
+        assert_eq!(v["result"]["isError"], true);
+        assert_eq!(
+            text_of(&v),
+            "Failed to load data: cannot open file: no such file or directory (os error 2)"
+        );
+        // 도구 설명(tools/list)과 initialize 결과는 언어와 관계없다
+        for line in [
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+        ] {
+            assert_eq!(reply(line), with_lang(Lang::En, || reply(line)), "{line}");
+        }
     }
 }

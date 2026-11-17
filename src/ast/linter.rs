@@ -37,7 +37,9 @@ pub fn lint(ast: &mut RootPromptAst) {
 }
 
 // ---------- 어휘 ----------
+// 아래 한국어 단어 목록은 입력 문장을 판별하는 데이터라 UI 언어와 관계없이 그대로 쓴다(번역 검사 제외 표시를 붙인다).
 
+// i18n-data
 const FILLERS: [&str; 12] = [
     "very",
     "really",
@@ -91,6 +93,7 @@ const NEG_PHRASES: [&[&str]; 17] = [
 ];
 
 /// "-지 마/말" 금지 명령(긴 것부터). 앞 단어가 "지"로 끝나거나(탐지하지 마) 붙여 쓰면(하지마라) 부정이다.
+// i18n-data
 #[rustfmt::skip]
 const KO_NEG_IMPERATIVES: &[&str] = &[
     "마십시오", "마세요", "마시오", "말아라", "말아요", "맙시다", "마라", "마요", "말고", "말라", "말아", "말것",
@@ -98,6 +101,7 @@ const KO_NEG_IMPERATIVES: &[&str] = &[
 ];
 
 /// 내용 비교에서 빼는 기능어(영어 불용어, 한국어 보조 표현).
+// i18n-data
 #[rustfmt::skip]
 const STOPWORDS: &[&str] = &[
     "a", "an", "the", "you", "your", "we", "our", "us", "i", "me", "my", "it", "its", "this", "that", "these", "those",
@@ -110,6 +114,7 @@ const STOPWORDS: &[&str] = &[
 
 /// 한국어 어미·조사(긴 것부터). 어간이 남을 때만 떼어 "탐지해"·"탐지하지" → "탐지", "이상치는" → "이상치"로 맞춘다.
 /// 명사 끝 글자로 흔한 가·도·만(할인가, 카드한도, 1천만)은 엄격 비교에서는 떼지 않는다(KO_LOOSE_SUFFIXES).
+// i18n-data
 #[rustfmt::skip]
 const KO_SUFFIXES: &[&str] = &[
     // 4글자
@@ -127,6 +132,7 @@ const KO_SUFFIXES: &[&str] = &[
 ];
 
 /// 경고용 느슨한 비교에서만 떼는 조사(이상치가/이상치도/이상치만).
+// i18n-data
 const KO_LOOSE_SUFFIXES: &[&str] = &["가", "도", "만"];
 
 /// 관계절 앞말. 바로 뒤의 부정은 금지가 아니라 대상을 설명한다("customers who never purchased").
@@ -150,13 +156,16 @@ const TO_FRAMES: &[&str] = &[
 const HYPHENS: [char; 3] = ['-', '\u{2010}', '\u{2011}'];
 
 /// 관형형 부정("구매하지 않은 고객"): 금지가 아니라 대상을 설명한다.
+// i18n-data
 const KO_DESCRIPTIVE_NEG: &[&str] = &["않은", "않는"];
 
 /// "않" 뒤의 목적·결과 어미("-지 않도록", "-지 않게(끔)"). 뒤에 지시(KO_PURPOSE_DIRECTIVES)가 오거나 문장이 끝나면
 /// 금지("포함되지 않도록 해", "누락되지 않도록")이고, 다른 말이 오면 목적절이다("이탈하지 않도록 할 방안을 제시해").
+// i18n-data
 const KO_PURPOSE: &[&str] = &["도록", "게끔", "게"];
 
 /// 목적절 뒤에 와서 금지 지시로 만드는 "하다"의 지시형. "할"은 뒤에 "것"이 올 때만("할 것") 지시다.
+// i18n-data
 #[rustfmt::skip]
 const KO_PURPOSE_DIRECTIVES: &[&str] = &[
     "해", "하라", "해라", "하세요", "해요", "해줘", "해주세요", "하십시오", "하시오", "합시다", "하자", "한다", "합니다",
@@ -164,12 +173,15 @@ const KO_PURPOSE_DIRECTIVES: &[&str] = &[
 ];
 
 /// 목적절 뒤에 와도 금지 지시인 말의 앞부분("주의해", "유의하세요", "조심할 것").
+// i18n-data
 const KO_PURPOSE_CAUTIONS: &[&str] = &["주의", "유의", "조심"];
 
 /// 단어 끝(또는 금지 어미 앞)에 있으면 부정인 한국어 표지. 앞부분은 내용으로 남긴다("사용금지" → "사용").
+// i18n-data
 const KO_BANS: &[&str] = &["금지", "지양", "자제"];
 
 /// "금지" 뒤에 붙어도 금지인 어미("사용금지", "금지한다"). 다른 글자가 붙으면("금지어", "보험금지급", "금지된") 금지가 아니다.
+// i18n-data
 #[rustfmt::skip]
 const KO_BAN_ENDINGS: &[&str] = &[
     "", "야", "다", "임", "이다", "입니다", "함", "하다", "한다", "합니다", "해", "하라", "해라", "하세요", "하고", "하며",
@@ -178,6 +190,7 @@ const KO_BAN_ENDINGS: &[&str] = &[
 
 /// 예외·대조 표현. 긍정 제약에만 있으면 부정 제약이 그 예외를 되풀이한 것일 수 있으므로 지우지 않고 경고한다
 /// ("Use the median instead of the mean" + "Do not use the mean", "평균 대신 중앙값을 사용해" + "평균은 사용하지 마").
+// i18n-data
 #[rustfmt::skip]
 const EXCEPTION_WORDS: &[&str] = &[
     "instead", "except", "excluding", "exclude", "excludes", "excluded", "without", "unless", "besides", "rather",
@@ -189,6 +202,7 @@ const EXCEPTION_WORDS: &[&str] = &[
 /// 지시형 쌍(제외/포함 등, true)만 확실하다. 증가/감소처럼 데이터를 설명할 때 흔히 쓰는 쌍(false)은 어느 자리에 있어도
 /// 경고만 한다("매출 증가 원인을 분석해" + "매출 감소 원인을 분석해", "재고 증가" + "재고 감소").
 type WordSet = &'static [&'static str];
+// i18n-data
 const ANTONYMS: [(WordSet, WordSet, bool); 8] = [
     (&["제외", "배제"], &["포함"], true),
     (
@@ -391,6 +405,7 @@ fn is_hangul(c: char) -> bool {
 fn stem(w: &str, loose: bool) -> &str {
     let (min, extra) = if loose { (1, KO_LOOSE_SUFFIXES) } else { (2, &[][..]) };
     let mut cur = w;
+    // i18n-data
     while let Some(base) = KO_SUFFIXES.iter().chain(extra).find_map(|suf| {
         cur.strip_suffix(suf).filter(|b| {
             let last = b.chars().next_back();
@@ -467,6 +482,7 @@ fn purpose_ban(w: &str, after: &[Tok]) -> Option<bool> {
     let ending = &w[at + '않'.len_utf8()..];
     let attached = KO_PURPOSE.iter().find_map(|p| ending.strip_prefix(p))?;
     // 강조 부사("꼭", "반드시")는 건너뛰고 본다("누락되지 않도록 꼭 해")
+    // i18n-data
     let words: Vec<&str> = after
         .iter()
         .map(|t| match t {
@@ -475,6 +491,7 @@ fn purpose_ban(w: &str, after: &[Tok]) -> Option<bool> {
         })
         .filter(|w| !["꼭", "반드시", "절대", "절대로"].contains(w))
         .collect();
+    // i18n-data
     let directive = |d: &str, then: Option<&&str>| {
         KO_PURPOSE_DIRECTIVES.contains(&d)
             || (d == "할" && then == Some(&"것"))
@@ -518,6 +535,8 @@ fn analyze(s: &str) -> RuleInfo {
     let mut residual: Vec<Option<&str>> = vec![None; toks.len()];
     // 대상·목적을 설명하는 한국어 부정("않은 고객", "않도록 할 방안"). 예외·대조 표현으로 센다.
     let mut explains = vec![false; toks.len()];
+    // 아래 반복의 한국어 리터럴("말 것", "말것")은 금지 표지 어휘다.
+    // i18n-data
     for k in 0..toks.len() {
         for p in NEG_PHRASES {
             // 하이픈 복합어("never-paid", "do-not-call")의 부정어는 설명이다
@@ -778,9 +797,11 @@ impl AstVisitor for FillerPass {
     }
     fn take_diagnostics(&mut self) -> Vec<LintDiagnostic> {
         if self.removed > 0 {
+            let n = self.removed;
+            let s = if n == 1 { "" } else { "s" };
             self.diags.push(LintDiagnostic::new(
                 "WARN",
-                format!("중복 수식어 {}건 압축됨", self.removed),
+                trf!("중복 수식어 {n}건 압축됨", "Compressed {n} filler word{s}"),
             ));
         }
         std::mem::take(&mut self.diags)
@@ -807,11 +828,17 @@ impl AstVisitor for DedupPass {
             keep[k] = false;
             let survivor = &constraints[kept];
             let message = if survivor.expression == c.expression {
-                format!("중복 제약 제거: \"{}\" (뒤의 같은 제약 유지)", c.expression)
+                trf!(
+                    "중복 제약 제거: \"{}\" (뒤의 같은 제약 유지)",
+                    "Removed duplicate constraint: \"{}\" (kept the later copy)",
+                    c.expression
+                )
             } else {
-                format!(
+                trf!(
                     "중복 제약 제거: \"{}\" (뒤의 같은 제약 유지: \"{}\")",
-                    c.expression, survivor.expression
+                    "Removed duplicate constraint: \"{}\" (kept the later copy: \"{}\")",
+                    c.expression,
+                    survivor.expression
                 )
             };
             self.diags.push(about(&[c, survivor], "WARN", message));
@@ -845,9 +872,11 @@ impl AstVisitor for ContradictionPass {
                 self.diags.push(about(
                     &[removed, kept],
                     "WARN",
-                    format!(
+                    trf!(
                         "모순 지시 자동제거: \"{}\" ↔ \"{}\" (뒤의 지시 유지)",
-                        removed.expression, kept.expression
+                        "Removed contradicting instruction: \"{}\" ↔ \"{}\" (kept the later one)",
+                        removed.expression,
+                        kept.expression
                     ),
                 ));
             }
@@ -859,9 +888,11 @@ impl AstVisitor for ContradictionPass {
                     self.diags.push(about(
                         &[&constraints[i], &constraints[j]],
                         "WARN",
-                        format!(
+                        trf!(
                             "모순 의심(둘 다 유지): \"{}\" ↔ \"{}\". 같은 대상을 반대로 지시하는지 확인하세요",
-                            constraints[i].expression, constraints[j].expression
+                            "Possible contradiction (kept both): \"{}\" ↔ \"{}\". Check whether they give opposite instructions for the same thing",
+                            constraints[i].expression,
+                            constraints[j].expression
                         ),
                     ));
                 }
@@ -914,22 +945,32 @@ impl AstVisitor for SchemaPass {
                         }
                     })
                     .collect();
-                parts.push(format!("중복 {}", names.join(", ")));
+                parts.push(trf!("중복 {}", "duplicate {}", names.join(", ")));
             }
             if blanks > 0 {
-                parts.push(format!("빈 필드 {blanks}개"));
+                let s = if blanks == 1 { "" } else { "s" };
+                parts.push(trf!("빈 필드 {blanks}개", "{blanks} blank field{s}"));
             }
             self.diags.push(LintDiagnostic::new(
                 "WARN",
-                format!("출력 스키마의 빈/중복 필드 제거됨: {}", parts.join(", ")),
+                trf!(
+                    "출력 스키마의 빈/중복 필드 제거됨: {}",
+                    "Removed blank/duplicate output schema fields: {}",
+                    parts.join(", ")
+                ),
             ));
             out.raw_schema = OutputSchemaAst::render_schema(out.format, &out.required_fields);
         }
         if out.required_fields.is_empty() {
-            self.diags
-                .push(LintDiagnostic::new("ERROR", "출력 스키마에 필수 필드가 없음"));
+            self.diags.push(LintDiagnostic::new(
+                "ERROR",
+                tr!("출력 스키마에 필수 필드가 없음", "Output schema has no required fields"),
+            ));
         } else {
-            self.diags.push(LintDiagnostic::new("INFO", "스키마 무결성 검증 통과"));
+            self.diags.push(LintDiagnostic::new(
+                "INFO",
+                tr!("스키마 무결성 검증 통과", "Schema integrity check passed"),
+            ));
         }
     }
     fn take_diagnostics(&mut self) -> Vec<LintDiagnostic> {
@@ -1505,5 +1546,104 @@ mod tests {
         ] {
             assert_eq!(kept(&[s]), [s], "{s}");
         }
+    }
+
+    /// 큰따옴표로 인용한 사용자 문장을 뺀 나머지에 한글이 있는가
+    fn hangul_outside_quotes(s: &str) -> bool {
+        s.split('"').step_by(2).any(|part| part.chars().any(is_hangul))
+    }
+
+    /// 영어 모드: 진단 문구만 영어가 되고, 인용한 사용자 문장·숫자·필드 이름은 그대로 들어간다.
+    /// 남는 제약, 스키마, 진단의 개수·심각도·위치는 한국어 모드와 같다.
+    #[test]
+    fn english_messages_keep_quotes_numbers_and_indices() {
+        use crate::i18n::{Lang, with_lang};
+        let rules = [
+            "Detect outliers first",
+            "결측치 제외",
+            "detect outliers first.",
+            "결측치 포함",
+            "x",
+            "x",
+            "값을 계산해",
+            "값은 계산하지 마",
+        ];
+        let fields = ["a", "a", " ", "b"];
+        let run = |lang| {
+            with_lang(lang, || {
+                let mut a = ast(&rules, &fields);
+                lint(&mut a);
+                a
+            })
+        };
+        let (ko, en) = (run(Lang::Ko), run(Lang::En));
+        let messages = |a: &RootPromptAst| a.lint_warnings.iter().map(|d| d.message.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            messages(&ko),
+            [
+                "중복 수식어 2건 압축됨",
+                "중복 제약 제거: \"Detect outliers first\" (뒤의 같은 제약 유지: \"detect outliers first.\")",
+                "중복 제약 제거: \"x\" (뒤의 같은 제약 유지)",
+                "모순 지시 자동제거: \"결측치 제외\" ↔ \"결측치 포함\" (뒤의 지시 유지)",
+                "모순 의심(둘 다 유지): \"값을 계산해\" ↔ \"값은 계산하지 마\". 같은 대상을 반대로 지시하는지 확인하세요",
+                "출력 스키마의 빈/중복 필드 제거됨: 중복 \"a\", 빈 필드 1개",
+                "스키마 무결성 검증 통과",
+            ]
+        );
+        assert_eq!(
+            messages(&en),
+            [
+                "Compressed 2 filler words",
+                "Removed duplicate constraint: \"Detect outliers first\" (kept the later copy: \"detect outliers first.\")",
+                "Removed duplicate constraint: \"x\" (kept the later copy)",
+                "Removed contradicting instruction: \"결측치 제외\" ↔ \"결측치 포함\" (kept the later one)",
+                "Possible contradiction (kept both): \"값을 계산해\" ↔ \"값은 계산하지 마\". Check whether they give opposite instructions for the same thing",
+                "Removed blank/duplicate output schema fields: duplicate \"a\", 1 blank field",
+                "Schema integrity check passed",
+            ]
+        );
+        assert!(messages(&en).iter().all(|m| !hangul_outside_quotes(m)));
+        let shape = |a: &RootPromptAst| {
+            a.lint_warnings
+                .iter()
+                .map(|d| (d.severity.clone(), d.indices.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shape(&ko), shape(&en));
+        assert_eq!(shape(&en)[3], ("WARN".to_string(), vec![1, 3]));
+        let exprs = |a: &RootPromptAst| a.constraints.iter().map(|c| c.expression.clone()).collect::<Vec<_>>();
+        assert_eq!(exprs(&ko), exprs(&en));
+        assert_eq!(ko.role.instruction, en.role.instruction);
+        assert_eq!(ko.output_schema.raw_schema, en.output_schema.raw_schema);
+    }
+
+    #[test]
+    fn english_counts_and_errors() {
+        use crate::i18n::{Lang, with_lang};
+        with_lang(Lang::En, || {
+            // 단수·복수
+            let mut a = ast(&["very short"], &["x", " ", "x", "x", "", "y"]);
+            a.role.instruction = "analyze".into();
+            lint(&mut a);
+            let w: Vec<&str> = a.lint_warnings.iter().map(|d| d.message.as_str()).collect();
+            assert_eq!(
+                w,
+                [
+                    "Compressed 1 filler word",
+                    "Removed blank/duplicate output schema fields: duplicate \"x\" ×2, 2 blank fields",
+                    "Schema integrity check passed",
+                ]
+            );
+            // 필수 필드가 없으면 ERROR
+            let mut e = ast(&[], &[]);
+            lint(&mut e);
+            let errors: Vec<&str> = e
+                .lint_warnings
+                .iter()
+                .filter(|d| d.severity == "ERROR")
+                .map(|d| d.message.as_str())
+                .collect();
+            assert_eq!(errors, ["Output schema has no required fields"]);
+        });
     }
 }

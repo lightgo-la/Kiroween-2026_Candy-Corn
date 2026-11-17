@@ -1,5 +1,6 @@
-//! 시나리오 테스트 29개: 입력 파일 준비 → 실제 실행 파일 실행 → 출력 검증까지 한 번에 확인한다.
-//! 블루프린트 CLI, 데이터 경로 해석, 린트, 인코딩·구분자·바이너리 데이터, MCP 서버 경로를 다룬다. `cargo test`에 포함된다.
+//! 시나리오 테스트 33개: 입력 파일 준비 → 실제 실행 파일 실행 → 출력 검증까지 한 번에 확인한다.
+//! 블루프린트 CLI, 데이터 경로 해석, 린트, 인코딩·구분자·바이너리 데이터, MCP 서버 경로, 영어 모드(`--lang en`)를 다룬다.
+//! `cargo test`에 포함된다.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -610,4 +611,177 @@ fn s29_cli_semicolon_and_tab_delimited_numbers() {
         "{}",
         r.out
     );
+}
+
+fn has_hangul(s: &str) -> bool {
+    s.chars().any(|c| ('가'..='힣').contains(&c))
+}
+
+/// 큰따옴표로 인용한 사용자 문장을 뺀 나머지에 한글이 있는가 (영어 모드 진단 검사용)
+fn hangul_outside_quotes(s: &str) -> bool {
+    s.split('"').step_by(2).any(has_hangul)
+}
+
+#[test]
+fn s30_cli_lang_en_contradiction_warning_keeps_quoted_text() {
+    let w = work("s30");
+    let csv = w.join("proj/d.csv");
+    let base = [
+        "--cli",
+        "--data",
+        s(&csv),
+        "--constraint",
+        "결측치 제외",
+        "--constraint",
+        "결측치 포함",
+        "--constraint",
+        "Detect outliers",
+        "--constraint",
+        "You must not detect outliers",
+    ];
+    let en = run_in(&w.join("cwd"), &[&base[..], &["--lang", "en"]].concat());
+    ok(&en);
+    for want in [
+        "[WARN] Removed contradicting instruction: \"결측치 제외\" ↔ \"결측치 포함\" (kept the later one)",
+        "[WARN] Removed contradicting instruction: \"Detect outliers\" ↔ \"You must not detect outliers\" (kept the later one)",
+        "[INFO] Schema integrity check passed",
+    ] {
+        assert!(en.err.contains(want), "{want}\n{}", en.err);
+    }
+    assert!(!hangul_outside_quotes(&en.err), "{}", en.err);
+    // --lang이 없으면 한국어다. 프롬프트(stdout)와 토큰 줄은 언어와 관계없이 바이트까지 같다.
+    let ko = run_in(&w.join("cwd"), &base);
+    ok(&ko);
+    assert!(
+        ko.err
+            .contains("[WARN] 모순 지시 자동제거: \"결측치 제외\" ↔ \"결측치 포함\" (뒤의 지시 유지)")
+            && ko.err.contains("[INFO] 스키마 무결성 검증 통과"),
+        "{}",
+        ko.err
+    );
+    assert_eq!(ko.out, en.out);
+    assert!(
+        en.out.contains("rows=\"3\"") && en.out.contains(">결측치 포함</rule>") && !en.out.contains(">결측치 제외<"),
+        "{}",
+        en.out
+    );
+    let tokens = en.err.lines().last().unwrap_or_default();
+    assert!(tokens.starts_with("tokens: "), "{}", en.err);
+    assert_eq!(ko.err.lines().last(), Some(tokens));
+}
+
+#[test]
+fn s31_cli_lang_en_empty_fields_is_english_error() {
+    let w = work("s31");
+    let en = run_in(&w.join("cwd"), &["--cli", "--lang", "en", "--fields", " , "]);
+    assert_eq!(en.code, 1, "{}", en.err);
+    assert!(
+        en.err.contains("[ERROR] Output schema has no required fields"),
+        "{}",
+        en.err
+    );
+    assert!(!has_hangul(&en.err), "{}", en.err);
+    let ko = run_in(&w.join("cwd"), &["--cli", "--fields", " , "]);
+    assert_eq!(ko.code, 1, "{}", ko.err);
+    assert!(ko.err.contains("[ERROR] 출력 스키마에 필수 필드가 없음"), "{}", ko.err);
+    assert_eq!(ko.out, en.out);
+}
+
+#[test]
+fn s32_cli_lang_en_data_load_errors_are_english() {
+    let w = work("s32");
+    // 앞부분은 main.rs, 뒷부분은 프로파일러 문구다. 한국어 Windows의 운영체제 문구도 영어로 바뀐다.
+    let en = run_in(&w.join("cwd"), &["--cli", "--lang", "en", "--data", "missing.csv"]);
+    assert_eq!(en.code, 1, "{}", en.out);
+    assert_eq!(
+        en.err.trim_end(),
+        "failed to load data: cannot open file: no such file or directory (os error 2)"
+    );
+    let png = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon-256.png");
+    let bin = run_in(&w.join("cwd"), &["--cli", "--lang", "en", "--data", png]);
+    assert_eq!(bin.code, 1, "{}", bin.out);
+    assert_eq!(
+        bin.err.trim_end(),
+        "failed to load data: cannot profile a binary file (contains NUL bytes; only CSV/TSV/JSON/NDJSON text files are supported)"
+    );
+    // 기본은 한국어
+    let ko = run_in(&w.join("cwd"), &["--cli", "--data", "missing.csv"]);
+    assert_eq!(ko.code, 1, "{}", ko.out);
+    assert!(
+        ko.err.starts_with("데이터 로드 실패: 파일을 열 수 없음: "),
+        "{}",
+        ko.err
+    );
+}
+
+/// `mcp`와 같지만 실행 인자를 직접 준다(예: `--mcp --lang en`).
+fn mcp_args(args: &[&str], input: &[u8]) -> Vec<serde_json::Value> {
+    let mut cmd = Command::new(BIN);
+    cmd.args(args);
+    let r = run_cmd_bytes(cmd, Some(input));
+    ok(&r);
+    r.out
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("JSON 아님: {l} ({e})")))
+        .collect()
+}
+
+#[test]
+fn s33_mcp_lang_en_bad_target_and_tool_text() {
+    let w = work("s33");
+    let csv = w.join("proj/d.csv");
+    let input = format!(
+        "{}\n{}\n{}\n{}\n",
+        tool_call(1, serde_json::json!({ "role": "r", "target": "llama" })),
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"no/such\"}",
+        tool_call(
+            3,
+            serde_json::json!({
+                "role": "Analyst", "target": "gpt",
+                "constraints": ["Detect outliers", "You must not detect outliers"],
+                "data_path": csv.display().to_string()
+            })
+        ),
+        "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/list\"}",
+    );
+    let en = mcp_args(&["--mcp", "--lang", "en"], input.as_bytes());
+    let ko = mcp(input.as_bytes());
+    assert_eq!((en.len(), ko.len()), (4, 4), "{en:?}");
+    assert_eq!(en[0]["error"]["code"], -32602, "{}", en[0]);
+    assert_eq!(
+        en[0]["error"]["message"],
+        "Invalid target: \"llama\" (expected one of claude/anthropic, gpt/openai, gemini/google)"
+    );
+    assert_eq!(en[1]["error"]["message"], "Method not found: no/such");
+    // 기본(--lang 없음)은 한국어 메시지
+    let ko_msg = ko[0]["error"]["message"].as_str().unwrap();
+    assert!(
+        ko_msg.starts_with("target 인자 값이 올바르지 않습니다") && ko_msg.contains("\"llama\""),
+        "{ko_msg}"
+    );
+    // 도구 결과: 프롬프트는 같고 lint 줄만 영어
+    let text = |v: &serde_json::Value| v["result"]["content"][0]["text"].as_str().unwrap().to_string();
+    let (en_text, ko_text) = (text(&en[2]), text(&ko[2]));
+    let (en_prompt, en_lint) = en_text.split_once("\n\n--- lint ---\n").unwrap();
+    let (ko_prompt, ko_lint) = ko_text.split_once("\n\n--- lint ---\n").unwrap();
+    assert_eq!(en_prompt, ko_prompt);
+    assert!(
+        en_prompt.starts_with("# Role") && en_prompt.contains("rows: 3"),
+        "{en_prompt}"
+    );
+    assert!(
+        en_lint.contains(
+            "[WARN] Removed contradicting instruction: \"Detect outliers\" ↔ \"You must not detect outliers\" (kept the later one)"
+        ),
+        "{en_lint}"
+    );
+    assert!(
+        !has_hangul(en_lint) && ko_lint.contains("모순 지시 자동제거"),
+        "{en_lint}"
+    );
+    assert_eq!(en[2]["result"]["isError"], false);
+    // tools/list(영어 설명)는 언어와 관계없다
+    assert_eq!(en[3], ko[3]);
+    let desc = en[3]["result"]["tools"][0]["description"].as_str().unwrap();
+    assert!(desc.starts_with("Lint and compress"), "{desc}");
 }

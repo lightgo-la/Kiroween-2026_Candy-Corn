@@ -1,13 +1,16 @@
 //! 단호박 할로윈 테마 7종 (디자인샘플 01~07). 상단 바에서 즉시 전환할 수 있다.
 
+use crate::i18n::Tr;
 use eframe::egui::{
     self, Color32, CornerRadius, Frame, Margin, Mesh, Painter, Pos2, Rect, RichText, Stroke, Ui, epaint::Shadow,
 };
 
 #[derive(Clone, Copy)]
 pub struct Palette {
-    pub name: &'static str,
-    pub tag: &'static str,
+    /// 테마 이름 (선택 목록에 보여 줄 때 `.get()`으로 현재 언어를 고른다)
+    pub name: Tr,
+    /// 로고 아래 영문 태그라인 (두 언어 모두 같은 문구)
+    pub tag: Tr,
     pub light: bool,
     pub fog: bool,
     pub bg: Color32,
@@ -28,8 +31,8 @@ const fn c(r: u8, g: u8, b: u8) -> Color32 {
 
 pub const THEMES: [Palette; 7] = [
     Palette {
-        name: "01 클래식 할로윈 나이트",
-        tag: "CLASSIC · NIGHT",
+        name: Tr("01 클래식 할로윈 나이트", "01 Classic Halloween"),
+        tag: Tr("CLASSIC · NIGHT", "CLASSIC · NIGHT"),
         light: false,
         fog: false,
         bg: c(0x14, 0x09, 0x1f),
@@ -44,8 +47,8 @@ pub const THEMES: [Palette; 7] = [
         on_accent: c(0x1a, 0x0b, 0x00),
     },
     Palette {
-        name: "02 잭오랜턴 글로우",
-        tag: "JACK · GLOW",
+        name: Tr("02 잭오랜턴 글로우", "02 Jack-o'-Lantern Glow"),
+        tag: Tr("JACK · GLOW", "JACK · GLOW"),
         light: false,
         fog: false,
         bg: c(0x07, 0x05, 0x07),
@@ -60,8 +63,8 @@ pub const THEMES: [Palette; 7] = [
         on_accent: c(0x12, 0x07, 0x00),
     },
     Palette {
-        name: "03 펌프킨패치 라이트",
-        tag: "PATCH · LIGHT",
+        name: Tr("03 펌프킨패치 라이트", "03 Pumpkin Patch Light"),
+        tag: Tr("PATCH · LIGHT", "PATCH · LIGHT"),
         light: true,
         fog: false,
         bg: c(0xff, 0xf6, 0xe8),
@@ -76,8 +79,8 @@ pub const THEMES: [Palette; 7] = [
         on_accent: Color32::WHITE,
     },
     Palette {
-        name: "04 프리미엄 느와르 오렌지",
-        tag: "NOIR · ORANGE · PUMPKIN",
+        name: Tr("04 프리미엄 느와르 오렌지", "04 Premium Noir"),
+        tag: Tr("NOIR · ORANGE · PUMPKIN", "NOIR · ORANGE · PUMPKIN"),
         light: false,
         fog: false,
         bg: c(0x0b, 0x09, 0x07),
@@ -92,8 +95,8 @@ pub const THEMES: [Palette; 7] = [
         on_accent: c(0x1a, 0x0f, 0x02),
     },
     Palette {
-        name: "05 프리미엄 벨벳 오렌지",
-        tag: "VELVET · ORANGE · PUMPKIN",
+        name: Tr("05 프리미엄 벨벳 오렌지", "05 Premium Velvet"),
+        tag: Tr("VELVET · ORANGE · PUMPKIN", "VELVET · ORANGE · PUMPKIN"),
         light: false,
         fog: false,
         bg: c(0x12, 0x07, 0x09),
@@ -108,8 +111,8 @@ pub const THEMES: [Palette; 7] = [
         on_accent: c(0x22, 0x0a, 0x00),
     },
     Palette {
-        name: "06 안개 묘지 오렌지",
-        tag: "MIST · GRAVEYARD · EMBER",
+        name: Tr("06 안개 묘지 오렌지", "06 Misty Graveyard"),
+        tag: Tr("MIST · GRAVEYARD · EMBER", "MIST · GRAVEYARD · EMBER"),
         light: false,
         fog: true,
         bg: c(0x2b, 0x17, 0x09),
@@ -124,8 +127,8 @@ pub const THEMES: [Palette; 7] = [
         on_accent: c(0x1a, 0x09, 0x00),
     },
     Palette {
-        name: "07 안개 유령저택 오렌지",
-        tag: "MIST · MANOR · EMBER",
+        name: Tr("07 안개 유령저택 오렌지", "07 Misty Haunted Manor"),
+        tag: Tr("MIST · MANOR · EMBER", "MIST · MANOR · EMBER"),
         light: false,
         fog: true,
         bg: c(0x34, 0x12, 0x0a),
@@ -389,5 +392,25 @@ mod tests {
         assert_eq!(fog_repaint(fog, false, true), None); // 안개 효과 끔
         assert_eq!(fog_repaint(fog, true, false), None); // 포커스 없음
         assert_eq!(fog_repaint(plain, true, true), None);
+    }
+
+    #[test]
+    fn theme_names_and_tags_exist_in_both_languages() {
+        use crate::i18n::{Lang, with_lang};
+        let hangul = |s: &str| s.chars().any(|c| ('가'..='힣').contains(&c));
+        for (i, t) in THEMES.iter().enumerate() {
+            let number = format!("{:02} ", i + 1);
+            for s in [t.name.ko(), t.name.en(), t.tag.ko(), t.tag.en()] {
+                assert!(!s.trim().is_empty(), "{i}");
+            }
+            // 번호는 두 언어에서 같고(--theme 1~7, 블루프린트 theme 번호와 맞는다), 영어 문구에는 한글이 없다
+            assert!(
+                t.name.ko().starts_with(&number) && t.name.en().starts_with(&number),
+                "{i}"
+            );
+            assert!(!hangul(t.name.en()) && !hangul(t.tag.en()), "{}", t.name.en());
+            assert_eq!(with_lang(Lang::En, || t.name.get()), t.name.en());
+            assert_eq!(with_lang(Lang::Ko, || t.name.get()), t.name.ko());
+        }
     }
 }

@@ -6,6 +6,7 @@
 
 use super::exec::{self, Event, RunOptions, RunReport};
 use super::graph::{Edge, Graph, Node, NodeKind, PromptFormat, PromptTarget, Provider, TestSpec};
+use crate::i18n::{self, Lang};
 use eframe::egui::{self, Align2, Color32, FontId, Id, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, pos2, vec2};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -68,13 +69,15 @@ enum Done {
     Error(String),
 }
 
-/// 파일 대화상자나 그래프 교체는 UI 패스 안에서 하지 않고 프레임 끝으로 미룬다.
+/// 파일 대화상자나 그래프 교체, 언어 전환은 UI 패스 안에서 하지 않고 프레임 끝으로 미룬다.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Deferred {
     New,
     Open,
     Save,
     SaveAs,
+    /// 화면 전체가 다음 프레임부터 한 언어로 그려지도록 프레임 끝에서 바꾼다.
+    Language(Lang),
 }
 
 fn apply_event(runs: &mut HashMap<u32, NodeRun>, e: Event) {
@@ -181,26 +184,57 @@ impl RunBoard {
     }
 }
 
+/// 개수 앞뒤에 붙는 "노드". 영어는 1개면 단수형이다.
+fn nodes_word(n: usize) -> &'static str {
+    if n == 1 {
+        tr!("노드", "node")
+    } else {
+        tr!("노드", "nodes")
+    }
+}
+
 fn flow_status(rep: &RunReport) -> (String, bool) {
     let failed = rep.errors.len();
+    let failed_text = || {
+        trf!(
+            "{failed}개 {nodes} 실패",
+            "{failed} {nodes} failed",
+            nodes = nodes_word(failed)
+        )
+    };
     if rep.cancelled {
-        let mut s = format!("중지됨 · 노드 {}개 건너뜀", rep.skipped.len());
+        let skipped = rep.skipped.len();
+        let mut s = trf!(
+            "중지됨 · {nodes} {skipped}개 건너뜀",
+            "Stopped · {skipped} {nodes} skipped",
+            nodes = nodes_word(skipped)
+        );
         if failed > 0 {
-            s += &format!(" · {failed}개 노드 실패");
+            s += " · ";
+            s += &failed_text();
         }
         return (s, failed > 0);
     }
     if failed > 0 {
-        return (format!("{failed}개 노드 실패"), true);
+        return (failed_text(), true);
     }
     let warns = rep.notes.values().filter(|n| n.starts_with('⚠')).count();
+    let ms = rep.total_ms;
     if warns > 0 {
+        let word = if warns == 1 {
+            tr!("경고", "warning")
+        } else {
+            tr!("경고", "warnings")
+        };
         (
-            format!("완료 ({} ms) · ⚠ 경고 {warns}건 (노드 상태 참고)", rep.total_ms),
+            trf!(
+                "완료 ({ms} ms) · ⚠ {word} {warns}건 (노드 상태 참고)",
+                "Done ({ms} ms) · ⚠ {warns} {word} (see the node status)"
+            ),
             false,
         )
     } else {
-        (format!("완료 ({} ms)", rep.total_ms), false)
+        (trf!("완료 ({ms} ms)", "Done ({ms} ms)"), false)
     }
 }
 
@@ -208,11 +242,38 @@ fn tests_status(results: &[Option<TestResult>], cancelled: bool) -> (String, boo
     let pass = results.iter().flatten().filter(|r| r.pass).count();
     let done = results.iter().flatten().count();
     let text = if cancelled {
-        format!("테스트 중지됨 ({pass}/{done} 통과)")
+        trf!(
+            "테스트 중지됨 ({pass}/{done} 통과)",
+            "Tests stopped ({pass}/{done} passed)"
+        )
     } else {
-        format!("테스트 {pass}/{done} 통과")
+        trf!("테스트 {pass}/{done} 통과", "Tests: {pass}/{done} passed")
     };
     (text, pass != done)
+}
+
+/// 실행 중에 열기를 막을 때의 상태 줄 문구(열기 대화상자와 파일 열기가 같이 쓴다).
+fn open_while_running() -> &'static str {
+    tr!(
+        "실행 중에는 파일을 열 수 없습니다 (■ 중지를 누르면 바로 열 수 있습니다)",
+        "Cannot open a file while running (press ■ Stop to open it right away)"
+    )
+}
+
+/// 언어를 바꾼 뒤 상태 줄 문구(바뀐 언어로 쓴다). 설정 파일 저장에 실패하면 오류로 알린다.
+/// 저장에 실패해도 이번 실행은 바뀐 언어로 계속한다.
+fn language_status(lang: Lang, saved: Result<(), String>) -> (String, bool) {
+    let name = lang.native_name();
+    match saved {
+        Ok(()) => (trf!("언어: {name}", "Language: {name}"), false),
+        Err(e) => (
+            trf!(
+                "언어: {name} · 설정을 저장하지 못했습니다: {e}",
+                "Language: {name} · could not save the setting: {e}"
+            ),
+            true,
+        ),
+    }
 }
 
 /// 워커 스레드가 UI로 메시지를 보내는 통로.
@@ -232,8 +293,9 @@ impl Reporter {
 /// 작업이 패닉해도 `Finished`가 반드시 가게 해서 실행 중 상태가 남지 않게 한다.
 fn run_guarded(rep: &Reporter, job: impl FnOnce(&Reporter)) {
     if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(rep))) {
-        rep.send(Msg::Finished(Done::Error(format!(
+        rep.send(Msg::Finished(Done::Error(trf!(
             "실행 중 내부 오류: {}",
+            "Internal error during the run: {}",
             exec::panic_text(e)
         ))));
     }
@@ -293,7 +355,10 @@ fn judge_case(g: &Graph, r: &RunReport, expect: &str) -> TestResult {
     let ok = r.ok();
     let pass = ok && (expect.is_empty() || r.final_text.contains(expect));
     if ok && !pass {
-        error = format!("출력에 '{expect}' 가 없습니다");
+        error = trf!(
+            "출력에 '{expect}' 가 없습니다",
+            "The output does not contain '{expect}'"
+        );
     }
     TestResult {
         pass,
@@ -324,14 +389,21 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     })
 }
 
+/// 처음 열 때 보여 주는 예제 그래프. 내용은 만들 때의 언어로 쓰고, 두 번째 테스트 케이스는 다른 언어로 묻는다.
 fn sample_graph() -> Graph {
+    const QUESTION_KO: &str = "3분기 매출이 급감한 원인을 분석해줘"; // i18n-data
+    const QUESTION_EN: &str = "Why did Q3 revenue drop?";
     let node = |id: u32, kind: NodeKind| Node {
         id,
         title: format!("{} {}", kind.label(), id),
         pos: [0.0; 2],
         kind,
     };
-    let question = "3분기 매출이 급감한 원인을 분석해줘";
+    let (question, other) = if i18n::is_en() {
+        (QUESTION_EN, QUESTION_KO)
+    } else {
+        (QUESTION_KO, QUESTION_EN)
+    };
     let mut g = Graph {
         nodes: vec![
             node(1, NodeKind::Text { text: question.into() }),
@@ -346,13 +418,13 @@ fn sample_graph() -> Graph {
         ],
         tests: vec![
             TestSpec {
-                name: "기본".into(),
+                name: tr!("기본", "Basic").into(),
                 input: question.into(),
                 expect: "dry-run".into(),
             },
             TestSpec {
-                name: "영문 입력".into(),
-                input: "Why did Q3 revenue drop?".into(),
+                name: tr!("영문 입력", "Korean input").into(),
+                input: other.into(),
                 expect: String::new(),
             },
         ],
@@ -397,7 +469,7 @@ fn status_view(run: Option<&NodeRun>) -> StatusView {
         RunState::Idle => idle(),
         RunState::Running => StatusView {
             border: AMBER,
-            badge: "실행 중…".into(),
+            badge: tr!("실행 중…", "Running…").into(),
             ..idle()
         },
         RunState::Done { ms, note } => {
@@ -412,14 +484,14 @@ fn status_view(run: Option<&NodeRun>) -> StatusView {
         }
         RunState::Failed(e) => StatusView {
             border: Color32::from_rgb(220, 70, 70),
-            badge: "✖ 실패".into(),
+            badge: tr!("✖ 실패", "✖ Failed").into(),
             detail: clip(e.lines().next().unwrap_or_default(), DETAIL_CHARS),
             detail_color: RED,
             tooltip: Some(e.clone()),
         },
         RunState::Skipped => StatusView {
             border: Color32::from_gray(110),
-            badge: "건너뜀".into(),
+            badge: tr!("건너뜀", "Skipped").into(),
             ..idle()
         },
     }
@@ -472,7 +544,7 @@ impl CanvasApp {
             cancel: Arc::new(AtomicBool::new(false)),
             allow_mcp: false,
             allow_custom_endpoint: false,
-            status: "준비됨".into(),
+            status: tr!("준비됨", "Ready").into(),
             status_err: false,
             deferred: None,
             tx,
@@ -535,7 +607,10 @@ impl CanvasApp {
     /// 그래프를 바꾼 뒤 상태 줄에 덧붙일 말. 중지 중이던 실행을 버렸으면 알린다.
     fn abandoned_note(&self) -> &'static str {
         if self.board.running {
-            " · 중지 중이던 실행의 결과는 버립니다"
+            tr!(
+                " · 중지 중이던 실행의 결과는 버립니다",
+                " · results of the run being stopped are discarded"
+            )
         } else {
             ""
         }
@@ -544,22 +619,22 @@ impl CanvasApp {
     fn new_graph(&mut self, ctx: &egui::Context) {
         if !self.can_replace_graph() {
             self.set_status(
-                "실행 중에는 새로 만들 수 없습니다 (■ 중지를 누르면 바로 할 수 있습니다)",
+                tr!(
+                    "실행 중에는 새로 만들 수 없습니다 (■ 중지를 누르면 바로 할 수 있습니다)",
+                    "Cannot create a new graph while running (press ■ Stop to do it right away)"
+                ),
                 true,
             );
             return;
         }
         let note = self.abandoned_note();
         self.install(Graph::default(), None, ctx);
-        self.set_status(format!("새 그래프{note}"), false);
+        self.set_status(trf!("새 그래프{note}", "New graph{note}"), false);
     }
 
     fn load(&mut self, p: PathBuf, ctx: &egui::Context) {
         if !self.can_replace_graph() {
-            self.set_status(
-                "실행 중에는 파일을 열 수 없습니다 (■ 중지를 누르면 바로 열 수 있습니다)",
-                true,
-            );
+            self.set_status(open_while_running(), true);
             return;
         }
         match std::fs::read_to_string(&p)
@@ -567,11 +642,11 @@ impl CanvasApp {
             .and_then(|s| Graph::from_json(&s))
         {
             Ok(g) => {
-                let msg = format!("불러옴: {}{}", p.display(), self.abandoned_note());
+                let msg = trf!("불러옴: {}{}", "Opened: {}{}", p.display(), self.abandoned_note());
                 self.install(g, Some(p), ctx);
                 self.set_status(msg, false);
             }
-            Err(e) => self.set_status(format!("불러오기 실패: {e}"), true),
+            Err(e) => self.set_status(trf!("불러오기 실패: {e}", "Failed to open: {e}"), true),
         }
     }
 
@@ -618,10 +693,10 @@ impl CanvasApp {
         let Some(p) = target else { return };
         match self.graph.to_json().and_then(|s| write_atomic(&p, &s)) {
             Ok(()) => {
-                self.set_status(format!("저장됨: {}", p.display()), false);
+                self.set_status(trf!("저장됨: {}", "Saved: {}", p.display()), false);
                 self.path = Some(p);
             }
-            Err(e) => self.set_status(format!("저장 실패: {e}"), true),
+            Err(e) => self.set_status(trf!("저장 실패: {e}", "Failed to save: {e}"), true),
         }
     }
 
@@ -631,17 +706,27 @@ impl CanvasApp {
             Deferred::New => self.new_graph(ctx),
             Deferred::Open => {
                 if !self.can_replace_graph() {
-                    self.set_status(
-                        "실행 중에는 파일을 열 수 없습니다 (■ 중지를 누르면 바로 열 수 있습니다)",
-                        true,
-                    );
+                    self.set_status(open_while_running(), true);
                 } else if let Some(p) = self.pick_open_path() {
                     self.load(p, ctx);
                 }
             }
             Deferred::Save => self.save(false),
             Deferred::SaveAs => self.save(true),
+            Deferred::Language(lang) => self.switch_language(lang, ctx),
         }
+    }
+
+    /// 화면 언어를 바꾸고 설정 파일에 저장한다(스튜디오와 같은 설정이라 다음 실행에도 쓴다).
+    /// 고정 문구는 다음 프레임부터 새 언어로 그려진다. 노드에 적힌 글자는 사용자 내용이라 그대로 둔다.
+    fn switch_language(&mut self, lang: Lang, ctx: &egui::Context) {
+        if lang == i18n::current() {
+            return;
+        }
+        i18n::set(lang);
+        let (text, err) = language_status(lang, i18n::save_default(lang));
+        self.set_status(text, err);
+        ctx.request_repaint();
     }
 
     // ---------- 편집 ----------
@@ -665,7 +750,10 @@ impl CanvasApp {
             Ok(copy) => {
                 self.selected = Some(copy);
                 self.set_status(
-                    format!("노드 {id}을(를) {copy}(으)로 복제했습니다 (연결은 복사되지 않습니다)"),
+                    trf!(
+                        "노드 {id}을(를) {copy}(으)로 복제했습니다 (연결은 복사되지 않습니다)",
+                        "Duplicated node {id} as {copy} (connections are not copied)"
+                    ),
                     false,
                 );
             }
@@ -675,7 +763,13 @@ impl CanvasApp {
 
     fn delete_node(&mut self, id: u32) {
         if self.board.running {
-            self.set_status("실행 중에는 노드를 삭제할 수 없습니다", true);
+            self.set_status(
+                tr!(
+                    "실행 중에는 노드를 삭제할 수 없습니다",
+                    "Cannot delete nodes while running"
+                ),
+                true,
+            );
             return;
         }
         self.graph.remove_node(id);
@@ -703,7 +797,7 @@ impl CanvasApp {
         match self.graph.auto_layout() {
             Ok(()) => {
                 self.want_fit = true;
-                self.set_status("자동 정렬했습니다", false);
+                self.set_status(tr!("자동 정렬했습니다", "Nodes rearranged"), false);
             }
             Err(e) => self.set_status(e, true),
         }
@@ -716,7 +810,7 @@ impl CanvasApp {
             return None;
         }
         if self.graph.nodes.is_empty() {
-            self.set_status("실행할 노드가 없습니다", true);
+            self.set_status(tr!("실행할 노드가 없습니다", "There are no nodes to run"), true);
             return None;
         }
         if let Err(e) = self.graph.topo_order() {
@@ -751,7 +845,13 @@ impl CanvasApp {
             .spawn(move || run_guarded(&rep, job));
         if let Err(e) = started {
             self.board.running = false;
-            self.set_status(format!("실행 스레드를 만들지 못했습니다: {e}"), true);
+            self.set_status(
+                trf!(
+                    "실행 스레드를 만들지 못했습니다: {e}",
+                    "Could not start the run thread: {e}"
+                ),
+                true,
+            );
         }
     }
 
@@ -759,7 +859,7 @@ impl CanvasApp {
         let Some((generation, cancel)) = self.begin_run() else {
             return;
         };
-        self.set_status("실행 중…", false);
+        self.set_status(tr!("실행 중…", "Running…"), false);
         let (g, opts) = (self.graph.clone(), self.run_options(cancel));
         self.spawn(ctx, generation, move |rep| flow_job(rep, &g, &opts));
     }
@@ -767,7 +867,13 @@ impl CanvasApp {
     /// `only`가 Some이면 해당 케이스만, None이면 전부 순차 실행한다.
     fn run_tests(&mut self, only: Option<usize>, ctx: &egui::Context) {
         let Some(entry) = self.graph.test_node else {
-            self.set_status("테스트 입력으로 쓸 Text 노드가 없습니다", true);
+            self.set_status(
+                tr!(
+                    "테스트 입력으로 쓸 Text 노드가 없습니다",
+                    "There is no Text node to take the test input"
+                ),
+                true,
+            );
             return;
         };
         let count = self.graph.tests.len();
@@ -777,7 +883,7 @@ impl CanvasApp {
             None => (0..count).collect(),
         };
         if idxs.is_empty() {
-            self.set_status("테스트 케이스가 없습니다", true);
+            self.set_status(tr!("테스트 케이스가 없습니다", "There are no test cases"), true);
             return;
         }
         let Some((generation, cancel)) = self.begin_run() else {
@@ -788,7 +894,7 @@ impl CanvasApp {
                 *slot = None;
             }
         }
-        self.set_status("테스트 실행 중…", false);
+        self.set_status(tr!("테스트 실행 중…", "Running tests…"), false);
         let cases: Vec<(usize, TestSpec)> = idxs.iter().map(|&i| (i, self.graph.tests[i].clone())).collect();
         let (g, opts) = (self.graph.clone(), self.run_options(cancel));
         self.spawn(ctx, generation, move |rep| tests_job(rep, &g, entry, &cases, &opts));
@@ -799,7 +905,10 @@ impl CanvasApp {
             self.cancel.store(true, Ordering::Relaxed);
             self.board.cancelling = true;
             self.set_status(
-                "중지하는 중… 실행 중인 노드가 끝나면 멈춥니다 (새로 만들기·열기는 바로 할 수 있습니다)",
+                tr!(
+                    "중지하는 중… 실행 중인 노드가 끝나면 멈춥니다 (새로 만들기·열기는 바로 할 수 있습니다)",
+                    "Stopping… the run halts when the running node finishes (New and Open work right away)"
+                ),
                 false,
             );
         }
@@ -832,33 +941,36 @@ impl CanvasApp {
     fn top_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let running = self.board.running;
         let replaceable = self.can_replace_graph();
-        const BUSY: &str = "실행 중에는 쓸 수 없습니다. ■ 중지를 누르면 바로 쓸 수 있습니다";
+        let busy = tr!(
+            "실행 중에는 쓸 수 없습니다. ■ 중지를 누르면 바로 쓸 수 있습니다",
+            "Not available while running. Press ■ Stop to use it right away"
+        );
         ui.horizontal_wrapped(|ui| {
             if ui
-                .add_enabled(replaceable, egui::Button::new("새로 만들기"))
-                .on_disabled_hover_text(BUSY)
+                .add_enabled(replaceable, egui::Button::new(tr!("새로 만들기", "New")))
+                .on_disabled_hover_text(busy)
                 .clicked()
             {
                 self.deferred = Some(Deferred::New);
             }
             if ui
-                .add_enabled(replaceable, egui::Button::new("열기"))
-                .on_disabled_hover_text(BUSY)
+                .add_enabled(replaceable, egui::Button::new(tr!("열기", "Open")))
+                .on_disabled_hover_text(busy)
                 .clicked()
             {
                 self.deferred = Some(Deferred::Open);
             }
-            if ui.button("저장").clicked() {
+            if ui.button(tr!("저장", "Save")).clicked() {
                 self.deferred = Some(Deferred::Save);
             }
-            if ui.button("다른 이름으로").clicked() {
+            if ui.button(tr!("다른 이름으로", "Save as")).clicked() {
                 self.deferred = Some(Deferred::SaveAs);
             }
             ui.separator();
-            ui.menu_button("＋ 노드 추가", |ui| {
+            ui.menu_button(tr!("＋ 노드 추가", "＋ Add node"), |ui| {
                 let kinds: [(&str, NodeCtor); 5] = [
-                    ("Text (입력)", NodeKind::new_text),
-                    ("Prompt (컴파일러)", NodeKind::new_prompt),
+                    (tr!("Text (입력)", "Text (input)"), NodeKind::new_text),
+                    (tr!("Prompt (컴파일러)", "Prompt (compiler)"), NodeKind::new_prompt),
                     ("LLM API", NodeKind::new_llm),
                     ("MCP Tool", NodeKind::new_mcp),
                     ("Output", || NodeKind::Output),
@@ -871,49 +983,71 @@ impl CanvasApp {
                 }
             });
             if ui
-                .add_enabled(self.selected.is_some(), egui::Button::new("복제"))
-                .on_hover_text("선택한 노드를 복제합니다 (Ctrl+D). 연결은 복사되지 않습니다")
+                .add_enabled(self.selected.is_some(), egui::Button::new(tr!("복제", "Duplicate")))
+                .on_hover_text(tr!(
+                    "선택한 노드를 복제합니다 (Ctrl+D). 연결은 복사되지 않습니다",
+                    "Duplicates the selected node (Ctrl+D). Connections are not copied"
+                ))
                 .clicked()
             {
                 self.duplicate_selected();
             }
             if ui
-                .button("자동 정렬")
-                .on_hover_text("연결 순서대로 왼쪽에서 오른쪽으로 노드를 다시 배치합니다")
+                .button(tr!("자동 정렬", "Auto layout"))
+                .on_hover_text(tr!(
+                    "연결 순서대로 왼쪽에서 오른쪽으로 노드를 다시 배치합니다",
+                    "Rearranges the nodes from left to right in connection order"
+                ))
                 .clicked()
             {
                 self.auto_layout();
             }
             if ui
-                .button("화면 맞춤")
-                .on_hover_text("모든 노드가 보이게 확대·이동합니다 (휠: 이동, Ctrl+휠: 확대/축소)")
+                .button(tr!("화면 맞춤", "Fit view"))
+                .on_hover_text(tr!(
+                    "모든 노드가 보이게 확대·이동합니다 (휠: 이동, Ctrl+휠: 확대/축소)",
+                    "Zooms and pans so that every node is visible (wheel: pan, Ctrl+wheel: zoom)"
+                ))
                 .clicked()
             {
                 self.want_fit = true;
             }
             ui.separator();
-            ui.checkbox(&mut self.allow_mcp, "MCP 실행 허용")
-                .on_hover_text("MCP 노드는 지정한 명령을 로컬에서 실행합니다. 신뢰하는 그래프에서만 켜세요.");
-            ui.checkbox(&mut self.allow_custom_endpoint, "사용자 지정 엔드포인트 허용")
-                .on_hover_text(
-                    "LLM 노드의 Base URL이 제공자 기본 주소와 다르면 API 키가 그 주소로 전송됩니다. \
-                     신뢰하는 그래프에서만 켜세요. https만 허용하며 localhost는 http도 됩니다.",
-                );
+            ui.checkbox(&mut self.allow_mcp, tr!("MCP 실행 허용", "Allow MCP execution"))
+                .on_hover_text(tr!(
+                    "MCP 노드는 지정한 명령을 로컬에서 실행합니다. 신뢰하는 그래프에서만 켜세요.",
+                    "MCP nodes run their command on this computer. Turn this on only for graphs you trust."
+                ));
+            ui.checkbox(
+                &mut self.allow_custom_endpoint,
+                tr!("사용자 지정 엔드포인트 허용", "Allow custom endpoint"),
+            )
+            .on_hover_text(tr!(
+                "LLM 노드의 Base URL이 제공자 기본 주소와 다르면 API 키가 그 주소로 전송됩니다. \
+                 신뢰하는 그래프에서만 켜세요. https만 허용하며 localhost는 http도 됩니다.",
+                "If an LLM node's Base URL differs from the provider's default address, the API key is sent \
+                 to that address. Turn this on only for graphs you trust. Only https is allowed, plus http \
+                 for localhost."
+            ));
             if running {
                 if ui
-                    .add_enabled(!self.board.cancelling, egui::Button::new("■ 중지"))
-                    .on_hover_text(
+                    .add_enabled(!self.board.cancelling, egui::Button::new(tr!("■ 중지", "■ Stop")))
+                    .on_hover_text(tr!(
                         "실행 중인 노드가 끝나면 남은 노드를 건너뛰고 멈춥니다. 누른 뒤에는 기다리지 않고 \
                          새로 만들기·열기를 할 수 있습니다",
-                    )
+                        "Stops once the running node finishes and skips the remaining nodes. After pressing \
+                         it you can use New and Open without waiting"
+                    ))
                     .clicked()
                 {
                     self.request_cancel();
                 }
                 ui.spinner();
-            } else if ui.button("▶ 전체 실행").clicked() {
+            } else if ui.button(tr!("▶ 전체 실행", "▶ Run all")).clicked() {
                 self.run_flow(ctx);
             }
+            ui.separator();
+            self.language_picker(ui);
             ui.separator();
             let color = if self.status_err {
                 RED
@@ -928,6 +1062,28 @@ impl CanvasApp {
                 label.on_hover_text(&self.status);
             }
         });
+    }
+
+    /// 상단 막대의 언어 선택. 고르면 프레임 끝에서 바꾼다(`Deferred::Language`).
+    fn language_picker(&mut self, ui: &mut egui::Ui) {
+        let current = i18n::current();
+        let mut picked = current;
+        ui.label(tr!("언어", "Language"));
+        egui::ComboBox::from_id_salt("canvas_lang")
+            .selected_text(current.native_name())
+            .show_ui(ui, |ui| {
+                for lang in Lang::ALL {
+                    ui.selectable_value(&mut picked, lang, lang.native_name());
+                }
+            })
+            .response
+            .on_hover_text(tr!(
+                "화면 언어 (다음 실행에도 쓰도록 설정에 저장합니다)",
+                "Display language (saved in the settings for next time)"
+            ));
+        if picked != current {
+            self.deferred = Some(Deferred::Language(picked));
+        }
     }
 
     fn canvas(&mut self, ui: &mut egui::Ui) {
@@ -951,7 +1107,7 @@ impl CanvasApp {
             ui.painter().text(
                 area.center(),
                 Align2::CENTER_CENTER,
-                "‘＋ 노드 추가’로 시작하세요",
+                tr!("‘＋ 노드 추가’로 시작하세요", "Start with ‘＋ Add node’"),
                 FontId::proportional(16.0),
                 Color32::from_gray(120),
             );
@@ -988,11 +1144,14 @@ impl CanvasApp {
                 self.selected = Some(id);
             }
             r.context_menu(|ui| {
-                if ui.button("복제").clicked() {
+                if ui.button(tr!("복제", "Duplicate")).clicked() {
                     duplicate = Some(id);
                     ui.close();
                 }
-                if ui.add_enabled(!running, egui::Button::new("삭제")).clicked() {
+                if ui
+                    .add_enabled(!running, egui::Button::new(tr!("삭제", "Delete")))
+                    .clicked()
+                {
                     delete = Some(id);
                     ui.close();
                 }
@@ -1050,7 +1209,7 @@ impl CanvasApp {
                 FontId::proportional(11.0),
                 Color32::WHITE,
             );
-            if r.on_hover_text("연결 삭제").clicked() {
+            if r.on_hover_text(tr!("연결 삭제", "Delete connection")).clicked() {
                 remove_edge = Some(i);
             }
         }
@@ -1184,17 +1343,23 @@ impl CanvasApp {
 
     fn inspector(&mut self, ui: &mut egui::Ui) {
         let Some(id) = self.selected else {
-            ui.label(
+            ui.label(tr!(
                 "노드를 선택하면 설정이 표시됩니다.\n\n\
                  • 출력 포트(●)를 입력 쪽 노드로 드래그해 연결\n\
                  • 간선 중앙의 × 클릭으로 연결 삭제\n\
                  • 우클릭 메뉴 또는 Delete로 삭제, Ctrl+D로 복제\n\
                  • 빈 곳 드래그·휠로 이동, Ctrl+휠로 확대/축소\n\
                  • '화면 맞춤', '자동 정렬' 버튼으로 배치 정리",
-            );
+                "Select a node to see its settings.\n\n\
+                 • Drag an output port (●) onto a node to connect them\n\
+                 • Click the × in the middle of an edge to delete it\n\
+                 • Delete with the right-click menu or Delete, duplicate with Ctrl+D\n\
+                 • Drag empty space or use the wheel to pan, Ctrl+wheel to zoom\n\
+                 • Tidy up with the 'Fit view' and 'Auto layout' buttons"
+            ));
             if !self.board.final_text.is_empty() {
                 ui.separator();
-                ui.label(RichText::new("최종 출력").strong());
+                ui.label(RichText::new(tr!("최종 출력", "Final output")).strong());
                 readonly_box(ui, "final_out", &self.board.final_text);
             }
             return;
@@ -1213,15 +1378,16 @@ impl CanvasApp {
         ui.push_id(id, |ui| {
             egui::ScrollArea::vertical().id_salt("inspector").show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("이름");
+                    ui.label(tr!("이름", "Name"));
                     ui.text_edit_singleline(&mut node.title);
                 });
                 ui.label(
-                    RichText::new(format!(
+                    RichText::new(trf!(
                         "종류: {}   입력: {}",
+                        "Kind: {}   Inputs: {}",
                         node.kind.label(),
                         if ups.is_empty() {
-                            "없음".into()
+                            tr!("없음", "none").into()
                         } else {
                             ups.join(", ")
                         }
@@ -1231,7 +1397,7 @@ impl CanvasApp {
                 ui.separator();
                 match &mut node.kind {
                     NodeKind::Text { text } => {
-                        ui.label("텍스트");
+                        ui.label(tr!("텍스트", "Text"));
                         ui.add(
                             egui::TextEdit::multiline(text)
                                 .desired_rows(6)
@@ -1246,20 +1412,23 @@ impl CanvasApp {
                         format,
                         data_path,
                     } => {
-                        ui.label("지시문 ({{input}} = 업스트림 출력)");
+                        ui.label(tr!(
+                            "지시문 ({{input}} = 업스트림 출력)",
+                            "Instruction ({{input}} = upstream output)"
+                        ));
                         ui.add(
                             egui::TextEdit::multiline(role)
                                 .desired_rows(5)
                                 .desired_width(f32::INFINITY),
                         );
-                        ui.label("제약 조건 (한 줄에 하나)");
+                        ui.label(tr!("제약 조건 (한 줄에 하나)", "Constraints (one per line)"));
                         ui.add(
                             egui::TextEdit::multiline(constraints)
                                 .desired_rows(4)
                                 .desired_width(f32::INFINITY),
                         );
                         ui.horizontal(|ui| {
-                            ui.label("필수 필드");
+                            ui.label(tr!("필수 필드", "Required fields"));
                             ui.text_edit_singleline(fields);
                         });
                         ui.horizontal(|ui| {
@@ -1279,10 +1448,16 @@ impl CanvasApp {
                                 });
                         });
                         ui.horizontal(|ui| {
-                            ui.label("데이터 파일");
+                            ui.label(tr!("데이터 파일", "Data file"));
                             ui.text_edit_singleline(data_path);
                         });
-                        ui.label(RichText::new("상대 경로는 그래프 파일이 있는 폴더 기준입니다").weak());
+                        ui.label(
+                            RichText::new(tr!(
+                                "상대 경로는 그래프 파일이 있는 폴더 기준입니다",
+                                "Relative paths start from the graph file's folder"
+                            ))
+                            .weak(),
+                        );
                     }
                     NodeKind::Llm {
                         provider,
@@ -1311,18 +1486,20 @@ impl CanvasApp {
                             }
                         }
                         ui.horizontal(|ui| {
-                            ui.label("모델");
+                            ui.label(tr!("모델", "Model"));
                             ui.text_edit_singleline(model);
                         });
                         ui.horizontal(|ui| {
-                            ui.label("키 환경변수");
+                            ui.label(tr!("키 환경변수", "Key env var"));
                             ui.text_edit_singleline(key_env);
                         });
                         if !exec::valid_key_env(key_env.trim()) {
                             ui.colored_label(
                                 RED,
-                                format!(
+                                trf!(
                                     "키 환경변수 이름은 영문 대문자·숫자·밑줄이고 _API_KEY로 끝나야 합니다 (예: {})",
+                                    "The key variable name must use uppercase letters, digits and underscores \
+                                     and end with _API_KEY (e.g. {})",
                                     provider.default_key_env()
                                 ),
                             );
@@ -1346,7 +1523,7 @@ impl CanvasApp {
                                 .prefix("max_tokens "),
                         );
                         let mut use_t = temperature.is_some();
-                        ui.checkbox(&mut use_t, "temperature 지정");
+                        ui.checkbox(&mut use_t, tr!("temperature 지정", "Set temperature"));
                         match (use_t, temperature.is_some()) {
                             (true, false) => *temperature = Some(0.7),
                             (false, true) => *temperature = None,
@@ -1355,9 +1532,18 @@ impl CanvasApp {
                         if let Some(t) = temperature.as_mut() {
                             ui.add(egui::Slider::new(t, 0.0..=provider.temperature_max()));
                         }
-                        ui.checkbox(dry_run, "Dry-run (네트워크 호출 안 함)");
+                        ui.checkbox(
+                            dry_run,
+                            tr!("Dry-run (네트워크 호출 안 함)", "Dry-run (no network calls)"),
+                        );
                         if !*dry_run {
-                            ui.colored_label(AMBER, "실제 API가 호출되며 비용이 발생합니다.");
+                            ui.colored_label(
+                                AMBER,
+                                tr!(
+                                    "실제 API가 호출되며 비용이 발생합니다.",
+                                    "The real API will be called and you will be charged."
+                                ),
+                            );
                         }
                     }
                     NodeKind::Mcp {
@@ -1367,19 +1553,28 @@ impl CanvasApp {
                         arguments,
                     } => {
                         ui.horizontal(|ui| {
-                            ui.label("명령");
+                            ui.label(tr!("명령", "Command"));
                             ui.text_edit_singleline(command);
                         });
                         ui.horizontal(|ui| {
-                            ui.label("인자");
+                            ui.label(tr!("인자", "Arguments"));
                             ui.text_edit_singleline(args);
                         });
-                        ui.label(RichText::new("예: 명령 cmd / 인자 /c npx -y 패키지명 (Windows의 npx)").weak());
+                        ui.label(
+                            RichText::new(tr!(
+                                "예: 명령 cmd / 인자 /c npx -y 패키지명 (Windows의 npx)",
+                                "e.g. command cmd / arguments /c npx -y package-name (npx on Windows)"
+                            ))
+                            .weak(),
+                        );
                         ui.horizontal(|ui| {
-                            ui.label("도구 이름");
+                            ui.label(tr!("도구 이름", "Tool name"));
                             ui.text_edit_singleline(tool);
                         });
-                        ui.label("arguments (JSON, {{input}} 치환)");
+                        ui.label(tr!(
+                            "arguments (JSON, {{input}} 치환)",
+                            "arguments (JSON, {{input}} is replaced)"
+                        ));
                         ui.add(
                             egui::TextEdit::multiline(arguments)
                                 .code_editor()
@@ -1388,7 +1583,10 @@ impl CanvasApp {
                         );
                     }
                     NodeKind::Output => {
-                        ui.label("연결된 입력을 최종 결과로 수집합니다.");
+                        ui.label(tr!(
+                            "연결된 입력을 최종 결과로 수집합니다.",
+                            "Collects the connected inputs as the final result."
+                        ));
                     }
                 }
                 if let Some(run) = self.board.runs.get(&id) {
@@ -1398,7 +1596,7 @@ impl CanvasApp {
                             ui.colored_label(RED, e);
                         }
                         RunState::Done { ms, note } => {
-                            ui.label(RichText::new(format!("출력 ({ms} ms)")).strong());
+                            ui.label(RichText::new(trf!("출력 ({ms} ms)", "Output ({ms} ms)")).strong());
                             if let Some(n) = note {
                                 ui.colored_label(
                                     if n.starts_with('⚠') {
@@ -1421,9 +1619,9 @@ impl CanvasApp {
     fn test_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let running = self.board.running;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("프롬프트 테스트").strong());
+            ui.label(RichText::new(tr!("프롬프트 테스트", "Prompt tests")).strong());
             ui.separator();
-            ui.label("입력 주입 노드:");
+            ui.label(tr!("입력 주입 노드:", "Input node:"));
             let texts: Vec<(u32, String)> = self
                 .graph
                 .nodes
@@ -1434,7 +1632,9 @@ impl CanvasApp {
             let cur = texts
                 .iter()
                 .find(|(i, _)| Some(*i) == self.graph.test_node)
-                .map_or("(Text 노드 없음)".to_string(), |(_, t)| t.clone());
+                .map_or(tr!("(Text 노드 없음)", "(no Text node)").to_string(), |(_, t)| {
+                    t.clone()
+                });
             egui::ComboBox::from_id_salt("test_node")
                 .selected_text(cur)
                 .show_ui(ui, |ui| {
@@ -1442,13 +1642,16 @@ impl CanvasApp {
                         ui.selectable_value(&mut self.graph.test_node, Some(*i), t);
                     }
                 });
-            if ui.add_enabled(!running, egui::Button::new("▶ 전체 테스트")).clicked() {
+            if ui
+                .add_enabled(!running, egui::Button::new(tr!("▶ 전체 테스트", "▶ Run all tests")))
+                .clicked()
+            {
                 self.run_tests(None, ctx);
             }
-            if ui.button("＋ 케이스").clicked() {
+            if ui.button(tr!("＋ 케이스", "＋ Case")).clicked() {
                 let n = self.graph.tests.len() + 1;
                 self.graph.tests.push(TestSpec {
-                    name: format!("케이스 {n}"),
+                    name: trf!("케이스 {n}", "Case {n}"),
                     ..TestSpec::default()
                 });
                 self.board.test_results.push(None);
@@ -1456,7 +1659,7 @@ impl CanvasApp {
             let pass = self.board.test_results.iter().flatten().filter(|r| r.pass).count();
             let done = self.board.test_results.iter().flatten().count();
             if done > 0 {
-                ui.label(format!("{pass}/{done} 통과"));
+                ui.label(trf!("{pass}/{done} 통과", "{pass}/{done} passed"));
             }
         });
         ui.separator();
@@ -1473,14 +1676,17 @@ impl CanvasApp {
                                 ui.add(egui::TextEdit::singleline(&mut t.name).desired_width(140.0));
                                 if ui
                                     .add_enabled(!running, egui::Button::new("▶"))
-                                    .on_hover_text("이 케이스만 실행")
+                                    .on_hover_text(tr!("이 케이스만 실행", "Run only this case"))
                                     .clicked()
                                 {
                                     run_one = Some(i);
                                 }
                                 if ui
                                     .add_enabled(!running, egui::Button::new("🗑"))
-                                    .on_hover_text("케이스 삭제 (실행 중에는 삭제할 수 없습니다)")
+                                    .on_hover_text(tr!(
+                                        "케이스 삭제 (실행 중에는 삭제할 수 없습니다)",
+                                        "Delete the case (not possible while running)"
+                                    ))
                                     .clicked()
                                 {
                                     remove = Some(i);
@@ -1501,12 +1707,15 @@ impl CanvasApp {
                                 egui::TextEdit::multiline(&mut t.input)
                                     .desired_rows(2)
                                     .desired_width(f32::INFINITY)
-                                    .hint_text("테스트 프롬프트 입력"),
+                                    .hint_text(tr!("테스트 프롬프트 입력", "Test prompt input")),
                             );
                             ui.add(
                                 egui::TextEdit::singleline(&mut t.expect)
                                     .desired_width(f32::INFINITY)
-                                    .hint_text("통과 조건: 최종 출력에 포함될 문자열 (선택)"),
+                                    .hint_text(tr!(
+                                        "통과 조건: 최종 출력에 포함될 문자열 (선택)",
+                                        "Pass condition: text the final output must contain (optional)"
+                                    )),
                             );
                         });
                         ui.vertical(|ui| {
@@ -1549,7 +1758,7 @@ impl CanvasApp {
             .size_range(260.0..=620.0)
             .show(ui, |ui| self.inspector(ui));
         egui::CentralPanel::default().show(ui, |ui| self.canvas(ui));
-        // 파일 대화상자와 그래프 교체는 모든 위젯 처리가 끝난 뒤 실행한다.
+        // 파일 대화상자, 그래프 교체, 언어 전환은 모든 위젯 처리가 끝난 뒤 실행한다.
         if let Some(d) = self.deferred.take() {
             self.run_deferred(d, &ctx);
         }
@@ -1634,6 +1843,7 @@ fn bezier_mid(p: [Pos2; 4]) -> Pos2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::with_lang;
 
     const SAMPLE_FILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/samples/flow.canvas.json");
 
@@ -2205,6 +2415,11 @@ mod tests {
         }
 
         fn frame(&mut self, events: Vec<egui::Event>) {
+            self.frame_texts(events);
+        }
+
+        /// 한 프레임을 그리고 그 프레임에 그려진 글자를 모두 돌려준다.
+        fn frame_texts(&mut self, events: Vec<egui::Event>) -> Vec<String> {
             self.time += 0.1;
             let input = egui::RawInput {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1500.0, 900.0))),
@@ -2213,7 +2428,13 @@ mod tests {
                 ..Default::default()
             };
             let app = &mut self.app;
-            self.ctx.run_ui(input, |ui| app.show(ui)).drop_without_applying_deltas();
+            let out = self.ctx.run_ui(input, |ui| app.show(ui));
+            let mut texts = Vec::new();
+            for clipped in &out.shapes {
+                collect_texts(&clipped.shape, &mut texts);
+            }
+            out.drop_without_applying_deltas();
+            texts
         }
 
         fn settle(&mut self) {
@@ -2294,6 +2515,15 @@ mod tests {
 
     /// 빈 캔버스 위의 한 점(노드·패널과 겹치지 않는다).
     const BACKGROUND: Pos2 = pos2(40.0, 600.0);
+
+    /// 그려진 모양에서 글자를 모은다.
+    fn collect_texts(shape: &egui::Shape, out: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(t) => out.push(t.galley.text().to_string()),
+            egui::Shape::Vec(v) => v.iter().for_each(|s| collect_texts(s, out)),
+            _ => {}
+        }
+    }
 
     fn two_nodes() -> (Graph, u32, u32) {
         let mut g = Graph::default();
@@ -2782,5 +3012,275 @@ mod tests {
         let mut app = CanvasApp::from_graph(g);
         assert!(app.begin_run().is_none() && !app.board.running);
         assert!(app.status.contains("순환"), "{}", app.status);
+    }
+
+    // ---------- 영어 ----------
+
+    fn has_hangul(s: &str) -> bool {
+        s.chars()
+            .any(|c| matches!(c, '\u{AC00}'..='\u{D7A3}' | '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}'))
+    }
+
+    #[test]
+    fn status_lines_cards_and_verdicts_in_english() {
+        with_lang(Lang::En, || {
+            let mut rep = RunReport {
+                total_ms: 12,
+                ..RunReport::default()
+            };
+            assert_eq!(flow_status(&rep), ("Done (12 ms)".to_string(), false));
+            rep.notes.insert(3, "tokens 1→2".into());
+            assert_eq!(flow_status(&rep).0, "Done (12 ms)");
+            rep.notes
+                .insert(4, "⚠ Truncated at the output token limit (10) (length)".into());
+            assert_eq!(flow_status(&rep).0, "Done (12 ms) · ⚠ 1 warning (see the node status)");
+            rep.notes.insert(5, "⚠ x".into());
+            assert_eq!(flow_status(&rep).0, "Done (12 ms) · ⚠ 2 warnings (see the node status)");
+            rep.errors.insert(2, "x".into());
+            assert_eq!(flow_status(&rep), ("1 node failed".to_string(), true));
+            rep.errors.insert(6, "y".into());
+            assert_eq!(flow_status(&rep).0, "2 nodes failed");
+            rep.cancelled = true;
+            rep.skipped = vec![7];
+            assert_eq!(
+                flow_status(&rep),
+                ("Stopped · 1 node skipped · 2 nodes failed".to_string(), true)
+            );
+            rep.errors.clear();
+            rep.skipped = vec![7, 8];
+            assert_eq!(flow_status(&rep), ("Stopped · 2 nodes skipped".to_string(), false));
+
+            let bad = TestResult {
+                pass: false,
+                ..passed()
+            };
+            let results = vec![Some(passed()), Some(bad), None];
+            assert_eq!(tests_status(&results, false), ("Tests: 1/2 passed".to_string(), true));
+            assert_eq!(
+                tests_status(&results[..1], true),
+                ("Tests stopped (1/1 passed)".to_string(), false)
+            );
+
+            let run = |state| NodeRun {
+                state,
+                output: String::new(),
+            };
+            assert_eq!(status_view(Some(&run(RunState::Running))).badge, "Running…");
+            assert_eq!(status_view(Some(&run(RunState::Failed("e".into())))).badge, "✖ Failed");
+            assert_eq!(status_view(Some(&run(RunState::Skipped))).badge, "Skipped");
+            let r = judge_case(
+                &Graph::default(),
+                &RunReport {
+                    final_text: "out".into(),
+                    ..RunReport::default()
+                },
+                "missing",
+            );
+            assert_eq!(r.error, "The output does not contain 'missing'");
+        });
+    }
+
+    #[test]
+    fn language_switch_status_line() {
+        assert_eq!(
+            with_lang(Lang::En, || language_status(Lang::En, Ok(()))),
+            ("Language: English".to_string(), false)
+        );
+        assert_eq!(
+            with_lang(Lang::Ko, || language_status(Lang::Ko, Ok(()))),
+            ("언어: 한국어".to_string(), false)
+        );
+        assert_eq!(
+            with_lang(Lang::En, || language_status(Lang::En, Err("access denied".into()))),
+            (
+                "Language: English · could not save the setting: access denied".to_string(),
+                true
+            )
+        );
+        // 이미 쓰는 언어를 고르면 아무것도 바꾸지 않는다(전역 언어도, 설정 파일도 건드리지 않는다).
+        let mut h = Harness::new(sample_graph());
+        let before = h.app.status.clone();
+        h.app.deferred = Some(Deferred::Language(i18n::current()));
+        h.frame(vec![]);
+        assert!(h.app.deferred.is_none());
+        assert_eq!((h.app.status.as_str(), h.app.status_err), (before.as_str(), false));
+    }
+
+    #[test]
+    fn app_messages_and_the_sample_graph_in_english() {
+        with_lang(Lang::En, || {
+            let (mut app, ctx) = app_with_sample();
+            assert_eq!(app.status, "Ready");
+            // 예제 그래프는 만들 때의 언어로 쓴다. 두 번째 케이스는 다른 언어(한국어) 입력이다.
+            assert!(matches!(&app.graph.nodes[0].kind, NodeKind::Text { text } if text == "Why did Q3 revenue drop?"));
+            assert_eq!(app.graph.tests[0].name, "Basic");
+            assert_eq!(app.graph.tests[1].name, "Korean input");
+            assert!(has_hangul(&app.graph.tests[1].input));
+            let r = exec::run_graph(&app.graph, &RunOptions::default(), |_| {}).unwrap();
+            assert!(r.ok(), "{:?}", r.errors);
+            assert!(
+                r.final_text
+                    .starts_with("[dry-run] Anthropic/claude-sonnet-4-5 max_tokens=1024 prompt "),
+                "{}",
+                r.final_text
+            );
+
+            app.begin_run().unwrap();
+            app.new_graph(&ctx);
+            assert_eq!(
+                app.status,
+                "Cannot create a new graph while running (press ■ Stop to do it right away)"
+            );
+            app.load(PathBuf::from(SAMPLE_FILE), &ctx);
+            assert_eq!(
+                app.status,
+                "Cannot open a file while running (press ■ Stop to open it right away)"
+            );
+            app.delete_node(2);
+            assert_eq!(app.status, "Cannot delete nodes while running");
+            app.request_cancel();
+            assert!(app.status.starts_with("Stopping…"), "{}", app.status);
+            app.new_graph(&ctx);
+            assert_eq!(app.status, "New graph · results of the run being stopped are discarded");
+            assert!(app.begin_run().is_none());
+            assert_eq!(app.status, "There are no nodes to run");
+            app.run_tests(None, &ctx);
+            assert_eq!(app.status, "There is no Text node to take the test input");
+
+            // 저장된 그래프의 글자(사용자 내용)는 영어로 열어도 그대로다.
+            app.load(PathBuf::from(SAMPLE_FILE), &ctx);
+            assert!(app.status.starts_with("Opened: "), "{}", app.status);
+            assert!(matches!(&app.graph.nodes[1].kind, NodeKind::Prompt { role, .. } if role == "분석: {{input}}"));
+            assert_eq!(app.graph.tests[0].name, "기본");
+            app.selected = Some(2);
+            app.duplicate_selected();
+            assert_eq!(app.status, "Duplicated node 2 as 5 (connections are not copied)");
+            assert_eq!(app.graph.node(5).unwrap().title, "p copy");
+            app.auto_layout();
+            assert_eq!(app.status, "Nodes rearranged");
+            app.graph.tests.clear();
+            app.run_tests(None, &ctx);
+            assert_eq!(app.status, "There are no test cases");
+        });
+    }
+
+    /// 영어 화면에는 사용자 내용 말고는 한국어가 남지 않는다. 노드 종류마다 인스펙터를 열고,
+    /// 실행 결과·테스트 결과·우클릭 메뉴·실행 중 막대·빈 캔버스까지 그려 본다.
+    #[test]
+    fn the_english_screen_shows_no_korean() {
+        with_lang(Lang::En, || {
+            let mut g = Graph::default();
+            let t = g.add(NodeKind::Text { text: "hello".into() }, [0.0, 0.0]);
+            let p = g.add(NodeKind::new_prompt(), [300.0, 0.0]);
+            let l = g.add(
+                NodeKind::Llm {
+                    provider: Provider::OpenAi,
+                    model: "m".into(),
+                    system: String::new(),
+                    key_env: "bad".into(),
+                    base_url: String::new(),
+                    max_tokens: 10,
+                    temperature: Some(0.5),
+                    dry_run: true,
+                },
+                [600.0, 0.0],
+            );
+            let m = g.add(NodeKind::new_mcp(), [900.0, 0.0]);
+            let o = g.add(NodeKind::Output, [1200.0, 0.0]);
+            g.tests = vec![
+                TestSpec {
+                    name: "first".into(),
+                    ..TestSpec::default()
+                },
+                TestSpec {
+                    name: "second".into(),
+                    ..TestSpec::default()
+                },
+            ];
+            let mut h = Harness::new(g);
+            for e in [
+                Event::Done {
+                    id: t,
+                    output: "hello".into(),
+                    ms: 1,
+                    note: Some("tokens 1→2".into()),
+                },
+                Event::Started(l),
+                Event::Failed {
+                    id: m,
+                    error: "MCP execution is not allowed".into(),
+                },
+                Event::Skipped(o),
+            ] {
+                apply_event(&mut h.app.board.runs, e);
+            }
+            h.app.board.final_text = "result".into();
+            let failed = judge_case(&h.app.graph, &RunReport::default(), "zzz");
+            h.app.board.test_results = vec![
+                Some(passed()),
+                Some(TestResult {
+                    ms: 2,
+                    output: "x".into(),
+                    ..failed
+                }),
+            ];
+            let mut seen = Vec::new();
+            for sel in [None, Some(t), Some(p), Some(l), Some(m), Some(o)] {
+                h.app.selected = sel;
+                h.settle();
+                seen.extend(h.frame_texts(vec![]));
+            }
+            h.app.board.running = true;
+            seen.extend(h.frame_texts(vec![]));
+            h.app.board.running = false;
+            h.app.selected = None;
+            h.settle();
+            let on_node = h.node(t);
+            h.click_with(on_node, egui::PointerButton::Secondary);
+            assert!(egui::Popup::is_any_open(&h.ctx), "우클릭 메뉴가 열려야 한다");
+            seen.extend(h.frame_texts(vec![]));
+            let ctx = h.ctx.clone();
+            h.app.install(Graph::default(), None, &ctx);
+            h.settle();
+            seen.extend(h.frame_texts(vec![]));
+
+            let korean: Vec<&String> = seen.iter().filter(|s| has_hangul(s)).collect();
+            assert!(korean.is_empty(), "영어 화면에 남은 한국어: {korean:?}");
+            for want in [
+                "New",
+                "＋ Add node",
+                "Allow MCP execution",
+                "Allow custom endpoint",
+                "▶ Run all",
+                "■ Stop",
+                "Language",
+                "English",
+                "Ready",
+                "Select a node to see its settings.",
+                "Final output",
+                "Kind: LLM API   Inputs: none",
+                "Instruction ({{input}} = upstream output)",
+                "Analyze the following:\n{{input}}",
+                "The key variable name must use uppercase letters",
+                "Dry-run (no network calls)",
+                "arguments (JSON, {{input}} is replaced)",
+                "Collects the connected inputs as the final result.",
+                "Running…",
+                "✖ Failed",
+                "Skipped",
+                "Prompt tests",
+                "Input node:",
+                "▶ Run all tests",
+                "PASS 1 ms",
+                "FAIL 2 ms",
+                "The output does not contain 'zzz'",
+                "Duplicate",
+                "Delete",
+                "(no Text node)",
+                "Start with ‘＋ Add node’",
+            ] {
+                assert!(seen.iter().any(|s| s.contains(want)), "{want:?} 가 그려지지 않음");
+            }
+        });
     }
 }

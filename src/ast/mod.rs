@@ -97,6 +97,8 @@ impl ConstraintType {
 }
 
 /// 데이터 밖의 내용을 막는 표현. 있으면 부정 표지가 없어도 사실성 규칙이다.
+/// (이 파일의 한국어 단어 목록은 입력 문장을 판별하는 데이터라 UI 언어와 관계없이 그대로 쓴다.)
+// i18n-data
 const FACTUALITY_MARKERS: [&str; 9] = [
     "데이터 외",
     "데이터외",
@@ -111,10 +113,12 @@ const FACTUALITY_MARKERS: [&str; 9] = [
 
 /// 추론·추측을 뜻하는 말. 금지 문맥("추론하지 마", "do not infer", "추측 배제")일 때만 사실성 규칙이다.
 /// "추론 과정을 단계별로 설명해"는 금지가 아니므로 일반 규칙이다.
+// i18n-data
 const INFERENCE_WORDS: [&str; 5] = ["추론", "추측", "짐작", "지어내", "꾸며내"];
 /// 영어는 단어 앞부분으로 맞춘다(infer, inferred, guessing, speculate, fabricated).
 const INFERENCE_PREFIXES: [&str; 4] = ["infer", "guess", "speculat", "fabricat"];
 /// 부정 표지가 아니어도 추론을 막는 말("추론 없이", "임의 추측 배제", "answer without guessing", "no guessing").
+// i18n-data
 const INFERENCE_BANS: [&str; 4] = ["없이", "배제", "지양", "자제"];
 const INFERENCE_BAN_WORDS: [&str; 2] = ["without", "no"];
 

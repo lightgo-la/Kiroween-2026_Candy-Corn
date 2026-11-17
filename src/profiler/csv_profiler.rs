@@ -4,6 +4,9 @@
 //! 인코딩: BOM(UTF-8, UTF-16LE, UTF-16BE)이 있으면 그대로 따른다. 없으면 앞부분 64KiB로 바이너리 여부를 보고,
 //! 처음 나오는 비ASCII 바이트부터 64KiB로 UTF-8/CP949를 판별한다(`detect_text_encoding`과 같은 판정이라
 //! 토큰 추정·steering 읽기도 같은 결과를 낸다). 파일 전체를 메모리에 올리지 않는다.
+//!
+//! 프로파일 결과(컬럼 이름·타입, `summary_stats`, `anomalies`, 샘플 행)는 프롬프트에 들어가는 모델용 글이라
+//! UI 언어와 관계없이 같다. 번역하는 것은 사용자에게 보이는 오류 문구뿐이다.
 
 use crate::ast::{ColumnProfile, DataSubAst};
 use encoding_rs::{EUC_KR, Encoding, UTF_8, UTF_16BE, UTF_16LE};
@@ -356,6 +359,7 @@ fn add_json_object(acc: &mut Accumulator, v: &serde_json::Value) {
 /// 이름을 단어로 나눠 `id`가 어디든 있거나, 붙여 쓴 `<개체>id`이거나, 마지막 단어가 번호·코드·키를 뜻하면 식별자로 본다.
 fn looks_like_id(name: &str) -> bool {
     let n = name.trim();
+    // i18n-data
     if n == "#" || ["번호", "코드", "아이디", "순번"].iter().any(|k| n.contains(k)) {
         return true;
     }
@@ -539,14 +543,48 @@ fn cp949_error_count(buf: &[u8], complete: bool) -> usize {
 
 fn binary_error(ext: &str) -> String {
     let hint = match ext {
-        "xlsx" | "xlsm" | "xls" => "엑셀 파일은 CSV로 저장한 뒤 여세요",
-        _ => "CSV/TSV/JSON/NDJSON 텍스트 파일만 지원합니다",
+        "xlsx" | "xlsm" | "xls" => tr!("엑셀 파일은 CSV로 저장한 뒤 여세요", "save Excel files as CSV first"),
+        _ => tr!(
+            "CSV/TSV/JSON/NDJSON 텍스트 파일만 지원합니다",
+            "only CSV/TSV/JSON/NDJSON text files are supported"
+        ),
     };
-    format!("바이너리 파일은 프로파일링할 수 없습니다 (NUL 바이트 포함, {hint})")
+    trf!(
+        "바이너리 파일은 프로파일링할 수 없습니다 (NUL 바이트 포함, {hint})",
+        "cannot profile a binary file (contains NUL bytes; {hint})"
+    )
+}
+
+/// 입출력 오류 문구. 한국어는 운영체제 문구 그대로 쓰고(예전과 같다), 영어는 운영체제 언어와 관계없이 영어로 쓴다.
+/// 한국어 Windows의 운영체제 문구("지정된 파일을 찾을 수 없습니다")가 `--lang en` 메시지에 섞이지 않게 한다.
+/// 운영체제 오류가 아니면(라이브러리가 만든 오류) 원래 문구 그대로다.
+pub fn io_error_text(e: &std::io::Error) -> String {
+    match e.raw_os_error() {
+        Some(code) if crate::i18n::is_en() => {
+            let what = if cfg!(windows) && code == 32 {
+                // ERROR_SHARING_VIOLATION: 엑셀 등 다른 프로그램이 파일을 잠그고 있다
+                "the file is being used by another process".to_string()
+            } else if e.kind() == std::io::ErrorKind::NotFound {
+                "no such file or directory".to_string()
+            } else {
+                e.kind().to_string()
+            };
+            format!("{what} (os error {code})")
+        }
+        _ => e.to_string(),
+    }
+}
+
+/// CSV 리더 오류. 바이트 레코드를 유연하게 읽으므로 실제로 나는 오류는 거의 입출력 오류다.
+fn csv_error_text(e: &csv::Error) -> String {
+    match e.kind() {
+        csv::ErrorKind::Io(io) => io_error_text(io),
+        _ => e.to_string(),
+    }
 }
 
 fn read_err(e: std::io::Error) -> String {
-    format!("파일을 읽을 수 없음: {e}")
+    trf!("파일을 읽을 수 없음: {}", "cannot read file: {}", io_error_text(&e))
 }
 
 /// 원본 바이트를 UTF-8로 바꿔 내주는 스트리밍 리더.
@@ -686,7 +724,8 @@ fn decoded_reader<R: Read>(head: Vec<u8>, rest: R, ext: &str) -> Result<Decoded<
 
 /// 파일을 열어 UTF-8 바이트를 내주는 리더를 만든다.
 fn open_decoded(path: &Path, ext: &str) -> Result<Decoded<File>, String> {
-    let mut f = File::open(path).map_err(|e| format!("파일을 열 수 없음: {e}"))?;
+    let mut f =
+        File::open(path).map_err(|e| trf!("파일을 열 수 없음: {}", "cannot open file: {}", io_error_text(&e)))?;
     let mut head = Vec::with_capacity(SNIFF_BYTES);
     f.by_ref()
         .take(SNIFF_BYTES as u64)
@@ -820,17 +859,18 @@ fn profile_json(src: impl Read, acc: &mut Accumulator) -> Result<(), String> {
     };
     if first == Some(b'[') {
         let mut de = serde_json::Deserializer::from_reader(reader);
-        de.deserialize_seq(ArrayVisitor(acc))
-            .map_err(|e| format!("JSON 파싱 실패: {e}"))?;
-        de.end().map_err(|e| format!("JSON 파싱 실패: {e}"))?;
+        let json_err = |e: serde_json::Error| trf!("JSON 파싱 실패: {e}", "JSON parse error: {e}");
+        de.deserialize_seq(ArrayVisitor(acc)).map_err(json_err)?;
+        de.end().map_err(json_err)?;
     } else {
         for (n, line) in reader.lines().enumerate() {
             let line = line.map_err(read_err)?;
             if line.trim().is_empty() {
                 continue;
             }
-            let v: serde_json::Value =
-                serde_json::from_str(&line).map_err(|e| format!("{}번째 줄 JSON 오류: {e}", n + 1 + skipped_lines))?;
+            let at = n + 1 + skipped_lines;
+            let v: serde_json::Value = serde_json::from_str(&line)
+                .map_err(|e| trf!("{at}번째 줄 JSON 오류: {e}", "JSON error on line {at}: {e}"))?;
             add_json_object(acc, &v);
         }
     }
@@ -858,13 +898,16 @@ fn profile_csv(mut src: impl Read, acc: &mut Accumulator, preferred: Option<u8>)
         .flexible(true)
         .delimiter(delimiter)
         .from_reader(Cursor::new(prefix).chain(src));
-    let headers = rdr.byte_headers().map_err(|e| format!("CSV 헤더 오류: {e}"))?.clone();
+    let headers = rdr
+        .byte_headers()
+        .map_err(|e| trf!("CSV 헤더 오류: {}", "CSV header error: {}", csv_error_text(&e)))?
+        .clone();
     let idx: Vec<usize> = headers
         .iter()
         .map(|h| acc.col_unique(&String::from_utf8_lossy(h)))
         .collect();
     for rec in rdr.byte_records() {
-        let rec = rec.map_err(|e| format!("CSV 파싱 오류: {e}"))?;
+        let rec = rec.map_err(|e| trf!("CSV 파싱 오류: {}", "CSV parse error: {}", csv_error_text(&e)))?;
         let row = rec
             .iter()
             .enumerate()
@@ -887,7 +930,11 @@ pub fn profile_file(path: &Path, sample_rows: usize) -> Result<DataSubAst, Strin
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     if ext == "kiro" {
-        return Err("블루프린트(.kiro) 파일은 데이터가 아닙니다. 블루프린트 열기로 여세요".into());
+        return Err(tr!(
+            "블루프린트(.kiro) 파일은 데이터가 아닙니다. 블루프린트 열기로 여세요",
+            "a blueprint (.kiro) file is not data. Open it as a blueprint instead"
+        )
+        .into());
     }
     let src = open_decoded(path, &ext)?;
     let mut acc = Accumulator::new(sample_rows);
@@ -897,7 +944,7 @@ pub fn profile_file(path: &Path, sample_rows: usize) -> Result<DataSubAst, Strin
         _ => profile_csv(src, &mut acc, None)?,
     }
     if acc.rows == 0 {
-        return Err("데이터 행이 없음".into());
+        return Err(tr!("데이터 행이 없음", "no data rows").into());
     }
     Ok(acc.finish(&name))
 }
@@ -1348,5 +1395,109 @@ mod tests {
         assert_eq!(detect_text_encoding(&EUC_KR.encode(&late).0, true), EUC_KR);
         // 앞부분만 읽은 버퍼 끝에서 잘린 글자는 오류로 세지 않는다
         assert_eq!(detect_text_encoding(&"가나".as_bytes()[..4], false), UTF_8);
+    }
+
+    fn has_hangul(s: &str) -> bool {
+        s.chars().any(|c| ('가'..='힣').contains(&c))
+    }
+
+    /// 영어 모드의 오류 문구는 영어다. 한국어 Windows가 돌려주는 운영체제 문구("지정된 파일을 찾을 수 없습니다")도
+    /// 영어로 바꾸고, 오류 번호는 그대로 둔다. 한국어 모드는 예전 문구 그대로다.
+    #[test]
+    fn english_mode_errors_are_english() {
+        use crate::i18n::{Lang, with_lang};
+        let png = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon-256.png")).unwrap();
+        let missing = tmp("en_missing.csv");
+        let _ = std::fs::remove_file(&missing);
+        let errors = with_lang(Lang::En, || {
+            vec![
+                profile_bytes("en_icon.png", &png, 3).unwrap_err(),
+                profile_bytes("en_book.xlsx", b"PK\x03\x04\x14\x00\x00\x00", 0).unwrap_err(),
+                profile_bytes("en_plan.kiro", br#"{"version":2,"role":"r"}"#, 0).unwrap_err(),
+                profile_bytes("en_header_only.csv", b"a,b\n", 0).unwrap_err(),
+                profile_bytes("en_bad.ndjson", b"{\"a\":1}\n\n{oops}\n", 0).unwrap_err(),
+                profile_bytes("en_bad.json", b"[{\"a\":1},", 0).unwrap_err(),
+                profile_file(&missing, 0).unwrap_err(),
+            ]
+        });
+        assert_eq!(
+            errors[0],
+            "cannot profile a binary file (contains NUL bytes; only CSV/TSV/JSON/NDJSON text files are supported)"
+        );
+        assert_eq!(
+            errors[1],
+            "cannot profile a binary file (contains NUL bytes; save Excel files as CSV first)"
+        );
+        assert!(
+            errors[2].starts_with("a blueprint (.kiro) file is not data."),
+            "{}",
+            errors[2]
+        );
+        assert_eq!(errors[3], "no data rows");
+        assert!(errors[4].starts_with("JSON error on line 3: "), "{}", errors[4]);
+        assert!(errors[5].starts_with("JSON parse error: "), "{}", errors[5]);
+        assert_eq!(errors[6], "cannot open file: no such file or directory (os error 2)");
+        for e in &errors {
+            assert!(!has_hangul(e), "{e}");
+        }
+        // 한국어 모드: 운영체제 문구를 그대로 붙인다
+        let os = File::open(&missing).unwrap_err();
+        let ko = with_lang(Lang::Ko, || profile_file(&missing, 0).unwrap_err());
+        assert_eq!(ko, format!("파일을 열 수 없음: {os}"));
+        assert_eq!(
+            with_lang(Lang::Ko, || profile_bytes("ko_header_only.csv", b"a,b\n", 0)
+                .unwrap_err()),
+            "데이터 행이 없음"
+        );
+    }
+
+    #[test]
+    fn io_error_text_follows_the_language() {
+        use crate::i18n::{Lang, with_lang};
+        let not_found = std::io::Error::from_raw_os_error(2);
+        let custom = std::io::Error::other("stream broke");
+        with_lang(Lang::En, || {
+            assert_eq!(io_error_text(&not_found), "no such file or directory (os error 2)");
+            assert_eq!(io_error_text(&custom), "stream broke");
+            if cfg!(windows) {
+                let locked = std::io::Error::from_raw_os_error(32);
+                assert_eq!(
+                    io_error_text(&locked),
+                    "the file is being used by another process (os error 32)"
+                );
+            }
+            // 그 밖의 운영체제 오류는 오류 종류의 영어 이름과 번호
+            let denied = std::io::Error::from_raw_os_error(if cfg!(windows) { 5 } else { 13 });
+            assert!(io_error_text(&denied).starts_with("permission denied (os error "));
+        });
+        with_lang(Lang::Ko, || {
+            assert_eq!(io_error_text(&not_found), not_found.to_string());
+            assert_eq!(io_error_text(&custom), "stream broke");
+        });
+    }
+
+    /// 프로파일 결과(컬럼 이름·타입, 통계, 이상치, 샘플 행)는 프롬프트에 들어가므로 UI 언어와 관계없이 같다.
+    #[test]
+    fn profile_is_the_same_in_every_language() {
+        use crate::i18n::{Lang, with_lang};
+        let mut csv = String::from("고객번호,금액,지역,메모\n");
+        for i in 0..40 {
+            csv += &format!("{i},{},서울,\"정상, {i}\"\n", 100 + i % 5);
+        }
+        csv += "99,90000,부산,\n";
+        let profile = |lang| {
+            with_lang(lang, || {
+                let d = profile_bytes("lang.csv", csv.as_bytes(), 5).unwrap();
+                serde_json::to_string(&d).unwrap()
+            })
+        };
+        let (ko, en) = (profile(Lang::Ko), profile(Lang::En));
+        assert_eq!(ko, en);
+        // 이상치 문구가 실제로 들어 있고(식별자 컬럼 "고객번호"는 빠진다), 모델용 문구는 영어 표기다
+        assert!(
+            en.contains("금액: max 90000 (z=") && !en.contains("고객번호: max"),
+            "{en}"
+        );
+        assert!(en.contains("\"dtype\":\"numeric\"") && en.contains("distinct:"), "{en}");
     }
 }

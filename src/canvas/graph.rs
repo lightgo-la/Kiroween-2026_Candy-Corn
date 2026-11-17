@@ -158,10 +158,15 @@ impl NodeKind {
         NodeKind::Text { text: String::new() }
     }
 
+    /// 기본 지시문·제약은 노드를 만들 때의 언어로 쓴다. 만든 뒤에는 사용자 글자라 언어를 바꿔도 그대로다.
     pub fn new_prompt() -> Self {
         NodeKind::Prompt {
-            role: "다음 내용을 분석해줘:\n{{input}}".into(),
-            constraints: "데이터에 없는 내용은 추론하지 마".into(),
+            role: tr!("다음 내용을 분석해줘:\n{{input}}", "Analyze the following:\n{{input}}").into(),
+            constraints: tr!(
+                "데이터에 없는 내용은 추론하지 마",
+                "Do not infer anything that is not in the data"
+            )
+            .into(),
             fields: "summary,recommendations".into(),
             target: PromptTarget::Claude,
             format: PromptFormat::Json,
@@ -240,9 +245,13 @@ impl Graph {
     fn next_id(&self) -> Result<u32, String> {
         match self.nodes.iter().map(|n| n.id).max() {
             None => Ok(1),
-            Some(m) => m
-                .checked_add(1)
-                .ok_or_else(|| format!("노드 id가 한계({})에 도달해 더 추가할 수 없습니다", u32::MAX)),
+            Some(m) => m.checked_add(1).ok_or_else(|| {
+                trf!(
+                    "노드 id가 한계({})에 도달해 더 추가할 수 없습니다",
+                    "Node ids have reached the limit ({}); no more nodes can be added",
+                    u32::MAX
+                )
+            }),
         }
     }
 
@@ -260,10 +269,13 @@ impl Graph {
 
     /// 노드를 복제한다: 새 id, 원본 옆으로 띄운 위치, 같은 설정. 연결은 복사하지 않는다.
     pub fn duplicate_node(&mut self, id: u32) -> Result<u32, String> {
-        let src = self.node(id).ok_or_else(|| "존재하지 않는 노드".to_string())?;
+        let src = self
+            .node(id)
+            .ok_or_else(|| tr!("존재하지 않는 노드", "No such node").to_string())?;
         let (kind, title, pos) = (src.kind.clone(), src.title.clone(), src.pos);
         let new_id = self.next_id()?;
-        let title = self.unique_title(&format!("{title} 복사"));
+        // 복제본 이름은 복제할 때의 언어로 붙인다.
+        let title = self.unique_title(&trf!("{title} 복사", "{title} copy"));
         let pos = [pos[0] + DUPLICATE_OFFSET[0], pos[1] + DUPLICATE_OFFSET[1]];
         self.nodes.push(Node {
             id: new_id,
@@ -301,25 +313,37 @@ impl Graph {
     /// 간선을 추가한다. 포트가 없거나, 중복이거나, 순환을 만들면 사유를 반환한다.
     pub fn connect(&mut self, from: u32, to: u32) -> Result<(), String> {
         if from == to {
-            return Err("자기 자신에는 연결할 수 없습니다".into());
+            return Err(tr!(
+                "자기 자신에는 연결할 수 없습니다",
+                "A node cannot be connected to itself"
+            )
+            .into());
         }
         let (Some(a), Some(b)) = (self.node(from), self.node(to)) else {
-            return Err("존재하지 않는 노드".into());
+            return Err(tr!("존재하지 않는 노드", "No such node").into());
         };
         if !a.kind.has_output() {
-            return Err(format!("{} 노드에는 출력 포트가 없습니다", a.kind.label()));
+            return Err(trf!(
+                "{} 노드에는 출력 포트가 없습니다",
+                "The {} node has no output port",
+                a.kind.label()
+            ));
         }
         if !b.kind.has_input() {
-            return Err(format!("{} 노드에는 입력 포트가 없습니다", b.kind.label()));
+            return Err(trf!(
+                "{} 노드에는 입력 포트가 없습니다",
+                "The {} node has no input port",
+                b.kind.label()
+            ));
         }
         let e = Edge { from, to };
         if self.edges.contains(&e) {
-            return Err("이미 연결되어 있습니다".into());
+            return Err(tr!("이미 연결되어 있습니다", "Already connected").into());
         }
         self.edges.push(e);
         if self.topo_order().is_err() {
             self.edges.pop();
-            return Err("순환 연결은 허용되지 않습니다".into());
+            return Err(tr!("순환 연결은 허용되지 않습니다", "Cyclic connections are not allowed").into());
         }
         Ok(())
     }
@@ -337,7 +361,7 @@ impl Graph {
         let mut outgoing: HashMap<u32, Vec<u32>> = HashMap::new();
         for e in &self.edges {
             if !ids.contains(&e.from) || !ids.contains(&e.to) {
-                return Err(format!("존재하지 않는 노드를 가리키는 간선 {}->{}", e.from, e.to));
+                return Err(missing_node_edge(e));
             }
             *indeg.get_mut(&e.to).expect("checked") += 1;
             outgoing.entry(e.from).or_default().push(e.to);
@@ -357,7 +381,7 @@ impl Graph {
         if order.len() == self.nodes.len() {
             Ok(order)
         } else {
-            Err("그래프에 순환이 있습니다".into())
+            Err(tr!("그래프에 순환이 있습니다", "The graph has a cycle").into())
         }
     }
 
@@ -421,26 +445,33 @@ impl Graph {
     pub fn validate(&self) -> Result<(), String> {
         let mut seen = HashSet::new();
         if let Some(n) = self.nodes.iter().find(|n| !seen.insert(n.id)) {
-            return Err(format!("중복된 노드 id {}", n.id));
+            return Err(trf!("중복된 노드 id {}", "Duplicate node id {}", n.id));
         }
         let index: HashMap<u32, &Node> = self.nodes.iter().map(|n| (n.id, n)).collect();
         if let Some(n) = self.nodes.iter().find(|n| !n.pos.iter().all(|v| v.is_finite())) {
-            return Err(format!(
+            return Err(trf!(
                 "노드 {}의 위치 값이 올바르지 않습니다 (유한한 숫자여야 합니다)",
+                "Node {} has an invalid position (coordinates must be finite numbers)",
                 n.id
             ));
         }
         let mut edges = HashSet::new();
         for e in &self.edges {
             let (Some(a), Some(b)) = (index.get(&e.from), index.get(&e.to)) else {
-                return Err(format!("존재하지 않는 노드를 가리키는 간선 {}->{}", e.from, e.to));
+                return Err(missing_node_edge(e));
             };
             if e.from == e.to {
-                return Err(format!("자기 자신에 연결된 간선 {}->{}", e.from, e.to));
+                return Err(trf!(
+                    "자기 자신에 연결된 간선 {}->{}",
+                    "Edge {}->{} connects a node to itself",
+                    e.from,
+                    e.to
+                ));
             }
             if !a.kind.has_output() {
-                return Err(format!(
+                return Err(trf!(
                     "{} 노드(id {})에는 출력 포트가 없어 간선 {}->{}을 둘 수 없습니다",
+                    "The {} node (id {}) has no output port, so edge {}->{} is not allowed",
                     a.kind.label(),
                     a.id,
                     e.from,
@@ -448,8 +479,9 @@ impl Graph {
                 ));
             }
             if !b.kind.has_input() {
-                return Err(format!(
+                return Err(trf!(
                     "{} 노드(id {})에는 입력 포트가 없어 간선 {}->{}을 둘 수 없습니다",
+                    "The {} node (id {}) has no input port, so edge {}->{} is not allowed",
                     b.kind.label(),
                     b.id,
                     e.from,
@@ -457,7 +489,7 @@ impl Graph {
                 ));
             }
             if !edges.insert((e.from, e.to)) {
-                return Err(format!("중복된 간선 {}->{}", e.from, e.to));
+                return Err(trf!("중복된 간선 {}->{}", "Duplicate edge {}->{}", e.from, e.to));
             }
         }
         self.topo_order()?;
@@ -469,16 +501,27 @@ impl Graph {
     }
 
     pub fn from_json(s: &str) -> Result<Graph, String> {
-        let g: Graph =
-            serde_json::from_str(s.trim_start_matches('\u{feff}')).map_err(|e| format!("그래프 JSON 오류: {e}"))?;
+        let g: Graph = serde_json::from_str(s.trim_start_matches('\u{feff}'))
+            .map_err(|e| trf!("그래프 JSON 오류: {e}", "Graph JSON error: {e}"))?;
         g.validate()?;
         Ok(g)
     }
 }
 
+/// 없는 노드를 가리키는 간선의 오류 문구(위상 정렬과 구조 검사가 같이 쓴다).
+fn missing_node_edge(e: &Edge) -> String {
+    trf!(
+        "존재하지 않는 노드를 가리키는 간선 {}->{}",
+        "Edge {}->{} points to a node that does not exist",
+        e.from,
+        e.to
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::{Lang, with_lang};
 
     fn chain() -> (Graph, u32, u32, u32) {
         let mut g = Graph::default();
@@ -811,5 +854,114 @@ mod tests {
         for p in Provider::ALL {
             assert_eq!(p.clamp_temperature(p.temperature_max()), p.temperature_max());
         }
+    }
+
+    // ---------- 영어 ----------
+
+    #[test]
+    fn validation_and_connect_errors_in_english() {
+        with_lang(Lang::En, || {
+            let (g, a, b, c) = chain();
+            let with_edges = |edges: &[(u32, u32)]| {
+                let mut g = g.clone();
+                g.edges = edges.iter().map(|&(from, to)| Edge { from, to }).collect();
+                load(&g).unwrap_err()
+            };
+            assert_eq!(with_edges(&[(a, b), (a, b)]), format!("Duplicate edge {a}->{b}"));
+            assert_eq!(
+                with_edges(&[(c, b)]),
+                format!("The Output node (id {c}) has no output port, so edge {c}->{b} is not allowed")
+            );
+            assert_eq!(
+                with_edges(&[(b, a)]),
+                format!("The Text node (id {a}) has no input port, so edge {b}->{a} is not allowed")
+            );
+            assert_eq!(
+                with_edges(&[(b, b)]),
+                format!("Edge {b}->{b} connects a node to itself")
+            );
+            assert_eq!(
+                with_edges(&[(a, 99)]),
+                format!("Edge {a}->99 points to a node that does not exist")
+            );
+            let mut cyc = g.clone();
+            let extra = cyc.add(NodeKind::new_prompt(), [0.0, 0.0]);
+            cyc.edges = vec![Edge { from: b, to: extra }, Edge { from: extra, to: b }];
+            assert_eq!(load(&cyc).unwrap_err(), "The graph has a cycle");
+            let mut dup = g.clone();
+            dup.nodes[1].id = dup.nodes[0].id;
+            assert_eq!(load(&dup).unwrap_err(), format!("Duplicate node id {a}"));
+            let err = Graph::from_json("{").unwrap_err();
+            assert!(err.starts_with("Graph JSON error: "), "{err}");
+            let far = r#"{"nodes":[{"id":1,"title":"t","pos":[1e39,0],"kind":{"type":"output"}}],"edges":[]}"#;
+            assert_eq!(
+                Graph::from_json(far).unwrap_err(),
+                "Node 1 has an invalid position (coordinates must be finite numbers)"
+            );
+
+            let mut g = g.clone();
+            g.connect(a, b).unwrap();
+            assert_eq!(g.connect(a, b).unwrap_err(), "Already connected");
+            assert_eq!(g.connect(b, b).unwrap_err(), "A node cannot be connected to itself");
+            assert_eq!(g.connect(b, a).unwrap_err(), "The Text node has no input port");
+            assert_eq!(g.connect(c, b).unwrap_err(), "The Output node has no output port");
+            assert_eq!(g.connect(a, 99).unwrap_err(), "No such node");
+            let p2 = g.add(NodeKind::new_prompt(), [0.0, 0.0]);
+            g.connect(b, p2).unwrap();
+            assert_eq!(g.connect(p2, b).unwrap_err(), "Cyclic connections are not allowed");
+            assert_eq!(g.duplicate_node(999).unwrap_err(), "No such node");
+
+            let mut full = Graph::default();
+            full.nodes.push(Node {
+                id: u32::MAX,
+                title: "end".into(),
+                pos: [0.0, 0.0],
+                kind: NodeKind::new_text(),
+            });
+            assert_eq!(
+                full.add_node(NodeKind::Output, [0.0, 0.0]).unwrap_err(),
+                format!(
+                    "Node ids have reached the limit ({}); no more nodes can be added",
+                    u32::MAX
+                )
+            );
+        });
+    }
+
+    #[test]
+    fn new_node_defaults_follow_the_language_but_saved_text_does_not() {
+        let prompt_text = |k: &NodeKind| match k {
+            NodeKind::Prompt { role, constraints, .. } => (role.clone(), constraints.clone()),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            prompt_text(&with_lang(Lang::En, NodeKind::new_prompt)),
+            (
+                "Analyze the following:\n{{input}}".to_string(),
+                "Do not infer anything that is not in the data".to_string()
+            )
+        );
+        assert_eq!(
+            prompt_text(&with_lang(Lang::Ko, NodeKind::new_prompt)),
+            (
+                "다음 내용을 분석해줘:\n{{input}}".to_string(),
+                "데이터에 없는 내용은 추론하지 마".to_string()
+            )
+        );
+        // 한국어로 만들어 저장한 노드는 영어로 열어도 글자가 그대로다(사용자 내용).
+        let mut g = Graph::default();
+        let p = with_lang(Lang::Ko, || g.add(NodeKind::new_prompt(), [0.0, 0.0]));
+        let json = g.to_json().unwrap();
+        let back = with_lang(Lang::En, || Graph::from_json(&json)).unwrap();
+        assert_eq!(
+            prompt_text(&back.node(p).unwrap().kind).0,
+            "다음 내용을 분석해줘:\n{{input}}"
+        );
+        // 복제본 이름은 복제할 때의 언어로 붙는다.
+        g.nodes[0].title = "Summarizer".into();
+        let copy = with_lang(Lang::En, || g.duplicate_node(p)).unwrap();
+        assert_eq!(g.node(copy).unwrap().title, "Summarizer copy");
+        let again = with_lang(Lang::En, || g.duplicate_node(p)).unwrap();
+        assert_eq!(g.node(again).unwrap().title, "Summarizer copy 2");
     }
 }

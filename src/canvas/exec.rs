@@ -92,7 +92,8 @@ pub fn fill_input(template: &str, input: &str) -> String {
 pub fn fill_json_template(template: &str, input: &str) -> Result<Value, String> {
     let escaped = serde_json::to_string(input).map_err(|e| e.to_string())?;
     let inner = &escaped[1..escaped.len() - 1];
-    serde_json::from_str(&template.replace("{{input}}", inner)).map_err(|e| format!("arguments JSON 오류: {e}"))
+    serde_json::from_str(&template.replace("{{input}}", inner))
+        .map_err(|e| trf!("arguments JSON 오류: {e}", "arguments JSON error: {e}"))
 }
 
 /// 워커 스레드의 패닉 값을 읽을 수 있는 문장으로 바꾼다.
@@ -100,7 +101,7 @@ pub(super) fn panic_text(e: Box<dyn std::any::Any + Send>) -> String {
     e.downcast_ref::<&str>()
         .map(|s| (*s).to_string())
         .or_else(|| e.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "알 수 없는 오류".into())
+        .unwrap_or_else(|| tr!("알 수 없는 오류", "unknown error").into())
 }
 
 fn is_cancelled(opts: &RunOptions) -> bool {
@@ -132,7 +133,13 @@ pub fn run_graph(g: &Graph, opts: &RunOptions, mut on_event: impl FnMut(Event)) 
         let t = Instant::now();
         // 한 노드의 패닉이 실행 전체를 끊지 않도록 그 노드의 실패로 바꾼다.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| exec_node(&node.kind, id, &input, opts)))
-            .unwrap_or_else(|e| Err(format!("노드 실행 중 내부 오류: {}", panic_text(e))));
+            .unwrap_or_else(|e| {
+                Err(trf!(
+                    "노드 실행 중 내부 오류: {}",
+                    "Internal error while running the node: {}",
+                    panic_text(e)
+                ))
+            });
         let ms = t.elapsed().as_millis();
         match result {
             Ok(out) => {
@@ -266,18 +273,24 @@ pub fn check_endpoint(provider: Provider, base_url: &str, allow_custom: bool) ->
         return Ok(());
     }
     if !allow_custom {
-        return Err(format!(
+        return Err(trf!(
             "사용자 지정 엔드포인트({url})는 허용되지 않았습니다. API 키가 그 주소로 전송됩니다 \
-             (상단의 '사용자 지정 엔드포인트 허용' 체크 또는 --allow-custom-endpoint)"
+             (상단의 '사용자 지정 엔드포인트 허용' 체크 또는 --allow-custom-endpoint)",
+            "Custom endpoint ({url}) is not allowed. The API key would be sent to that address \
+             (tick 'Allow custom endpoint' at the top or use --allow-custom-endpoint)"
         ));
     }
     match url_scheme_host(url) {
         Some((scheme, _)) if scheme == "https" => Ok(()),
         Some((scheme, host)) if scheme == "http" && is_loopback(&host) => Ok(()),
-        Some(_) => Err(format!(
-            "사용자 지정 엔드포인트는 https만 허용합니다 (localhost, 127.0.0.1, [::1]은 http 가능): {url}"
+        Some(_) => Err(trf!(
+            "사용자 지정 엔드포인트는 https만 허용합니다 (localhost, 127.0.0.1, [::1]은 http 가능): {url}",
+            "Custom endpoints must use https (http is allowed for localhost, 127.0.0.1 and [::1]): {url}"
         )),
-        None => Err(format!("엔드포인트 주소 형식이 올바르지 않습니다: {url}")),
+        None => Err(trf!(
+            "엔드포인트 주소 형식이 올바르지 않습니다: {url}",
+            "Invalid endpoint address: {url}"
+        )),
     }
 }
 
@@ -365,10 +378,13 @@ fn compile_prompt(cfg: &PromptCfg, input: &str, base_dir: Option<&Path>) -> Resu
         None
     } else {
         let path = resolve_data_path(cfg.data_path, base_dir);
-        Some(
-            pipeline::load_data(&path, 8)
-                .map_err(|e| format!("데이터 파일을 읽지 못했습니다 ({}): {e}", path.display()))?,
-        )
+        Some(pipeline::load_data(&path, 8).map_err(|e| {
+            trf!(
+                "데이터 파일을 읽지 못했습니다 ({}): {e}",
+                "Could not read the data file ({}): {e}",
+                path.display()
+            )
+        })?)
     };
     let mut fields = pipeline::parse_fields(cfg.fields);
     if fields.is_empty() {
@@ -404,12 +420,14 @@ fn compile_prompt(cfg: &PromptCfg, input: &str, base_dir: Option<&Path>) -> Resu
     };
     let r = pipeline::compile(&req);
     if let Some(d) = r.ast.lint_warnings.iter().find(|d| d.severity == "ERROR") {
-        return Err(format!("린트 오류: {}", d.message));
+        return Err(trf!("린트 오류: {}", "Lint error: {}", d.message));
     }
     let found = r.output.matches(&token).count();
     if found != expected {
-        return Err(format!(
-            "입력 위치 표지가 컴파일 뒤 {found}개 남았습니다 (기대 {expected}개). 린트·직렬화 규칙과 충돌했습니다"
+        return Err(trf!(
+            "입력 위치 표지가 컴파일 뒤 {found}개 남았습니다 (기대 {expected}개). 린트·직렬화 규칙과 충돌했습니다",
+            "Input position markers left after compiling: {found} (expected {expected}). \
+             They conflicted with the lint or serialization rules"
         ));
     }
     Ok(insert_input(&r.output, &token, input, target))
@@ -421,20 +439,32 @@ fn judge_reply(reply: llm::LlmReply, max_tokens: u32) -> Result<NodeOut, String>
     let reason = reply.stop_reason.as_deref();
     if reply.text.trim().is_empty() {
         return Err(match reason {
-            Some(r) => format!("LLM 응답 본문이 비어 있습니다 (종료 이유: {r})"),
-            None => "LLM 응답 본문이 비어 있습니다".into(),
+            Some(r) => trf!(
+                "LLM 응답 본문이 비어 있습니다 (종료 이유: {r})",
+                "The LLM response body is empty (stop reason: {r})"
+            ),
+            None => tr!("LLM 응답 본문이 비어 있습니다", "The LLM response body is empty").into(),
         });
     }
     let r = reason.unwrap_or_default();
     let mut parts = Vec::new();
     match reply.finish() {
-        llm::Finish::MaxTokens => parts.push(format!("⚠ 출력 토큰 한도({max_tokens})에서 잘림 ({r})")),
-        llm::Finish::ContextWindow => parts.push(format!("⚠ 모델 컨텍스트 창이 가득 차 잘림 ({r})")),
-        llm::Finish::Stopped => parts.push(format!("⚠ 응답이 끝까지 생성되지 않음 (종료 이유: {r})")),
+        llm::Finish::MaxTokens => parts.push(trf!(
+            "⚠ 출력 토큰 한도({max_tokens})에서 잘림 ({r})",
+            "⚠ Truncated at the output token limit ({max_tokens}) ({r})"
+        )),
+        llm::Finish::ContextWindow => parts.push(trf!(
+            "⚠ 모델 컨텍스트 창이 가득 차 잘림 ({r})",
+            "⚠ Truncated: the model's context window is full ({r})"
+        )),
+        llm::Finish::Stopped => parts.push(trf!(
+            "⚠ 응답이 끝까지 생성되지 않음 (종료 이유: {r})",
+            "⚠ The response did not finish (stop reason: {r})"
+        )),
         llm::Finish::Complete | llm::Finish::Unknown => {}
     }
     if let Some(u) = reply.usage {
-        parts.push(format!("토큰 {}→{}", u.input, u.output));
+        parts.push(trf!("토큰 {}→{}", "tokens {}→{}", u.input, u.output));
     }
     Ok(NodeOut {
         note: (!parts.is_empty()).then(|| parts.join(" · ")),
@@ -485,9 +515,11 @@ fn exec_node(kind: &NodeKind, id: u32, input: &str, opts: &RunOptions) -> Result
             // 검사는 키를 읽거나 네트워크를 쓰기 전에 끝낸다.
             let key_env = key_env.trim();
             if !valid_key_env(key_env) {
-                return Err(format!(
+                return Err(trf!(
                     "키 환경변수 이름 '{key_env}'은(는) 허용되지 않습니다 \
                      (영문 대문자·숫자·밑줄로 이루어지고 _API_KEY로 끝나야 합니다. 예: {})",
+                    "Key environment variable name '{key_env}' is not allowed \
+                     (use uppercase letters, digits and underscores, ending in _API_KEY; e.g. {})",
                     provider.default_key_env()
                 ));
             }
@@ -495,26 +527,42 @@ fn exec_node(kind: &NodeKind, id: u32, input: &str, opts: &RunOptions) -> Result
                 check_endpoint(*provider, base_url, opts.allow_custom_endpoint)?;
             }
             if input.trim().is_empty() {
-                return Err("LLM 입력이 비어 있습니다 (프롬프트 노드를 연결하세요)".into());
+                return Err(tr!(
+                    "LLM 입력이 비어 있습니다 (프롬프트 노드를 연결하세요)",
+                    "The LLM input is empty (connect a Prompt node)"
+                )
+                .into());
             }
             if *dry_run {
                 // 드라이런은 통과해도 실제 실행에서 막힐 설정이면 미리 경고한다.
                 let note = check_endpoint(*provider, base_url, opts.allow_custom_endpoint)
                     .err()
-                    .map(|e| format!("⚠ 실제 실행 시 막힘: {e}"));
+                    .map(|e| trf!("⚠ 실제 실행 시 막힘: {e}", "⚠ Blocked in a real run: {e}"));
+                // 요약 줄의 낱말만 번역한다. `[dry-run]` 머리와 프롬프트 본문은 언어와 상관없이 그대로다.
+                let chars = input.chars().count();
+                let unit = if chars == 1 {
+                    tr!("자", "char")
+                } else {
+                    tr!("자", "chars")
+                };
                 return Ok(NodeOut {
-                    text: format!(
-                        "[dry-run] {}/{} max_tokens={} 프롬프트 {}자\n---\n{}",
+                    text: trf!(
+                        "[dry-run] {}/{} max_tokens={} 프롬프트 {chars}{unit}\n---\n{}",
+                        "[dry-run] {}/{} max_tokens={} prompt {chars} {unit}\n---\n{}",
                         provider.label(),
                         model,
                         max_tokens,
-                        input.chars().count(),
                         input
                     ),
                     note,
                 });
             }
-            let key = std::env::var(key_env).map_err(|_| format!("환경 변수 {key_env} 가 설정되지 않았습니다"))?;
+            let key = std::env::var(key_env).map_err(|_| {
+                trf!(
+                    "환경 변수 {key_env} 가 설정되지 않았습니다",
+                    "Environment variable {key_env} is not set"
+                )
+            })?;
             let reply = llm::call(&llm::LlmRequest {
                 provider: *provider,
                 model,
@@ -535,10 +583,14 @@ fn exec_node(kind: &NodeKind, id: u32, input: &str, opts: &RunOptions) -> Result
             arguments,
         } => {
             if !opts.allow_mcp {
-                return Err("MCP 실행이 허용되지 않았습니다 (상단의 'MCP 실행 허용' 체크 또는 --allow-mcp)".into());
+                return Err(tr!(
+                    "MCP 실행이 허용되지 않았습니다 (상단의 'MCP 실행 허용' 체크 또는 --allow-mcp)",
+                    "MCP execution is not allowed (tick 'Allow MCP execution' at the top or use --allow-mcp)"
+                )
+                .into());
             }
             if tool.trim().is_empty() {
-                return Err("MCP tool 이름이 비어 있습니다".into());
+                return Err(tr!("MCP tool 이름이 비어 있습니다", "The MCP tool name is empty").into());
             }
             let args_json = fill_json_template(arguments, input)?;
             let mut c = mcp_client::McpClient::spawn(command, args, Duration::from_secs(30))?;
@@ -550,6 +602,7 @@ fn exec_node(kind: &NodeKind, id: u32, input: &str, opts: &RunOptions) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::{Lang, with_lang};
     use std::sync::atomic::AtomicBool;
 
     /// 줄바꿈, 수식어, 마크다운 표, XML 특수 문자가 모두 들어 있는 입력.
@@ -1299,5 +1352,139 @@ mod tests {
     fn llm_without_input_is_reported_before_any_call() {
         let err = run(&llm_node("OPENAI_API_KEY", "", true), "  ", &RunOptions::default()).unwrap_err();
         assert!(err.contains("프롬프트 노드를 연결"), "{err}");
+    }
+
+    // ---------- 영어 ----------
+
+    #[test]
+    fn trust_gate_and_node_errors_in_english() {
+        with_lang(Lang::En, || {
+            let opts = RunOptions::default();
+            assert_eq!(
+                run(&NodeKind::new_mcp(), "x", &opts).unwrap_err(),
+                "MCP execution is not allowed (tick 'Allow MCP execution' at the top or use --allow-mcp)"
+            );
+            let allow_mcp = RunOptions {
+                allow_mcp: true,
+                ..RunOptions::default()
+            };
+            let mcp = |tool: &str, arguments: &str| NodeKind::Mcp {
+                command: "cc-not-started".into(),
+                args: String::new(),
+                tool: tool.into(),
+                arguments: arguments.into(),
+            };
+            // 둘 다 서버를 띄우기 전에 멈춘다.
+            assert_eq!(
+                run(&mcp(" ", "{}"), "x", &allow_mcp).unwrap_err(),
+                "The MCP tool name is empty"
+            );
+            let err = run(&mcp("t", "{"), "x", &allow_mcp).unwrap_err();
+            assert!(err.starts_with("arguments JSON error: "), "{err}");
+
+            assert_eq!(
+                run(&llm_node("PATH", "", true), "hi", &opts).unwrap_err(),
+                "Key environment variable name 'PATH' is not allowed (use uppercase letters, digits and \
+                 underscores, ending in _API_KEY; e.g. ANTHROPIC_API_KEY)"
+            );
+            let p = Provider::Anthropic;
+            assert_eq!(
+                check_endpoint(p, "https://llm.example.com", false).unwrap_err(),
+                "Custom endpoint (https://llm.example.com) is not allowed. The API key would be sent to that \
+                 address (tick 'Allow custom endpoint' at the top or use --allow-custom-endpoint)"
+            );
+            assert_eq!(
+                check_endpoint(p, "http://llm.example.com", true).unwrap_err(),
+                "Custom endpoints must use https (http is allowed for localhost, 127.0.0.1 and [::1]): \
+                 http://llm.example.com"
+            );
+            assert_eq!(
+                check_endpoint(p, "localhost:8080", true).unwrap_err(),
+                "Invalid endpoint address: localhost:8080"
+            );
+            assert_eq!(
+                run(&llm_node("OPENAI_API_KEY", "", true), " ", &opts).unwrap_err(),
+                "The LLM input is empty (connect a Prompt node)"
+            );
+            let missing = PromptCfg {
+                data_path: "cc-no-such-data.csv",
+                ..cfg("x", PromptTarget::Gpt)
+            };
+            let err = compile_prompt(&missing, "", None).unwrap_err();
+            assert!(
+                err.starts_with("Could not read the data file (cc-no-such-data.csv): "),
+                "{err}"
+            );
+            assert_eq!(panic_text(Box::new(5u8)), "unknown error");
+        });
+    }
+
+    #[test]
+    fn dry_run_summary_and_reply_notes_in_english() {
+        with_lang(Lang::En, || {
+            let opts = RunOptions::default();
+            // 머리 `[dry-run]`과 프롬프트 본문은 그대로이고 요약 낱말만 영어다.
+            let out = exec_node(
+                &llm_node("OPENAI_API_KEY", "http://evil.example.com", true),
+                1,
+                "hi",
+                &opts,
+            )
+            .unwrap();
+            assert_eq!(out.text, "[dry-run] Anthropic/m max_tokens=100 prompt 2 chars\n---\nhi");
+            let note = out.note.expect("막힐 설정이면 메모가 붙는다");
+            assert!(
+                note.starts_with("⚠ Blocked in a real run: Custom endpoint (http://evil.example.com) is not allowed."),
+                "{note}"
+            );
+            let one = run(&llm_node("OPENAI_API_KEY", "", true), "한", &opts).unwrap();
+            assert_eq!(one, "[dry-run] Anthropic/m max_tokens=100 prompt 1 char\n---\n한");
+
+            let cut = judge_reply(reply("앞부분", Some("max_tokens"), Some((812, 403))), 1024).unwrap();
+            assert_eq!(
+                cut.note.as_deref(),
+                Some("⚠ Truncated at the output token limit (1024) (max_tokens) · tokens 812→403")
+            );
+            let n = |stop| judge_reply(reply("본문", Some(stop), None), 50).unwrap().note.unwrap();
+            assert_eq!(
+                n("model_context_window_exceeded"),
+                "⚠ Truncated: the model's context window is full (model_context_window_exceeded)"
+            );
+            assert_eq!(n("refusal"), "⚠ The response did not finish (stop reason: refusal)");
+            let err = judge_reply(reply("", Some("end_turn"), None), 50).err().unwrap();
+            assert_eq!(err, "The LLM response body is empty (stop reason: end_turn)");
+            let err = judge_reply(reply(" ", None, None), 50).err().unwrap();
+            assert_eq!(err, "The LLM response body is empty");
+        });
+        // 한국어 요약 줄은 예전과 같다.
+        let ko = with_lang(Lang::Ko, || {
+            run(&llm_node("OPENAI_API_KEY", "", true), "hi", &RunOptions::default())
+        });
+        assert_eq!(
+            ko.unwrap(),
+            "[dry-run] Anthropic/m max_tokens=100 프롬프트 2자\n---\nhi"
+        );
+    }
+
+    /// 영어로 만든 기본 Prompt 노드도 린트 오류 없이 컴파일되고 그래프 전체가 돈다.
+    #[test]
+    fn english_default_nodes_run_end_to_end() {
+        with_lang(Lang::En, || {
+            let (g, _) = chain4();
+            let r = run_graph(&g, &RunOptions::default(), |_| {}).unwrap();
+            assert!(r.ok(), "{:?}", r.errors);
+            assert!(
+                r.final_text
+                    .starts_with("[dry-run] Anthropic/claude-sonnet-4-5 max_tokens=1024 prompt "),
+                "{}",
+                r.final_text
+            );
+            assert!(
+                r.final_text.contains("Analyze the following:\n입력"),
+                "{}",
+                r.final_text
+            );
+            assert!(r.final_text.contains("Do not infer anything that is not in the data"));
+        });
     }
 }

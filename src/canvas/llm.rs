@@ -155,8 +155,9 @@ pub fn extract_reply(provider: Provider, v: &Value) -> Result<LlmReply, String> 
     match reply.finish() {
         _ if has_text => Ok(reply),
         Finish::MaxTokens | Finish::ContextWindow | Finish::Stopped => Ok(reply),
-        Finish::Complete | Finish::Unknown => Err(format!(
+        Finish::Complete | Finish::Unknown => Err(trf!(
             "응답에서 텍스트를 찾지 못했습니다: {}",
+            "No text found in the response: {}",
             truncate(&v.to_string(), 300)
         )),
     }
@@ -206,7 +207,7 @@ fn timeout_for(max_tokens: u32) -> Duration {
 
 pub fn call(r: &LlmRequest) -> Result<LlmReply, String> {
     if r.api_key.is_empty() {
-        return Err("API 키가 비어 있습니다".into());
+        return Err(tr!("API 키가 비어 있습니다", "The API key is empty").into());
     }
     let (url, headers, body) = build_request(r);
     // 리디렉션은 따라가지 않는다: ureq는 Authorization만 떼고 x-api-key·x-goog-api-key는
@@ -223,7 +224,9 @@ pub fn call(r: &LlmRequest) -> Result<LlmReply, String> {
         for (k, v) in &headers {
             req = req.header(*k, v);
         }
-        let mut resp = req.send_json(&body).map_err(|e| format!("네트워크 오류: {e}"))?;
+        let mut resp = req
+            .send_json(&body)
+            .map_err(|e| trf!("네트워크 오류: {e}", "Network error: {e}"))?;
         let status = resp.status().as_u16();
         let retry_after = resp
             .headers()
@@ -233,7 +236,7 @@ pub fn call(r: &LlmRequest) -> Result<LlmReply, String> {
         let text = resp
             .body_mut()
             .read_to_string()
-            .map_err(|e| format!("응답 읽기 실패: {e}"))?;
+            .map_err(|e| trf!("응답 읽기 실패: {e}", "Failed to read the response: {e}"))?;
         if retryable(status) && attempt < MAX_RETRIES {
             std::thread::sleep(retry_delay(retry_after.as_deref(), attempt));
             attempt += 1;
@@ -241,18 +244,28 @@ pub fn call(r: &LlmRequest) -> Result<LlmReply, String> {
         }
         break (status, text);
     };
+    read_reply(r.provider, r.api_key, status, attempt, &text)
+}
+
+/// 마지막 HTTP 응답을 결과로 바꾼다(네트워크 없이 단위 테스트할 수 있도록 분리했다).
+/// 2xx가 아니면 상태 코드·재시도 횟수·본문 앞부분을 담은 오류, 2xx면 JSON에서 본문과 종료 이유를 꺼낸다.
+fn read_reply(provider: Provider, api_key: &str, status: u16, retries: u32, text: &str) -> Result<LlmReply, String> {
     if !(200..300).contains(&status) {
         // 응답 본문에 요청 키가 에코될 가능성에 대비해 키를 가린다.
-        let safe = text.replace(r.api_key, "***");
-        let retried = if attempt > 0 {
-            format!(" ({attempt}회 다시 시도 후)")
+        let safe = if api_key.is_empty() {
+            text.to_string()
         } else {
-            String::new()
+            text.replace(api_key, "***")
+        };
+        let retried = match retries {
+            0 => String::new(),
+            1 => tr!(" (1회 다시 시도 후)", " (after 1 retry)").into(),
+            n => trf!(" ({n}회 다시 시도 후)", " (after {n} retries)"),
         };
         return Err(format!("HTTP {status}{retried}: {}", truncate(&safe, 500)));
     }
-    let v: Value = serde_json::from_str(&text).map_err(|e| format!("JSON 파싱 실패: {e}"))?;
-    extract_reply(r.provider, &v)
+    let v: Value = serde_json::from_str(text).map_err(|e| trf!("JSON 파싱 실패: {e}", "JSON parse error: {e}"))?;
+    extract_reply(provider, &v)
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -266,6 +279,7 @@ fn truncate(s: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::{Lang, with_lang};
 
     fn req(p: Provider) -> LlmRequest<'static> {
         LlmRequest {
@@ -418,5 +432,56 @@ mod tests {
         assert_eq!(timeout_for(8192), Duration::from_secs(264));
         assert_eq!(timeout_for(32_000), Duration::from_secs(860));
         assert_eq!(timeout_for(u32::MAX), Duration::from_secs(900));
+    }
+
+    #[test]
+    fn http_and_json_errors_keep_status_and_retry_count() {
+        let ok = r#"{"choices":[{"message":{"content":"x"},"finish_reason":"stop"}]}"#;
+        assert_eq!(read_reply(Provider::OpenAi, "K", 200, 2, ok).unwrap().text, "x");
+        // 본문에 에코된 키는 가린다.
+        assert_eq!(
+            read_reply(Provider::OpenAi, "K", 401, 0, "bad key K").unwrap_err(),
+            "HTTP 401: bad key ***"
+        );
+        assert_eq!(
+            read_reply(Provider::OpenAi, "K", 529, 1, "busy").unwrap_err(),
+            "HTTP 529 (1회 다시 시도 후): busy"
+        );
+        assert_eq!(
+            read_reply(Provider::OpenAi, "K", 503, 2, "busy").unwrap_err(),
+            "HTTP 503 (2회 다시 시도 후): busy"
+        );
+        let err = read_reply(Provider::OpenAi, "K", 200, 0, "not json").unwrap_err();
+        assert!(err.starts_with("JSON 파싱 실패: "), "{err}");
+        let mut r = req(Provider::Anthropic);
+        r.api_key = "";
+        assert_eq!(call(&r).unwrap_err(), "API 키가 비어 있습니다");
+    }
+
+    #[test]
+    fn client_errors_in_english() {
+        with_lang(Lang::En, || {
+            let mut r = req(Provider::Anthropic);
+            r.api_key = "";
+            assert_eq!(call(&r).unwrap_err(), "The API key is empty");
+            assert_eq!(
+                read_reply(Provider::OpenAi, "K", 401, 0, "bad key K").unwrap_err(),
+                "HTTP 401: bad key ***"
+            );
+            assert_eq!(
+                read_reply(Provider::OpenAi, "K", 529, 1, "busy").unwrap_err(),
+                "HTTP 529 (after 1 retry): busy"
+            );
+            assert_eq!(
+                read_reply(Provider::Gemini, "K", 503, 2, "busy").unwrap_err(),
+                "HTTP 503 (after 2 retries): busy"
+            );
+            let err = read_reply(Provider::OpenAi, "K", 200, 0, "not json").unwrap_err();
+            assert!(err.starts_with("JSON parse error: "), "{err}");
+            assert_eq!(
+                read_reply(Provider::OpenAi, "K", 200, 0, "{}").unwrap_err(),
+                "No text found in the response: {}"
+            );
+        });
     }
 }

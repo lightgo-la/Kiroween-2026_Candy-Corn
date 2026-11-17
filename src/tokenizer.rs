@@ -1,6 +1,7 @@
 //! tiktoken-rs(o200k_base) 기반 토큰 수 / 비용 계산.
 //! 다른 벤더 모델의 실제 토큰 수와는 차이가 있을 수 있는 근사치다.
 
+use crate::profiler::csv_profiler::io_error_text;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -19,12 +20,11 @@ pub fn warm_up() {
 
 /// 원본 파일의 토큰 수 추정. 앞 1MB만 토크나이즈하고 파일 크기 비율로 환산한다.
 pub fn estimate_file_tokens(path: &Path) -> Result<usize, String> {
-    let file = File::open(path).map_err(|e| e.to_string())?;
-    let total = file.metadata().map_err(|e| e.to_string())?.len() as usize;
+    let read_err = |e: std::io::Error| trf!("파일을 읽을 수 없음: {}", "cannot read file: {}", io_error_text(&e));
+    let file = File::open(path).map_err(read_err)?;
+    let total = file.metadata().map_err(read_err)?.len() as usize;
     let mut buf = Vec::with_capacity(SAMPLE_BYTES.min(total));
-    file.take(SAMPLE_BYTES as u64)
-        .read_to_end(&mut buf)
-        .map_err(|e| e.to_string())?;
+    file.take(SAMPLE_BYTES as u64).read_to_end(&mut buf).map_err(read_err)?;
     if buf.is_empty() {
         return Ok(0);
     }
@@ -86,5 +86,21 @@ mod tests {
         assert_eq!(profiled, Ok(4), "프로파일러는 UTF-8로 읽는다");
         assert!(a > 5000, "{a}");
         assert!(b.abs_diff(a) <= 4, "깨진 바이트 하나로 토큰 추정이 {a} -> {b}");
+    }
+
+    #[test]
+    fn read_errors_follow_the_language() {
+        use crate::i18n::{Lang, with_lang};
+        let p = std::env::temp_dir().join(format!("cc_tok_missing_{}.csv", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(
+            with_lang(Lang::En, || estimate_file_tokens(&p)),
+            Err("cannot read file: no such file or directory (os error 2)".to_string())
+        );
+        let os = File::open(&p).unwrap_err();
+        assert_eq!(
+            with_lang(Lang::Ko, || estimate_file_tokens(&p)),
+            Err(format!("파일을 읽을 수 없음: {os}"))
+        );
     }
 }

@@ -5,6 +5,7 @@ use crate::ast::{ConstraintNode, OutputFormat, TargetModel};
 use crate::blueprint::{self, Blueprint, GoalSpec, LlmOptions, PRESETS};
 use crate::canvas::{graph::Provider, llm};
 use crate::history::{self, History};
+use crate::i18n::{self, Lang, Tr};
 use crate::pipeline::{self, CompileRequest, CompileResult, LoadedData, TargetCost};
 use crate::studio_canvas::{self, Action, Canvas, Goal, LlmView, Model, NodeKey};
 use crate::theme::{self, Palette, THEMES};
@@ -120,26 +121,51 @@ fn short(s: &str, n: usize) -> String {
 /// LLM 실행 결과의 상태 줄 문구. 잘리거나 중단된 응답은 형식 위반과 구분해 알린다.
 fn llm_status(out: &Result<pipeline::OutputCheck, String>) -> String {
     match out {
-        Ok(c) if c.ok => "LLM 응답 · 출력 형식·필수 필드 검증 통과".into(),
+        Ok(c) if c.ok => tr!(
+            "LLM 응답 · 출력 형식·필수 필드 검증 통과",
+            "LLM reply · output format and required fields passed"
+        )
+        .into(),
         Ok(c) => match &c.cut_off {
-            Some(cut) => format!("LLM 응답 · {cut} (오른쪽 VIII 참고)"),
-            None => "LLM 응답 · 출력 형식 위반 (오른쪽 VIII 참고)".into(),
+            Some(cut) => trf!(
+                "LLM 응답 · {cut} (오른쪽 VIII 참고)",
+                "LLM reply · {cut} (see VIII on the right)"
+            ),
+            None => tr!(
+                "LLM 응답 · 출력 형식 위반 (오른쪽 VIII 참고)",
+                "LLM reply · output format violation (see VIII on the right)"
+            )
+            .into(),
         },
-        Err(_) => "LLM 실행 실패 (오른쪽 VIII에 자세한 내용)".into(),
+        Err(_) => tr!(
+            "LLM 실행 실패 (오른쪽 VIII에 자세한 내용)",
+            "LLM run failed (details in VIII on the right)"
+        )
+        .into(),
     }
 }
 
 /// 캔버스 LLM 노드에 보여 줄 (통과 여부, 한 줄 요약).
 fn llm_verdict(out: &Result<pipeline::OutputCheck, String>) -> (bool, String) {
     match out {
-        Ok(c) if c.ok && c.table_rows == Some(0) => (true, "✔ 형식 통과 · ⚠ 표에 데이터 행 없음".to_string()),
-        Ok(c) if c.ok => (true, "✔ 출력 형식·필수 필드 통과".to_string()),
+        Ok(c) if c.ok && c.table_rows == Some(0) => (
+            true,
+            tr!(
+                "✔ 형식 통과 · ⚠ 표에 데이터 행 없음",
+                "✔ Format OK · ⚠ table has no data rows"
+            )
+            .to_string(),
+        ),
+        Ok(c) if c.ok => (
+            true,
+            tr!("✔ 출력 형식·필수 필드 통과", "✔ Format and required fields OK").to_string(),
+        ),
         Ok(c) => (
             false,
             c.cut_off
                 .clone()
                 .or_else(|| c.error.clone())
-                .unwrap_or_else(|| format!("누락 필드: {}", c.missing.join(", "))),
+                .unwrap_or_else(|| trf!("누락 필드: {}", "Missing fields: {}", c.missing.join(", "))),
         ),
         Err(e) => (false, short(e, 80)),
     }
@@ -170,22 +196,53 @@ fn check_lines(c: &pipeline::OutputCheck) -> Vec<(Tone, String)> {
     if let Some(cut) = &c.cut_off {
         return vec![
             (Tone::Err, format!("✖ {cut}")),
-            (Tone::Muted, format!("형식 검사(잘린 응답 기준): {}", format_summary(c))),
+            (
+                Tone::Muted,
+                trf!(
+                    "형식 검사(잘린 응답 기준): {}",
+                    "Format check (on the cut-off reply): {}",
+                    format_summary(c)
+                ),
+            ),
         ];
     }
     let mut lines = Vec::new();
     if c.ok {
-        lines.push((Tone::Ok, "✔ 출력 형식·필수 필드 검증 통과".to_string()));
+        lines.push((
+            Tone::Ok,
+            tr!(
+                "✔ 출력 형식·필수 필드 검증 통과",
+                "✔ Output format and required fields passed"
+            )
+            .to_string(),
+        ));
         if !c.nulls.is_empty() {
-            lines.push((Tone::Warn, format!("⚠ 값이 비어 있는 필드: {}", c.nulls.join(", "))));
+            lines.push((
+                Tone::Warn,
+                trf!(
+                    "⚠ 값이 비어 있는 필드: {}",
+                    "⚠ Fields with empty values: {}",
+                    c.nulls.join(", ")
+                ),
+            ));
         }
     } else if let Some(e) = &c.error {
         lines.push((Tone::Err, format!("✖ {e}")));
     } else if !c.missing.is_empty() {
-        lines.push((Tone::Warn, format!("⚠ 누락 필드: {}", c.missing.join(", "))));
+        lines.push((
+            Tone::Warn,
+            trf!("⚠ 누락 필드: {}", "⚠ Missing fields: {}", c.missing.join(", ")),
+        ));
     }
     if c.table_rows == Some(0) {
-        lines.push((Tone::Warn, "⚠ 표에 데이터 행이 없습니다 (헤더만 있음)".to_string()));
+        lines.push((
+            Tone::Warn,
+            tr!(
+                "⚠ 표에 데이터 행이 없습니다 (헤더만 있음)",
+                "⚠ The table has no data rows (header only)"
+            )
+            .to_string(),
+        ));
     }
     lines
 }
@@ -193,30 +250,35 @@ fn check_lines(c: &pipeline::OutputCheck) -> Vec<(Tone, String)> {
 /// 형식 검사 결과 한 줄 요약 (잘린 응답에 덧붙이는 흐린 줄).
 fn format_summary(c: &pipeline::OutputCheck) -> String {
     if c.pretty.trim().is_empty() {
-        return "본문 없음".into();
+        return tr!("본문 없음", "empty reply").into();
     }
     match &c.error {
         Some(e) => e.clone(),
-        None if !c.missing.is_empty() => format!("누락 필드: {}", c.missing.join(", ")),
-        None => "출력 형식·필수 필드 일치".into(),
+        None if !c.missing.is_empty() => trf!("누락 필드: {}", "missing fields: {}", c.missing.join(", ")),
+        None => tr!("출력 형식·필수 필드 일치", "format and required fields match").into(),
     }
 }
 
 /// 응답 시간과 제공자가 보고한 토큰 사용량, 컴파일된 프롬프트의 추정 토큰 수.
 fn run_details(ms: u64, usage: Option<llm::Usage>, prompt_tokens: usize) -> String {
     match usage {
-        Some(u) => format!(
+        Some(u) => trf!(
             "응답 {ms} ms · 입력 {} · 출력 {} 토큰 (압축 프롬프트 추정 {prompt_tokens})",
-            u.input, u.output
+            "Reply in {ms} ms · input {} · output {} tokens (compressed prompt est. {prompt_tokens})",
+            u.input,
+            u.output
         ),
-        None => format!("응답 {ms} ms · 사용량 정보 없음 (압축 프롬프트 추정 {prompt_tokens} 토큰)"),
+        None => trf!(
+            "응답 {ms} ms · 사용량 정보 없음 (압축 프롬프트 추정 {prompt_tokens} 토큰)",
+            "Reply in {ms} ms · no usage info (compressed prompt est. {prompt_tokens} tokens)"
+        ),
     }
 }
 
 fn run_line(run: &LlmRun, prompt_tokens: usize) -> String {
     match &run.out {
         Ok(c) => run_details(run.ms, c.usage, prompt_tokens),
-        Err(_) => format!("응답 {} ms 후 실패", run.ms),
+        Err(_) => trf!("응답 {} ms 후 실패", "Failed after {} ms", run.ms),
     }
 }
 
@@ -271,12 +333,13 @@ fn pick_drop(paths: &[PathBuf]) -> Option<&PathBuf> {
 /// 파일을 끌고 있을 때 상태 줄 안내.
 fn drop_hint(kind: Option<DropKind>) -> &'static str {
     match kind {
-        Some(DropKind::Blueprint) => "여기에 놓으면 블루프린트를 엽니다",
-        Some(DropKind::Data) => "여기에 놓으면 데이터를 로드합니다",
-        Some(DropKind::Unsupported) => {
-            "지원하지 않는 파일 형식입니다 (CSV·TSV·TXT·JSON·JSONL·NDJSON 데이터 또는 .kiro 블루프린트)"
-        }
-        None => "여기에 놓으면 파일을 엽니다",
+        Some(DropKind::Blueprint) => tr!("여기에 놓으면 블루프린트를 엽니다", "Drop here to open the blueprint"),
+        Some(DropKind::Data) => tr!("여기에 놓으면 데이터를 로드합니다", "Drop here to load the data"),
+        Some(DropKind::Unsupported) => tr!(
+            "지원하지 않는 파일 형식입니다 (CSV·TSV·TXT·JSON·JSONL·NDJSON 데이터 또는 .kiro 블루프린트)",
+            "Unsupported file type (CSV, TSV, TXT, JSON, JSONL, NDJSON data or a .kiro blueprint)"
+        ),
+        None => tr!("여기에 놓으면 파일을 엽니다", "Drop here to open the file"),
     }
 }
 
@@ -316,13 +379,55 @@ fn compile_key(req: &CompileRequest, data: Option<u64>) -> String {
     )
 }
 
+/// 화면 언어를 바꾼 뒤 이미 만든 컴파일 결과를 어떻게 할지.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LangRefresh {
+    /// 그대로 둔다: 결과가 없거나, 입력이 바뀐 오래된 결과다 (다음 컴파일이 새 언어로 만든다).
+    Keep,
+    /// 같은 입력으로 워커에서 다시 컴파일해 린트 로그를 새 언어로 바꾼다.
+    /// 진행 중인 컴파일이면 새 언어로 다시 시작한다(그대로 두면 두 언어의 문구가 섞일 수 있다).
+    Recompile,
+}
+
+/// 언어 전환 뒤 다시 컴파일할지 정한다. inputs_match는 지금 입력이 화면의 결과(컴파일 중이면 진행 중인
+/// 요청)의 입력과 같은지다. 입력이 바뀌었으면 다시 컴파일하지 않는다: 사용자가 누르지 않은 컴파일로
+/// 결과를 바꾸지 않고, "입력이 바뀜" 표시를 그대로 둔다.
+fn lang_refresh(has_result: bool, compiling: bool, inputs_match: bool) -> LangRefresh {
+    if (has_result || compiling) && inputs_match {
+        LangRefresh::Recompile
+    } else {
+        LangRefresh::Keep
+    }
+}
+
+/// 다시 컴파일한 결과를 받았을 때 LLM 결과(받은 것과 받는 중인 것)를 그대로 둘지.
+/// lang_switch_prompt는 언어 전환 재컴파일일 때 그 전 결과의 프롬프트다. 컴파일된 프롬프트는 화면 언어와
+/// 무관하게 만들어지므로(테스트 `compiled_prompt_does_not_depend_on_ui_language`) 보통 같고, 그러면 같은 프롬프트로
+/// 받은 응답이라 둔다. 프롬프트가 달라졌거나 사용자가 시작한 컴파일이면 버린다.
+fn keep_llm_after_recompile(lang_switch_prompt: Option<&str>, new_prompt: &str) -> bool {
+    lang_switch_prompt == Some(new_prompt)
+}
+
+/// 고른 언어를 설정 파일에 저장한다. 앱은 `i18n::save_default`를, 테스트는 임시 경로에 쓰는 함수를 넘긴다.
+/// 실패하면 상태 줄에 보여 줄 문구(새 언어)를 돌려준다.
+fn persist_lang(lang: Lang, save: impl FnOnce(Lang) -> Result<(), String>) -> Result<(), String> {
+    save(lang).map_err(|e| {
+        trf!(
+            "언어 설정을 저장하지 못했습니다 (이번 실행에만 적용): {e}",
+            "Could not save the language setting (applies to this session only): {e}"
+        )
+    })
+}
+
 /// 열이 하나로 읽혔는데 그 이름에 탭·세미콜론·쉼표·파이프가 남아 있으면 경고 문구.
 /// 프로파일러가 헤더 줄로 구분자(쉼표·세미콜론·탭·파이프)를 고르지만, 판별이 빗나가면 한 열짜리
 /// 잘못된 프로파일이 성공처럼 보여 프롬프트에 들어가므로 알린다.
 fn delimiter_warning(d: &LoadedData) -> Option<&'static str> {
     let cols = &d.data.columns;
-    (cols.len() == 1 && cols[0].name.contains(['\t', ';', ',', '|']))
-        .then_some("⚠ 열이 하나로 읽혔습니다: 헤더에 탭·세미콜론·쉼표·파이프가 남아 있으니 구분자를 확인하세요")
+    (cols.len() == 1 && cols[0].name.contains(['\t', ';', ',', '|'])).then_some(tr!(
+        "⚠ 열이 하나로 읽혔습니다: 헤더에 탭·세미콜론·쉼표·파이프가 남아 있으니 구분자를 확인하세요",
+        "⚠ Read as a single column: the header still has tabs, semicolons, commas or pipes; check the delimiter"
+    ))
 }
 
 /// 프롬프트에 들어가는 데이터 내용의 지문 (stale 키용). 같은 파일을 같은 설정으로 다시 읽으면 같은 값이다.
@@ -365,7 +470,7 @@ impl SavedState {
 fn window_title(project: &str, dirty: bool, path: Option<&Path>) -> String {
     let mark = if dirty { "● " } else { "" };
     let name = match project.trim() {
-        "" => "이름 없음",
+        "" => tr!("이름 없음", "Untitled"),
         n => n,
     };
     let file = path
@@ -393,9 +498,9 @@ enum Pending {
 impl Pending {
     fn label(&self) -> &'static str {
         match self {
-            Pending::OpenDialog | Pending::OpenPath(_) => "블루프린트 열기",
-            Pending::Preset(_) => "내장 블루프린트 적용",
-            Pending::Close => "창 닫기",
+            Pending::OpenDialog | Pending::OpenPath(_) => tr!("블루프린트 열기", "open the blueprint"),
+            Pending::Preset(_) => tr!("내장 블루프린트 적용", "apply the built-in blueprint"),
+            Pending::Close => tr!("창 닫기", "close the window"),
         }
     }
 }
@@ -431,7 +536,12 @@ enum TopAction {
     Redo,
 }
 
-const UNDO_HINT: &str = "Ctrl+Z · 대상: 역할, 제약, 출력 포맷·필드, 타겟\n(테마·데이터·샘플 행 수·프로젝트 이름·노드 배치·LLM 실행 옵션은 대상이 아닙니다. 글자 입력 중에는 입력칸 안에서 되돌립니다)";
+fn undo_hint() -> &'static str {
+    tr!(
+        "Ctrl+Z · 대상: 역할, 제약, 출력 포맷·필드, 타겟\n(테마·데이터·샘플 행 수·프로젝트 이름·노드 배치·LLM 실행 옵션은 대상이 아닙니다. 글자 입력 중에는 입력칸 안에서 되돌립니다)",
+        "Ctrl+Z · covers role, constraints, output format and fields, target\n(Not theme, data, sample rows, project name, node layout or LLM run options. While typing, undo works inside the text box)"
+    )
+}
 
 /// 상단 바를 한 줄에 그리는 데 필요한 너비의 첫 프레임 추정치 (이후에는 지난 프레임에 잰 값을 쓴다).
 const TOPBAR_NEED_GUESS: f32 = 1240.0;
@@ -450,7 +560,7 @@ fn panic_text(e: Box<dyn std::any::Any + Send>) -> String {
     e.downcast_ref::<&str>()
         .map(|s| s.to_string())
         .or_else(|| e.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "알 수 없는 오류".into())
+        .unwrap_or_else(|| tr!("알 수 없는 오류", "unknown error").into())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -458,6 +568,17 @@ enum Tab {
     Canvas,
     XRay,
 }
+
+/// 처음 실행했을 때의 역할과 제약 (시작 언어로 채운다. 그 뒤로는 사용자 내용이라 언어를 바꿔도 그대로 둔다).
+const DEFAULT_ROLE: Tr = Tr(
+    "매출 데이터를 분석해 근본 원인을 찾는 데이터 분석가",
+    "Data analyst who finds root causes in sales data",
+);
+const DEFAULT_GOALS: [(Tr, bool); 3] = [
+    (Tr("결측치 0.2% 제외", "Exclude missing values (0.2%)"), true),
+    (Tr("이상치 우선 탐지", "Detect outliers first"), true),
+    (Tr("4M 기준 분류", "Classify by the 4M threshold"), false),
+];
 
 pub struct StudioApp {
     project: String,
@@ -500,6 +621,8 @@ pub struct StudioApp {
     /// 데이터 파일 참조 (화면의 데이터와 진행 중·누락된 요청). 블루프린트 저장과 다시 프로파일링에 쓴다.
     data_ref: DataRef,
     compile_gen: u64,
+    /// 언어를 바꿔 다시 시작한 컴파일의 (세대, 그 전 결과의 프롬프트). 같은 프롬프트가 나오면 LLM 결과를 둔다.
+    lang_recompile: Option<(u64, String)>,
     /// 컴파일 결과가 현재 입력과 다른지 (프레임마다 한 번 계산)
     stale: bool,
     history: History<Snapshot>,
@@ -575,7 +698,7 @@ impl StudioApp {
         let mut app = StudioApp {
             project: "sales_analysis.kiro".into(),
             target: TargetModel::Claude,
-            role: "매출 데이터를 분석해 근본 원인을 찾는 데이터 분석가".into(),
+            role: DEFAULT_ROLE.get().into(),
             goals: vec![],
             next_id: 1,
             new_goal: String::new(),
@@ -589,7 +712,11 @@ impl StudioApp {
             loaded_fp: 0,
             loading: false,
             compiling: false,
-            status: "데이터를 불러오고 Compile & Run을 누르세요 (Ctrl+Enter)".into(),
+            status: tr!(
+                "데이터를 불러오고 Compile & Run을 누르세요 (Ctrl+Enter)",
+                "Load data, then press Compile & Run (Ctrl+Enter)"
+            )
+            .into(),
             status_err: false,
             result: None,
             compare: vec![],
@@ -604,6 +731,7 @@ impl StudioApp {
             allow_close: false,
             data_ref: DataRef::default(),
             compile_gen: 0,
+            lang_recompile: None,
             stale: false,
             history: History::new(Snapshot {
                 target: TargetModel::Claude,
@@ -630,12 +758,8 @@ impl StudioApp {
             ctx_tx,
             ctx_rx,
         };
-        for (text, on) in [
-            ("결측치 0.2% 제외", true),
-            ("이상치 우선 탐지", true),
-            ("4M 기준 분류", false),
-        ] {
-            app.add_goal(text.to_string(), on);
+        for (text, on) in DEFAULT_GOALS {
+            app.add_goal(text.get().to_string(), on);
         }
         // 작업 폴더의 steering 규칙을 자동 주입 (UTF-8·CP949 자동 판별)
         if let Some(md) = pipeline::find_steering().and_then(|p| pipeline::read_text_auto(&p).ok()) {
@@ -648,7 +772,11 @@ impl StudioApp {
         app.canvas.reset_layout(&app.goals);
         app.history.reset(app.snapshot()); // 시작 상태는 되돌릴 대상이 아니다
         if !font_ok {
-            app.status = "한글 폰트(malgun.ttf 등)를 찾지 못해 한글이 깨질 수 있습니다".into();
+            app.status = tr!(
+                "한글 폰트(malgun.ttf 등)를 찾지 못해 한글이 깨질 수 있습니다",
+                "Korean font (malgun.ttf etc.) not found; Korean text may not display correctly"
+            )
+            .into();
             app.status_err = true;
         }
         if let Some(bp) = startup_blueprint {
@@ -691,20 +819,20 @@ impl StudioApp {
     fn undo(&mut self, ctx: &egui::Context) {
         match self.history.undo() {
             Some(s) => {
-                self.restore(s, "실행 취소");
+                self.restore(s, tr!("실행 취소", "Undone"));
                 clear_text_undo(ctx);
             }
-            None => self.status = "되돌릴 작업이 없습니다".into(),
+            None => self.status = tr!("되돌릴 작업이 없습니다", "Nothing to undo").into(),
         }
     }
 
     fn redo(&mut self, ctx: &egui::Context) {
         match self.history.redo() {
             Some(s) => {
-                self.restore(s, "다시 실행");
+                self.restore(s, tr!("다시 실행", "Redone"));
                 clear_text_undo(ctx);
             }
-            None => self.status = "다시 실행할 작업이 없습니다".into(),
+            None => self.status = tr!("다시 실행할 작업이 없습니다", "Nothing to redo").into(),
         }
     }
 
@@ -723,7 +851,11 @@ impl StudioApp {
         let Some(r) = &self.result else { return };
         let provider = provider_for(r.ast.target_model);
         let Some(key) = api_key(provider) else {
-            self.status = format!("환경 변수 {}가 없습니다", provider.default_key_env());
+            self.status = trf!(
+                "환경 변수 {}가 없습니다",
+                "Environment variable {} is not set",
+                provider.default_key_env()
+            );
             self.status_err = true;
             return;
         };
@@ -744,7 +876,11 @@ impl StudioApp {
         let system = opts.system.trim().to_string();
         let generation = self.llm.start();
         self.llm_out = None;
-        self.status = format!("{} · {model} 실행 중... (출력 한도 {max_tokens})", provider.label());
+        self.status = trf!(
+            "{} · {model} 실행 중... (출력 한도 {max_tokens})",
+            "{} · {model} running... (max output {max_tokens})",
+            provider.label()
+        );
         self.status_err = false;
         let (tx, ctx) = (self.llm_tx.clone(), ctx.clone());
         std::thread::spawn(move || {
@@ -762,7 +898,13 @@ impl StudioApp {
             let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 llm::call(&req).map(|reply| pipeline::check_reply(format, &fields, &reply, max_tokens))
             }))
-            .unwrap_or_else(|e| Err(format!("LLM 호출 내부 오류: {}", panic_text(e))));
+            .unwrap_or_else(|e| {
+                Err(trf!(
+                    "LLM 호출 내부 오류: {}",
+                    "LLM call internal error: {}",
+                    panic_text(e)
+                ))
+            });
             let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
             let _ = tx.send(LlmMsg::Done(generation, LlmRun { out, ms, max_tokens }));
             ctx.request_repaint();
@@ -772,7 +914,7 @@ impl StudioApp {
     /// 진행 중인 LLM 실행을 버린다 (응답이 와도 무시한다).
     fn cancel_llm(&mut self) {
         if self.llm.cancel() {
-            self.status = "LLM 실행 취소됨".into();
+            self.status = tr!("LLM 실행 취소됨", "LLM run cancelled").into();
             self.status_err = false;
         }
     }
@@ -801,7 +943,13 @@ impl StudioApp {
     fn pick_file(&mut self, ctx: &egui::Context) {
         // 프레임 끝(run_dialog)에서만 호출된다.
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("데이터 (CSV·TSV·TXT·JSON·JSONL·NDJSON)", &DATA_EXTS)
+            .add_filter(
+                tr!(
+                    "데이터 (CSV·TSV·TXT·JSON·JSONL·NDJSON)",
+                    "Data (CSV, TSV, TXT, JSON, JSONL, NDJSON)"
+                ),
+                &DATA_EXTS,
+            )
             .pick_file()
         else {
             return;
@@ -816,8 +964,9 @@ impl StudioApp {
             DropKind::Blueprint => self.request(Pending::OpenPath(path), ctx),
             DropKind::Data => self.spawn_load(path, ctx),
             DropKind::Unsupported => {
-                self.status = format!(
+                self.status = trf!(
                     "지원하지 않는 파일 형식: {} (CSV·TSV·TXT·JSON·JSONL·NDJSON 데이터 또는 .kiro 블루프린트만 열 수 있습니다)",
+                    "Unsupported file type: {} (only CSV, TSV, TXT, JSON, JSONL, NDJSON data or .kiro blueprints can be opened)",
                     path.display()
                 );
                 self.status_err = true;
@@ -828,13 +977,18 @@ impl StudioApp {
     fn spawn_load(&mut self, path: PathBuf, ctx: &egui::Context) {
         self.data_ref.requested(path.clone(), self.sample_rows);
         self.loading = true;
-        self.status = format!("프로파일링 중: {}", path.display());
+        self.status = trf!("프로파일링 중: {}", "Profiling: {}", path.display());
         self.status_err = false;
         self.load_gen += 1;
         let (tx, ctx, k, generation) = (self.tx.clone(), ctx.clone(), self.sample_rows, self.load_gen);
         std::thread::spawn(move || {
-            let r = std::panic::catch_unwind(|| pipeline::load_data(&path, k))
-                .unwrap_or_else(|e| Err(format!("프로파일러 내부 오류: {}", panic_text(e))));
+            let r = std::panic::catch_unwind(|| pipeline::load_data(&path, k)).unwrap_or_else(|e| {
+                Err(trf!(
+                    "프로파일러 내부 오류: {}",
+                    "Profiler internal error: {}",
+                    panic_text(e)
+                ))
+            });
             let _ = tx.send(Msg::Loaded(generation, path, r));
             ctx.request_repaint();
         });
@@ -863,6 +1017,12 @@ impl StudioApp {
     }
 
     fn start_compile(&mut self, ctx: &egui::Context) {
+        self.start_compile_with(ctx, None);
+    }
+
+    /// 지금 입력으로 워커에서 컴파일한다. keep_llm_for는 언어를 바꿔 다시 컴파일할 때 그 전 결과의 프롬프트다
+    /// (결과가 같은 프롬프트면 LLM 결과를 그대로 둔다). 사용자가 시작한 컴파일은 None.
+    fn start_compile_with(&mut self, ctx: &egui::Context, keep_llm_for: Option<String>) {
         let inputs = self.request_inputs();
         self.result_key = compile_key(&inputs, self.data_fp());
         let req = CompileRequest {
@@ -870,9 +1030,10 @@ impl StudioApp {
             ..inputs
         };
         self.compiling = true;
-        self.status = "컴파일 중...".into();
+        self.status = tr!("컴파일 중...", "Compiling...").into();
         self.status_err = false;
         self.compile_gen += 1;
+        self.lang_recompile = keep_llm_for.map(|prompt| (self.compile_gen, prompt));
         let (tx, ctx, generation) = (self.ctx_tx.clone(), ctx.clone(), self.compile_gen);
         std::thread::spawn(move || {
             let msg = match std::panic::catch_unwind(|| (pipeline::compile(&req), pipeline::compare_targets(&req))) {
@@ -892,7 +1053,12 @@ impl StudioApp {
             self.loading = false;
             match r {
                 Ok(d) => {
-                    self.status = format!("로드 완료 · {} ({} rows)", path.display(), d.data.total_rows);
+                    self.status = trf!(
+                        "로드 완료 · {} ({} rows)",
+                        "Loaded · {} ({} rows)",
+                        path.display(),
+                        d.data.total_rows
+                    );
                     if let Some(w) = delimiter_warning(&d) {
                         self.status = format!("{} · {w}", self.status);
                         self.status_err = true;
@@ -902,7 +1068,7 @@ impl StudioApp {
                     self.data_ref.succeeded();
                 }
                 Err(e) => {
-                    self.status = format!("로드 실패: {e}");
+                    self.status = trf!("로드 실패: {e}", "Load failed: {e}");
                     self.status_err = true;
                     // 화면에 이전 데이터가 남아 있으면 저장·다시 프로파일링도 그 데이터를 가리키고,
                     // 샘플 행 수도 그 데이터에 맞춘다(폼과 실제 데이터가 어긋나지 않게).
@@ -910,7 +1076,10 @@ impl StudioApp {
                         && rows != self.sample_rows
                     {
                         self.sample_rows = rows;
-                        self.status.push_str(&format!(" · 샘플 행 수를 {rows}로 되돌림"));
+                        self.status.push_str(&trf!(
+                            " · 샘플 행 수를 {rows}로 되돌림",
+                            " · sample rows reset to {rows}"
+                        ));
                     }
                 }
             }
@@ -923,18 +1092,30 @@ impl StudioApp {
                 continue;
             }
             self.compiling = false;
+            // 언어를 바꿔 다시 시작한 컴파일이면 그 전 결과의 프롬프트
+            let lang_switch = self
+                .lang_recompile
+                .take()
+                .filter(|(g, _)| *g == generation)
+                .map(|(_, prompt)| prompt);
             match msg {
                 CompileMsg::Done(_, r, cmp) => {
-                    self.status = "컴파일 완료".into();
-                    self.status_err = false;
+                    // 언어 전환 재컴파일은 상태 줄(언어 전환 안내나 설정 저장 오류)을 덮지 않는다.
+                    if lang_switch.is_none() {
+                        self.status = tr!("컴파일 완료", "Compiled").into();
+                        self.status_err = false;
+                    }
+                    // 이전 프롬프트로 받은(또는 받는 중인) LLM 응답은 더 이상 맞지 않는다.
+                    // 언어만 바꿔 다시 컴파일했고 프롬프트가 그대로면 같은 프롬프트의 응답이므로 둔다.
+                    if !keep_llm_after_recompile(lang_switch.as_deref(), &r.output) {
+                        self.llm_out = None;
+                        self.llm.cancel();
+                    }
                     self.result = Some(*r);
                     self.compare = cmp;
-                    // 이전 프롬프트로 받은(또는 받는 중인) LLM 응답은 더 이상 맞지 않는다.
-                    self.llm_out = None;
-                    self.llm.cancel();
                 }
                 CompileMsg::Failed(_, e) => {
-                    self.status = format!("컴파일 실패: {e}");
+                    self.status = trf!("컴파일 실패: {e}", "Compile failed: {e}");
                     self.status_err = true;
                     self.result_key.clear(); // 남아 있는 이전 결과를 "입력이 바뀜"으로 표시
                 }
@@ -1046,6 +1227,7 @@ impl StudioApp {
         // 진행 중인 컴파일 결과는 이 블루프린트와 맞지 않으므로 버린다.
         self.compile_gen += 1;
         self.compiling = false;
+        self.lang_recompile = None;
         if keep_data {
             self.reprofile_if_needed(ctx);
             return None;
@@ -1061,7 +1243,11 @@ impl StudioApp {
                 None
             }
             Some(dp) => {
-                let warning = format!("데이터 파일을 찾을 수 없음: {}", dp.display());
+                let warning = trf!(
+                    "데이터 파일을 찾을 수 없음: {}",
+                    "Data file not found: {}",
+                    dp.display()
+                );
                 self.data_ref.missing(dp, self.sample_rows); // 다시 저장해도 참조가 사라지지 않게
                 Some(warning)
             }
@@ -1077,7 +1263,7 @@ impl StudioApp {
         let bp = match Blueprint::load(path) {
             Ok(b) => self.with_steering(b),
             Err(e) => {
-                self.status = format!("블루프린트 열기 실패: {e}");
+                self.status = trf!("블루프린트 열기 실패: {e}", "Failed to open blueprint: {e}");
                 self.status_err = true;
                 return;
             }
@@ -1089,11 +1275,11 @@ impl StudioApp {
         self.mark_saved();
         match warning {
             Some(w) => {
-                self.status = format!("블루프린트 열림 · {w}");
+                self.status = trf!("블루프린트 열림 · {w}", "Blueprint opened · {w}");
                 self.status_err = true;
             }
             None => {
-                self.status = format!("블루프린트 열림: {}", path.display());
+                self.status = trf!("블루프린트 열림: {}", "Blueprint opened: {}", path.display());
                 self.status_err = false;
             }
         }
@@ -1103,7 +1289,7 @@ impl StudioApp {
     fn save_to(&mut self, path: &Path) -> SaveOutcome {
         match self.to_blueprint(Some(path)).save(path) {
             Ok(()) => {
-                self.status = format!("블루프린트 저장: {}", path.display());
+                self.status = trf!("블루프린트 저장: {}", "Blueprint saved: {}", path.display());
                 self.status_err = false;
                 self.last_dir = path.parent().map(Path::to_path_buf);
                 self.blueprint_path = Some(path.to_path_buf());
@@ -1121,7 +1307,7 @@ impl StudioApp {
     /// 다른 이름으로 저장 (프레임 끝에서만 호출). 대화상자는 마지막으로 열거나 저장한 폴더에서 연다.
     fn save_as(&mut self) -> SaveOutcome {
         let mut dialog = rfd::FileDialog::new()
-            .add_filter("Candy-Corn 블루프린트", &["kiro"])
+            .add_filter(tr!("Candy-Corn 블루프린트", "Candy-Corn blueprint"), &["kiro"])
             .set_file_name(self.project.clone());
         if let Some(dir) = &self.last_dir {
             dialog = dialog.set_directory(dir);
@@ -1141,7 +1327,8 @@ impl StudioApp {
     }
 
     fn load_project(&mut self, ctx: &egui::Context) {
-        let mut dialog = rfd::FileDialog::new().add_filter("Candy-Corn 블루프린트", &["kiro"]);
+        let mut dialog =
+            rfd::FileDialog::new().add_filter(tr!("Candy-Corn 블루프린트", "Candy-Corn blueprint"), &["kiro"]);
         if let Some(dir) = &self.last_dir {
             dialog = dialog.set_directory(dir);
         }
@@ -1153,7 +1340,11 @@ impl StudioApp {
 
     fn save_output(&mut self) {
         let Some(r) = &self.result else {
-            self.status = "저장할 결과가 없습니다. 먼저 컴파일하세요".into();
+            self.status = tr!(
+                "저장할 결과가 없습니다. 먼저 컴파일하세요",
+                "No result to save. Compile first"
+            )
+            .into();
             self.status_err = true;
             return;
         };
@@ -1163,7 +1354,7 @@ impl StudioApp {
             TargetModel::Gemini => "txt",
         };
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("프롬프트", &[ext, "txt"])
+            .add_filter(tr!("프롬프트", "Prompt"), &[ext, "txt"])
             .set_file_name(format!("prompt.{ext}"))
             .save_file()
         else {
@@ -1171,11 +1362,11 @@ impl StudioApp {
         };
         match std::fs::write(&path, &r.output) {
             Ok(()) => {
-                self.status = format!("결과 저장: {}", path.display());
+                self.status = trf!("결과 저장: {}", "Result saved: {}", path.display());
                 self.status_err = false;
             }
             Err(e) => {
-                self.status = format!("저장 실패: {e}");
+                self.status = trf!("저장 실패: {e}", "Save failed: {e}");
                 self.status_err = true;
             }
         }
@@ -1194,7 +1385,12 @@ impl StudioApp {
         bp.llm_options = self.llm_opts.clone();
         self.apply_blueprint(bp, None, true, ctx);
         self.blueprint_path = None;
-        self.status = format!("블루프린트 적용: {} ({})", preset.name, preset.summary);
+        self.status = trf!(
+            "블루프린트 적용: {} ({})",
+            "Blueprint applied: {} ({})",
+            preset.name.get(),
+            preset.summary.get()
+        );
         self.status_err = false;
     }
 
@@ -1243,12 +1439,17 @@ impl StudioApp {
                 SaveOutcome::Saved => self.perform(p, ctx),
                 // 저장하지 않았으면 이어지는 작업도 하지 않는다(변경을 잃지 않게).
                 SaveOutcome::Cancelled => {
-                    self.status = format!("저장을 취소해서 작업({})을 하지 않았습니다", p.label());
+                    self.status = trf!(
+                        "저장을 취소해서 작업({})을 하지 않았습니다",
+                        "Save cancelled; did not {}",
+                        p.label()
+                    );
                     self.status_err = false;
                 }
-                SaveOutcome::Failed => self
-                    .status
-                    .push_str(&format!(" · 작업({})을 하지 않았습니다", p.label())),
+                SaveOutcome::Failed => {
+                    self.status
+                        .push_str(&trf!(" · 작업({})을 하지 않았습니다", " · did not {}", p.label()))
+                }
             },
         }
     }
@@ -1277,8 +1478,48 @@ impl StudioApp {
                 Action::QuickSave => self.dialog = Some(Dialog::QuickSave),
                 Action::LoadProject => self.request(Pending::OpenDialog, ctx),
                 Action::SaveOutput => self.dialog = Some(Dialog::SaveOutput),
+                Action::SetLang(lang) => self.switch_lang(lang, ctx),
             }
         }
+    }
+
+    /// 화면 언어를 바꾼다 (상단 바·설정 노드의 언어 선택). 입력한 내용(역할·제약·steering 규칙)은 그대로 두고,
+    /// 설정 파일에 저장하고, 이미 만든 린트 로그가 옛 언어이므로 입력이 그대로면 같은 입력으로 다시 컴파일한다.
+    fn switch_lang(&mut self, lang: Lang, ctx: &egui::Context) {
+        if lang == i18n::current() {
+            return;
+        }
+        i18n::set(lang);
+        let refresh = lang_refresh(
+            self.result.is_some(),
+            self.compiling,
+            self.result_key == self.input_key(),
+        );
+        if refresh == LangRefresh::Recompile {
+            // 진행 중인 컴파일은 새 언어로 다시 시작한다. 사용자가 시작한 컴파일이면 원래대로 LLM 결과를 버리고,
+            // 언어 전환 재컴파일이면 그 기준 프롬프트를 이어받는다.
+            let keep_llm_for = if self.compiling {
+                self.lang_recompile
+                    .take()
+                    .filter(|(g, _)| *g == self.compile_gen)
+                    .map(|(_, prompt)| prompt)
+            } else {
+                self.result.as_ref().map(|r| r.output.clone())
+            };
+            self.start_compile_with(ctx, keep_llm_for);
+        }
+        match persist_lang(lang, i18n::save_default) {
+            Ok(()) => {
+                self.status = trf!("언어: {}", "Language: {}", lang.native_name());
+                self.status_err = false;
+            }
+            Err(e) => {
+                self.status = e;
+                self.status_err = true;
+            }
+        }
+        self.update_title(ctx); // "이름 없음" 같은 제목 문구
+        ctx.request_repaint();
     }
 
     fn update_title(&mut self, ctx: &egui::Context) {
@@ -1302,7 +1543,7 @@ impl StudioApp {
         // 로드 중에 놓아도 새 로드가 이긴다(load_gen).
         if let Some(path) = pick_drop(&dropped).cloned() {
             if modal_open {
-                self.status = "먼저 저장 여부를 선택하세요".into();
+                self.status = tr!("먼저 저장 여부를 선택하세요", "Choose whether to save first").into();
                 self.status_err = true;
             } else {
                 self.open_path(path, ctx);
@@ -1347,34 +1588,50 @@ impl StudioApp {
         }
         let Some(pending) = self.confirm.clone() else { return };
         let question = match &pending {
-            Pending::Preset(i) => format!(
+            Pending::Preset(i) => trf!(
                 "내장 블루프린트 「{}」 적용 전에 현재 변경 사항을 저장할까요?",
-                PRESETS.get(*i).map_or("", |x| x.name)
+                "Save your current changes before applying the built-in blueprint “{}”?",
+                PRESETS.get(*i).map_or("", |x| x.name.get())
             ),
-            Pending::OpenDialog | Pending::OpenPath(_) => {
-                "다른 블루프린트를 열기 전에 현재 변경 사항을 저장할까요?".to_string()
-            }
-            Pending::Close => "창을 닫기 전에 현재 변경 사항을 저장할까요?".to_string(),
+            Pending::OpenDialog | Pending::OpenPath(_) => tr!(
+                "다른 블루프린트를 열기 전에 현재 변경 사항을 저장할까요?",
+                "Save your current changes before opening another blueprint?"
+            )
+            .to_string(),
+            Pending::Close => tr!(
+                "창을 닫기 전에 현재 변경 사항을 저장할까요?",
+                "Save your current changes before closing the window?"
+            )
+            .to_string(),
         };
         let mut choice = None;
         let modal = egui::Modal::new(egui::Id::unique("unsaved-changes")).show(ctx, |ui| {
             ui.set_max_width(420.0);
-            ui.label(RichText::new("저장하지 않은 변경 사항").strong().size(16.0).color(p.hi));
+            ui.label(
+                RichText::new(tr!("저장하지 않은 변경 사항", "Unsaved changes"))
+                    .strong()
+                    .size(16.0)
+                    .color(p.hi),
+            );
             ui.add_space(4.0);
-            ui.label(format!("「{}」에 저장하지 않은 변경 사항이 있습니다.", self.project));
+            ui.label(trf!(
+                "「{}」에 저장하지 않은 변경 사항이 있습니다.",
+                "“{}” has unsaved changes.",
+                self.project
+            ));
             ui.label(question);
             if let Pending::OpenPath(path) = &pending {
                 ui.label(RichText::new(path.display().to_string()).small().color(p.sub));
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if theme::primary_button(ui, p, "저장", true).clicked() {
+                if theme::primary_button(ui, p, tr!("저장", "Save"), true).clicked() {
                     choice = Some(Choice::Save);
                 }
-                if ui.button("저장 안 함").clicked() {
+                if ui.button(tr!("저장 안 함", "Don't save")).clicked() {
                     choice = Some(Choice::Discard);
                 }
-                if ui.button("취소").clicked() {
+                if ui.button(tr!("취소", "Cancel")).clicked() {
                     choice = Some(Choice::Cancel);
                 }
             });
@@ -1393,7 +1650,7 @@ impl StudioApp {
             }
             Some(Choice::Cancel) => {
                 self.confirm = None;
-                self.status = "취소했습니다".into();
+                self.status = tr!("취소했습니다", "Cancelled").into();
                 self.status_err = false;
             }
             None => {}
@@ -1402,39 +1659,27 @@ impl StudioApp {
 
     // ---------- 패널 ----------
 
-    /// 상단 바. 한 줄에 다 들어가지 않으면(최소 창 너비 1000px 등) 타겟·테마를 둘째 줄로 내린다.
-    /// 한 줄에 필요한 너비는 지난 프레임에 잰 각 묶음의 너비로 정하므로 글꼴·테마 이름이 달라도 맞는다.
+    /// 상단 바 (그리기는 top_bar_ui). 고른 언어로 바꾸고 누른 버튼을 처리한다.
     fn top_bar(&mut self, ui: &mut egui::Ui, p: &Palette, ctx: &egui::Context) {
-        let compact = ui.available_width() < self.topbar_need;
-        let gap = ui.spacing().item_spacing.x;
-        let mut brand_w = 0.0;
-        let mut sel_w = 0.0;
-        let can_undo = self.history.can_undo();
-        let can_redo = self.history.can_redo();
-        let compiling = self.compiling;
-        let (left_w, (right_w, act)) = egui::Sides::new().height(46.0).show(
+        let (act, lang) = top_bar_ui(
             ui,
-            |ui| {
-                let x0 = ui.cursor().left();
-                brand(ui, self.logo.as_ref(), p);
-                brand_w = ui.cursor().left() - x0;
-                ui.add_space(16.0);
-                project_field(ui, &mut self.project, self.dirty, self.blueprint_path.as_deref(), p);
-                if !compact {
-                    sel_w = selectors(ui, &mut self.target, &mut self.theme_idx);
-                }
-                ui.min_rect().width()
+            p,
+            TopBar {
+                logo: self.logo.as_ref(),
+                project: &mut self.project,
+                dirty: self.dirty,
+                path: self.blueprint_path.as_deref(),
+                target: &mut self.target,
+                theme_idx: &mut self.theme_idx,
+                need: &mut self.topbar_need,
+                compiling: self.compiling,
+                can_undo: self.history.can_undo(),
+                can_redo: self.history.can_redo(),
             },
-            |ui| top_actions(ui, p, compiling, can_undo, can_redo),
         );
-        if compact {
-            ui.horizontal(|ui| {
-                ui.add_space(brand_w + 16.0);
-                sel_w = selectors(ui, &mut self.target, &mut self.theme_idx);
-            });
+        if let Some(l) = lang {
+            self.switch_lang(l, ctx);
         }
-        let one_row = if compact { left_w + gap + sel_w } else { left_w };
-        self.topbar_need = one_row + gap + right_w + 24.0;
         match act {
             Some(TopAction::Compile) => {
                 if !self.compiling {
@@ -1470,13 +1715,16 @@ impl StudioApp {
             // 오른쪽을 먼저 그리므로(긴 상태 문구는 왼쪽에서 잘린다) "입력이 바뀜" 경고는 늘 보인다.
             |ui| {
                 ui.label(
-                    RichText::new("Ctrl+Enter 컴파일 · Ctrl+S 저장 · Ctrl+O 열기 · 파일 끌어다 놓기")
-                        .small()
-                        .color(p.sub),
+                    RichText::new(tr!(
+                        "Ctrl+Enter 컴파일 · Ctrl+S 저장 · Ctrl+O 열기 · 파일 끌어다 놓기",
+                        "Ctrl+Enter compile · Ctrl+S save · Ctrl+O open · drop files"
+                    ))
+                    .small()
+                    .color(p.sub),
                 );
                 if self.stale && !self.compiling {
                     ui.label(
-                        RichText::new("● 입력이 바뀜: 다시 컴파일하세요")
+                        RichText::new(tr!("● 입력이 바뀜: 다시 컴파일하세요", "● Inputs changed: recompile"))
                             .small()
                             .color(p.warn()),
                     );
@@ -1486,11 +1734,14 @@ impl StudioApp {
     }
 
     fn left_pane(&mut self, ui: &mut egui::Ui, p: &Palette) {
-        theme::section_title(ui, p, "I", "데이터 소스");
+        theme::section_title(ui, p, "I", tr!("데이터 소스", "Data source"));
         let mut reload = false;
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(!self.loading, egui::Button::new("📂 CSV/JSON 로드"))
+                .add_enabled(
+                    !self.loading,
+                    egui::Button::new(tr!("📂 CSV/JSON 로드", "📂 Load CSV/JSON")),
+                )
                 .on_hover_text("CSV·TSV·TXT·JSON·JSONL·NDJSON")
                 .clicked()
             {
@@ -1501,7 +1752,7 @@ impl StudioApp {
             }
         });
         ui.horizontal(|ui| {
-            ui.label("샘플 행 수");
+            ui.label(tr!("샘플 행 수", "Sample rows"));
             let r = ui.add(egui::DragValue::new(&mut self.sample_rows).range(0..=blueprint::MAX_SAMPLE_ROWS));
             reload = r.drag_stopped() || r.lost_focus();
         });
@@ -1519,13 +1770,19 @@ impl StudioApp {
                 .on_hover_text(d.path.display().to_string());
             }
             None => {
-                ui.label(RichText::new("로드된 데이터 없음 (파일을 창에 끌어다 놓아도 됩니다)").color(p.sub));
+                ui.label(
+                    RichText::new(tr!(
+                        "로드된 데이터 없음 (파일을 창에 끌어다 놓아도 됩니다)",
+                        "No data loaded (you can also drop a file on the window)"
+                    ))
+                    .color(p.sub),
+                );
             }
         }
 
         ui.add_space(10.0);
-        theme::section_title(ui, p, "II", "분석 목표 & 제약");
-        ui.label(RichText::new("역할").color(p.sub));
+        theme::section_title(ui, p, "II", tr!("분석 목표 & 제약", "Goals & constraints"));
+        ui.label(RichText::new(tr!("역할", "Role")).color(p.sub));
         ui.add(
             egui::TextEdit::multiline(&mut self.role)
                 .desired_rows(3)
@@ -1542,7 +1799,11 @@ impl StudioApp {
                         .desired_rows(1)
                         .desired_width(row_w),
                 );
-                if ui.small_button("×").on_hover_text("이 제약 삭제").clicked() {
+                if ui
+                    .small_button("×")
+                    .on_hover_text(tr!("이 제약 삭제", "Delete this constraint"))
+                    .clicked()
+                {
                     remove = Some(g.id);
                 }
             });
@@ -1553,7 +1814,7 @@ impl StudioApp {
         ui.horizontal(|ui| {
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.new_goal)
-                    .hint_text("새 제약 추가 (Enter)")
+                    .hint_text(tr!("새 제약 추가 (Enter)", "Add a constraint (Enter)"))
                     .desired_width(row_w),
             );
             let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -1565,19 +1826,23 @@ impl StudioApp {
         });
 
         ui.add_space(10.0);
-        theme::section_title(ui, p, "III", "출력 포맷 강제");
+        theme::section_title(ui, p, "III", tr!("출력 포맷 강제", "Enforced output format"));
         ui.radio_value(&mut self.format, OutputFormat::StrictJson, "Strict JSON");
         ui.radio_value(&mut self.format, OutputFormat::MarkdownTable, "Markdown Table");
-        ui.label(RichText::new("필수 필드 (쉼표 구분)").color(p.sub));
+        ui.label(RichText::new(tr!("필수 필드 (쉼표 구분)", "Required fields (comma separated)")).color(p.sub));
         ui.add(egui::TextEdit::singleline(&mut self.fields_text).desired_width(ui.available_width()));
         if pipeline::parse_fields(&self.fields_text).is_empty() {
-            ui.colored_label(theme::ERR, "필수 필드가 비어 있습니다");
+            ui.colored_label(theme::ERR, tr!("필수 필드가 비어 있습니다", "No required fields"));
         }
     }
 
     fn center_pane(&mut self, ui: &mut egui::Ui, p: &Palette) {
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.tab, Tab::Canvas, RichText::new("IV · 캔버스").size(15.0));
+            ui.selectable_value(
+                &mut self.tab,
+                Tab::Canvas,
+                RichText::new(tr!("IV · 캔버스", "IV · Canvas")).size(15.0),
+            );
             ui.selectable_value(&mut self.tab, Tab::XRay, RichText::new("Multi-AST X-Ray").size(15.0));
         });
         ui.add_space(2.0);
@@ -1635,8 +1900,20 @@ impl StudioApp {
 
     fn xray(&mut self, ui: &mut egui::Ui, p: &Palette) {
         let Some(r) = &self.result else {
-            ui.label(RichText::new("1) 데이터(CSV/JSON)를 로드하거나 파일을 창에 끌어다 놓기").color(p.sub));
-            ui.label(RichText::new("2) 제약을 체크하고 Compile & Run (Ctrl+Enter)").color(p.sub));
+            ui.label(
+                RichText::new(tr!(
+                    "1) 데이터(CSV/JSON)를 로드하거나 파일을 창에 끌어다 놓기",
+                    "1) Load data (CSV/JSON) or drop a file on the window"
+                ))
+                .color(p.sub),
+            );
+            ui.label(
+                RichText::new(tr!(
+                    "2) 제약을 체크하고 Compile & Run (Ctrl+Enter)",
+                    "2) Tick the constraints and press Compile & Run (Ctrl+Enter)"
+                ))
+                .color(p.sub),
+            );
             return;
         };
         let ast = &r.ast;
@@ -1679,13 +1956,20 @@ impl StudioApp {
                                     });
                             }
                             None => {
-                                ui.label(RichText::new("DataSubAST: (데이터 없음)").color(p.sub));
+                                ui.label(
+                                    RichText::new(tr!("DataSubAST: (데이터 없음)", "DataSubAST: (no data)"))
+                                        .color(p.sub),
+                                );
                             }
                         }
                         let lint_ok = !ast.lint_warnings.iter().any(|d| d.severity != "INFO");
                         egui::CollapsingHeader::new(format!(
                             "ConstraintSubAST ({})",
-                            if lint_ok { "Lint OK" } else { "Lint 경고" }
+                            if lint_ok {
+                                "Lint OK"
+                            } else {
+                                tr!("Lint 경고", "Lint warnings")
+                            }
                         ))
                         .id_salt("xray-constraints")
                         .default_open(true)
@@ -1712,7 +1996,7 @@ impl StudioApp {
             compare_grid(ui, p, &self.compare, ast.target_model);
         }
         ui.separator();
-        theme::section_title(ui, p, "V", "실시간 린트 로그");
+        theme::section_title(ui, p, "V", tr!("실시간 린트 로그", "Live lint log"));
         egui::ScrollArea::vertical().id_salt("lint").show(ui, |ui| {
             for d in &ast.lint_warnings {
                 let (icon, color) = match d.severity.as_str() {
@@ -1726,9 +2010,15 @@ impl StudioApp {
     }
 
     fn right_pane(&mut self, ui: &mut egui::Ui, p: &Palette) {
-        theme::section_title(ui, p, "VI", "토큰 절감률");
+        theme::section_title(ui, p, "VI", tr!("토큰 절감률", "Token savings"));
         let Some(r) = &self.result else {
-            ui.label(RichText::new("컴파일하면 토큰 절감률과 최종 프롬프트가 여기에 표시됩니다.").color(p.sub));
+            ui.label(
+                RichText::new(tr!(
+                    "컴파일하면 토큰 절감률과 최종 프롬프트가 여기에 표시됩니다.",
+                    "Compile to see the token savings and the final prompt here."
+                ))
+                .color(p.sub),
+            );
             return;
         };
         let good = r.saving_pct >= 0.0;
@@ -1750,20 +2040,29 @@ impl StudioApp {
             ),
         );
         theme::paint_h_gradient(ui.painter(), fill, p.hi, p.accent);
-        ui.label(format!("원본 {} → 압축 {} tokens", r.orig_tokens, r.comp_tokens));
+        ui.label(trf!(
+            "원본 {} → 압축 {} tokens",
+            "Original {} → compressed {} tokens",
+            r.orig_tokens,
+            r.comp_tokens
+        ));
         ui.label(
-            RichText::new(format!("절감 ${:.4}  ·  o200k_base 근사, 단가는 추정치", r.saved_usd))
-                .small()
-                .color(p.sub),
+            RichText::new(trf!(
+                "절감 ${:.4}  ·  o200k_base 근사, 단가는 추정치",
+                "Saved ${:.4}  ·  o200k_base approximation, prices are estimates",
+                r.saved_usd
+            ))
+            .small()
+            .color(p.sub),
         );
 
         ui.add_space(8.0);
-        theme::section_title(ui, p, "VII", "최종 프롬프트 출력");
+        theme::section_title(ui, p, "VII", tr!("최종 프롬프트 출력", "Final prompt"));
         ui.horizontal(|ui| {
-            if ui.button("복사").clicked() {
+            if ui.button(tr!("복사", "Copy")).clicked() {
                 ui.ctx().copy_text(r.output.clone());
             }
-            if ui.button("파일로 저장").clicked() {
+            if ui.button(tr!("파일로 저장", "Save to file")).clicked() {
                 self.dialog = Some(Dialog::SaveOutput);
             }
         });
@@ -1798,7 +2097,7 @@ impl StudioApp {
         }) else {
             return;
         };
-        theme::section_title(ui, p, "VIII", "LLM 실행 결과");
+        theme::section_title(ui, p, "VIII", tr!("LLM 실행 결과", "LLM run result"));
         let provider = provider_for(target);
         let has_key = api_key(provider).is_some();
         let stale = self.stale;
@@ -1812,14 +2111,19 @@ impl StudioApp {
                     .desired_width(150.0)
                     .hint_text(provider.default_model()),
             );
-            let label = if running { "실행 중" } else { "▶ 실제 실행" };
+            let label = if running {
+                tr!("실행 중", "Running")
+            } else {
+                tr!("▶ 실제 실행", "▶ Run live")
+            };
             let btn = theme::primary_button(ui, p, label, ready);
             // 키가 없을 때만 안내한다(실행 중 비활성 상태에는 붙이지 않는다).
             let btn = if has_key {
                 btn
             } else {
-                btn.on_disabled_hover_text(format!(
+                btn.on_disabled_hover_text(trf!(
                     "환경 변수 {}에 API 키를 설정한 뒤 앱을 다시 시작하세요",
+                    "Put your API key in the {} environment variable, then restart the app",
                     provider.default_key_env()
                 ))
             };
@@ -1829,8 +2133,11 @@ impl StudioApp {
             if running {
                 ui.spinner();
                 if ui
-                    .button("■ 취소")
-                    .on_hover_text("응답을 기다리지 않고 버립니다")
+                    .button(tr!("■ 취소", "■ Cancel"))
+                    .on_hover_text(tr!(
+                        "응답을 기다리지 않고 버립니다",
+                        "Discard the reply without waiting"
+                    ))
                     .clicked()
                 {
                     act = Some(Act::Cancel);
@@ -1839,8 +2146,9 @@ impl StudioApp {
         });
         // 제목에 현재 값 요약이 붙어 바뀌므로 열림 상태는 고정 id로 기억한다.
         let temp_max = blueprint::temperature_max(provider);
-        egui::CollapsingHeader::new(format!(
+        egui::CollapsingHeader::new(trf!(
             "실행 옵션 · {}",
+            "Run options · {}",
             studio_canvas::options_summary(&self.llm_opts, temp_max)
         ))
         .id_salt("viii-llm-opts")
@@ -1850,20 +2158,27 @@ impl StudioApp {
         let with_system = if self.llm_opts.system.trim().is_empty() {
             ""
         } else {
-            " (시스템 프롬프트 포함)"
+            tr!(" (시스템 프롬프트 포함)", " (including the system prompt)")
         };
         let note = match (has_key && !stale, has_data) {
-            _ if has_key && stale => "입력이 바뀌었습니다. 다시 컴파일한 뒤 실행하세요".to_string(),
-            (true, true) => format!(
+            _ if has_key && stale => tr!(
+                "입력이 바뀌었습니다. 다시 컴파일한 뒤 실행하세요",
+                "Inputs changed. Recompile before running"
+            )
+            .to_string(),
+            (true, true) => trf!(
                 "실행하면 최종 출력 전체(파일 이름, 컬럼 통계, 이상치, 샘플 행 포함){with_system}가 {}로 전송됩니다",
+                "Running sends the whole final output (file name, column stats, outliers, sample rows){with_system} to {}",
                 provider.label()
             ),
-            (true, false) => format!(
+            (true, false) => trf!(
                 "실행하면 최종 출력 프롬프트{with_system}가 {}로 전송됩니다",
+                "Running sends the final prompt{with_system} to {}",
                 provider.label()
             ),
-            (false, _) => format!(
+            (false, _) => trf!(
                 "{} 환경 변수가 없어 스키마 골격(모의 응답)만 보여 줍니다. 설정 후 앱을 다시 시작하세요",
+                "{} is not set, so only the schema skeleton (mock reply) is shown. Set it and restart the app",
                 provider.default_key_env()
             ),
         };
@@ -1887,9 +2202,12 @@ impl StudioApp {
                         ui.colored_label(tone_color(tone, p), line);
                     }
                     ui.label(
-                        RichText::new(format!(
+                        RichText::new(trf!(
                             "종료 이유: {}",
-                            c.stop_reason.as_deref().unwrap_or("(응답에 없음)")
+                            "Stop reason: {}",
+                            c.stop_reason
+                                .as_deref()
+                                .unwrap_or(tr!("(응답에 없음)", "(not in the reply)"))
                         ))
                         .small()
                         .color(p.sub),
@@ -1899,18 +2217,34 @@ impl StudioApp {
                     ui.horizontal_wrapped(|ui| {
                         if let Some(limit) = retry_limit(run)
                             && ui
-                                .add_enabled(ready, egui::Button::new(format!("한도 2배({limit})로 다시 실행")))
-                                .on_hover_text("출력 토큰 한도를 두 배로 늘려 같은 프롬프트를 다시 보냅니다")
+                                .add_enabled(
+                                    ready,
+                                    egui::Button::new(trf!(
+                                        "한도 2배({limit})로 다시 실행",
+                                        "Retry with 2× limit ({limit})"
+                                    )),
+                                )
+                                .on_hover_text(tr!(
+                                    "출력 토큰 한도를 두 배로 늘려 같은 프롬프트를 다시 보냅니다",
+                                    "Doubles the output token limit and sends the same prompt again"
+                                ))
                                 .clicked()
                         {
                             act = Some(Act::Retry(limit));
                         }
-                        if ui.add_enabled(!empty, egui::Button::new("응답 복사").small()).clicked() {
+                        if ui
+                            .add_enabled(!empty, egui::Button::new(tr!("응답 복사", "Copy reply")).small())
+                            .clicked()
+                        {
                             ui.ctx().copy_text(c.pretty.clone());
                         }
                     });
                     if empty {
-                        ui.label(RichText::new("(본문 없음)").monospace().color(p.sub));
+                        ui.label(
+                            RichText::new(tr!("(본문 없음)", "(empty reply)"))
+                                .monospace()
+                                .color(p.sub),
+                        );
                     } else {
                         ui.add(egui::Label::new(RichText::new(&c.pretty).monospace().color(p.sub)).selectable(true));
                     }
@@ -1926,6 +2260,68 @@ impl StudioApp {
     }
 }
 
+/// 상단 바에 그리는 값과 한 줄에 필요한 너비.
+struct TopBar<'a> {
+    logo: Option<&'a egui::TextureHandle>,
+    project: &'a mut String,
+    dirty: bool,
+    path: Option<&'a Path>,
+    target: &'a mut TargetModel,
+    theme_idx: &'a mut usize,
+    /// 한 줄에 그리는 데 필요한 너비 (지난 프레임에 잰 값, 그릴 때마다 다시 잰다)
+    need: &'a mut f32,
+    compiling: bool,
+    can_undo: bool,
+    can_redo: bool,
+}
+
+/// 상단 바를 그린다. 한 줄에 다 들어가지 않으면(최소 창 너비 1000px 등) 타겟·테마·언어를 둘째 줄로 내린다.
+/// 한 줄에 필요한 너비는 지난 프레임에 잰 각 묶음의 너비로 정하므로 글꼴·테마 이름·언어가 달라도 맞는다.
+/// (누른 버튼, 새로 고른 언어)를 돌려준다.
+fn top_bar_ui(ui: &mut egui::Ui, p: &Palette, bar: TopBar<'_>) -> (Option<TopAction>, Option<Lang>) {
+    let TopBar {
+        logo,
+        project,
+        dirty,
+        path,
+        target,
+        theme_idx,
+        need,
+        compiling,
+        can_undo,
+        can_redo,
+    } = bar;
+    let compact = ui.available_width() < *need;
+    let gap = ui.spacing().item_spacing.x;
+    let mut brand_w = 0.0;
+    let mut sel_w = 0.0;
+    let mut lang = None;
+    let (left_w, (right_w, act)) = egui::Sides::new().height(46.0).show(
+        ui,
+        |ui| {
+            let x0 = ui.cursor().left();
+            brand(ui, logo, p);
+            brand_w = ui.cursor().left() - x0;
+            ui.add_space(16.0);
+            project_field(ui, project, dirty, path, p);
+            if !compact {
+                (sel_w, lang) = selectors(ui, target, theme_idx);
+            }
+            ui.min_rect().width()
+        },
+        |ui| top_actions(ui, p, compiling, can_undo, can_redo),
+    );
+    if compact {
+        ui.horizontal(|ui| {
+            ui.add_space(brand_w + 16.0);
+            (sel_w, lang) = selectors(ui, target, theme_idx);
+        });
+    }
+    let one_row = if compact { left_w + gap + sel_w } else { left_w };
+    *need = one_row + gap + right_w + 24.0;
+    (act, lang)
+}
+
 /// 상단 바 왼쪽 로고와 이름.
 fn brand(ui: &mut egui::Ui, logo: Option<&egui::TextureHandle>, p: &Palette) {
     match logo {
@@ -1939,20 +2335,26 @@ fn brand(ui: &mut egui::Ui, logo: Option<&egui::TextureHandle>, p: &Palette) {
     }
     ui.vertical(|ui| {
         ui.label(RichText::new("CANDY-CORN").size(20.0).strong().color(p.hi));
-        ui.label(RichText::new(p.tag).size(10.0).color(p.accent));
+        ui.label(RichText::new(p.tag.get()).size(10.0).color(p.accent));
     });
 }
 
 /// 프로젝트 이름과 저장하지 않은 변경 표시(●). 표시 자리는 늘 잡아 두어 상단 바 너비가 바뀌지 않게 한다.
 fn project_field(ui: &mut egui::Ui, project: &mut String, dirty: bool, path: Option<&Path>, p: &Palette) {
-    ui.label("프로젝트");
+    ui.label(tr!("프로젝트", "Project"));
     ui.add(
         egui::TextEdit::singleline(project)
             .id_salt("top-project")
             .desired_width(150.0),
     )
     .on_hover_text(path.map_or_else(
-        || "아직 파일로 저장하지 않은 블루프린트 (Ctrl+S로 저장)".to_string(),
+        || {
+            tr!(
+                "아직 파일로 저장하지 않은 블루프린트 (Ctrl+S로 저장)",
+                "Blueprint not saved to a file yet (Ctrl+S to save)"
+            )
+            .to_string()
+        },
         |p| p.display().to_string(),
     ));
     let (slot, resp) = ui.allocate_exact_size(egui::vec2(12.0, 18.0), egui::Sense::hover());
@@ -1964,14 +2366,17 @@ fn project_field(ui: &mut egui::Ui, project: &mut String, dirty: bool, path: Opt
             egui::FontId::proportional(13.0),
             p.warn(),
         );
-        resp.on_hover_text("저장하지 않은 변경 사항이 있습니다 (Ctrl+S로 저장)");
+        resp.on_hover_text(tr!(
+            "저장하지 않은 변경 사항이 있습니다 (Ctrl+S로 저장)",
+            "Unsaved changes (Ctrl+S to save)"
+        ));
     }
 }
 
-/// 타겟·테마 선택. 그린 너비를 돌려준다.
-fn selectors(ui: &mut egui::Ui, target: &mut TargetModel, theme_idx: &mut usize) -> f32 {
+/// 타겟·테마·언어 선택. (그린 너비, 새로 고른 언어)를 돌려준다.
+fn selectors(ui: &mut egui::Ui, target: &mut TargetModel, theme_idx: &mut usize) -> (f32, Option<Lang>) {
     let x0 = ui.cursor().left();
-    ui.label("타겟");
+    ui.label(tr!("타겟", "Target"));
     egui::ComboBox::from_id_salt("target")
         .selected_text(target.label())
         .show_ui(ui, |ui| {
@@ -1979,16 +2384,17 @@ fn selectors(ui: &mut egui::Ui, target: &mut TargetModel, theme_idx: &mut usize)
                 ui.selectable_value(target, t, t.label());
             }
         });
-    ui.label("테마");
+    ui.label(tr!("테마", "Theme"));
     egui::ComboBox::from_id_salt("theme")
         .width(190.0)
-        .selected_text(THEMES[(*theme_idx).min(THEMES.len() - 1)].name)
+        .selected_text(THEMES[(*theme_idx).min(THEMES.len() - 1)].name.get())
         .show_ui(ui, |ui| {
             for (i, t) in THEMES.iter().enumerate() {
-                ui.selectable_value(theme_idx, i, t.name);
+                ui.selectable_value(theme_idx, i, t.name.get());
             }
         });
-    ui.cursor().left() - x0
+    let lang = studio_canvas::lang_picker(ui, "top-lang");
+    (ui.cursor().left() - x0, lang)
 }
 
 /// 상단 바 오른쪽 버튼 (오른쪽부터 왼쪽으로 쌓인다). (그린 너비, 누른 버튼)을 돌려준다.
@@ -2015,15 +2421,15 @@ fn top_actions(
     }
     ui.add_space(8.0);
     if ui
-        .add_enabled(can_redo, egui::Button::new("다시 실행"))
+        .add_enabled(can_redo, egui::Button::new(tr!("다시 실행", "Redo")))
         .on_hover_text("Ctrl+Shift+Z / Ctrl+Y")
         .clicked()
     {
         act = Some(TopAction::Redo);
     }
     if ui
-        .add_enabled(can_undo, egui::Button::new("실행 취소"))
-        .on_hover_text(UNDO_HINT)
+        .add_enabled(can_undo, egui::Button::new(tr!("실행 취소", "Undo")))
+        .on_hover_text(undo_hint())
         .clicked()
     {
         act = Some(TopAction::Undo);
@@ -2034,16 +2440,25 @@ fn top_actions(
 /// X-Ray 탭의 타겟 비교 표: 같은 입력을 세 타겟으로 컴파일한 토큰 수와 입력 비용 추정치.
 fn compare_grid(ui: &mut egui::Ui, p: &Palette, rows: &[TargetCost], current: TargetModel) {
     ui.label(
-        RichText::new("타겟 비교 · 같은 입력을 세 타겟으로 컴파일")
-            .color(p.accent)
-            .strong(),
+        RichText::new(tr!(
+            "타겟 비교 · 같은 입력을 세 타겟으로 컴파일",
+            "Target comparison · the same input compiled for each target"
+        ))
+        .color(p.accent)
+        .strong(),
     );
     let cheapest = rows.iter().map(|c| c.cost_usd).fold(f64::INFINITY, f64::min);
     egui::Grid::new("xray-compare")
         .striped(true)
         .num_columns(5)
         .show(ui, |ui| {
-            for h in ["타겟", "압축 토큰", "원본 대비", "입력 비용(추정)", ""] {
+            for h in [
+                tr!("타겟", "Target"),
+                tr!("압축 토큰", "Tokens"),
+                tr!("원본 대비", "vs. original"),
+                tr!("입력 비용(추정)", "Input cost (est.)"),
+                "",
+            ] {
                 ui.label(RichText::new(h).small().color(p.sub));
             }
             ui.end_row();
@@ -2062,19 +2477,22 @@ fn compare_grid(ui: &mut egui::Ui, p: &Palette, rows: &[TargetCost], current: Ta
                 ui.label(format!("${:.5}", c.cost_usd));
                 let mut marks = Vec::new();
                 if c.target == current {
-                    marks.push("현재");
+                    marks.push(tr!("현재", "current"));
                 }
                 if c.cost_usd <= cheapest && rows.len() > 1 {
-                    marks.push("최저가");
+                    marks.push(tr!("최저가", "cheapest"));
                 }
                 ui.label(RichText::new(marks.join(" · ")).small().color(p.sub));
                 ui.end_row();
             }
         });
     ui.label(
-        RichText::new("o200k_base 근사 · 단가는 입력 100만 토큰당 추정치")
-            .small()
-            .color(p.sub),
+        RichText::new(tr!(
+            "o200k_base 근사 · 단가는 입력 100만 토큰당 추정치",
+            "o200k_base approximation · prices are estimates per 1M input tokens"
+        ))
+        .small()
+        .color(p.sub),
     );
 }
 
@@ -2696,5 +3114,278 @@ mod tests {
         assert_eq!(side_panel_max(2560.0), (520.0, 700.0));
         // 아주 좁아도 최소 너비 아래로 내려가지 않는다
         assert_eq!(side_panel_max(500.0), (280.0, 320.0));
+    }
+
+    // ---------- 언어 ----------
+
+    #[test]
+    fn language_switch_recompiles_only_results_of_unchanged_inputs() {
+        use LangRefresh::{Keep, Recompile};
+        // (결과 있음, 컴파일 중, 입력이 결과·진행 중인 요청과 같음) → 할 일
+        for (has_result, compiling, inputs_match, want) in [
+            (true, false, true, Recompile), // 지금 입력의 결과: 린트 로그를 새 언어로 다시 만든다
+            (true, false, false, Keep),     // 입력이 바뀐 결과: 누르지 않은 컴파일로 결과를 바꾸지 않는다
+            (false, false, true, Keep),     // 결과 없음 (컴파일 실패 뒤 포함)
+            (false, false, false, Keep),
+            (false, true, true, Recompile), // 진행 중인 컴파일: 새 언어로 다시 시작 (문구가 섞이지 않게)
+            (true, true, true, Recompile),
+            (true, true, false, Keep), // 컴파일을 시작한 뒤 입력이 바뀜: 어차피 오래된 결과
+            (false, true, false, Keep),
+        ] {
+            assert_eq!(
+                lang_refresh(has_result, compiling, inputs_match),
+                want,
+                "{has_result} {compiling} {inputs_match}"
+            );
+        }
+    }
+
+    #[test]
+    fn llm_result_is_kept_only_for_the_same_prompt_after_a_language_switch() {
+        assert!(keep_llm_after_recompile(Some("<p>a</p>"), "<p>a</p>"));
+        // 프롬프트가 달라졌으면 이전 프롬프트의 응답이므로 버린다
+        assert!(!keep_llm_after_recompile(Some("<p>a</p>"), "<p>b</p>"));
+        // 사용자가 시작한 컴파일은 프롬프트가 같아도 버린다 (예전 동작)
+        assert!(!keep_llm_after_recompile(None, "<p>a</p>"));
+    }
+
+    #[test]
+    fn compiled_prompt_does_not_depend_on_ui_language() {
+        // 언어 전환 재컴파일이 LLM 결과를 지키는 근거: 같은 요청(사용자 내용·데이터)이면 린트 문구만 언어를 따르고
+        // 프롬프트 본문과 모의 응답은 같다. 모순 제거가 일어나는 제약도 넣는다.
+        let data =
+            pipeline::load_data(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/sales.csv")), 8).unwrap();
+        for content in Lang::ALL {
+            for p in &PRESETS {
+                let extra = i18n::with_lang(content, || {
+                    tr!("이상치 탐지하지 마", "Do not detect outliers").to_string()
+                });
+                let bp = i18n::with_lang(content, || p.to_blueprint());
+                for target in TargetModel::ALL {
+                    let mut req = bp.to_request(vec![extra.clone()], Some(data.clone()));
+                    req.target = target;
+                    let ko = i18n::with_lang(Lang::Ko, || pipeline::compile(&req));
+                    let en = i18n::with_lang(Lang::En, || pipeline::compile(&req));
+                    assert_eq!(ko.output, en.output, "{} {target:?} {content:?}", p.name.ko());
+                    assert_eq!(ko.preview, en.preview);
+                    assert!(keep_llm_after_recompile(Some(&ko.output), &en.output));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn language_choice_is_saved_through_persist_lang() {
+        let dir = std::env::temp_dir().join(format!("cc_lang_setting_{}", std::process::id()));
+        let path = dir.join("settings.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(persist_lang(Lang::En, |l| i18n::save(&path, l)), Ok(()));
+        assert_eq!(i18n::load_saved(&path), Some(Lang::En));
+        assert_eq!(persist_lang(Lang::Ko, |l| i18n::save(&path, l)), Ok(()));
+        assert_eq!(i18n::load_saved(&path), Some(Lang::Ko));
+        // 저장할 수 없는 위치(부모가 파일): 상태 줄 오류는 새 언어로 쓰고 원인을 덧붙인다
+        let blocked = path.join("settings.json");
+        let en = i18n::with_lang(Lang::En, || persist_lang(Lang::En, |l| i18n::save(&blocked, l)));
+        let en = en.unwrap_err();
+        assert!(
+            en.starts_with("Could not save the language setting") && en.len() > 70,
+            "{en}"
+        );
+        let ko = i18n::with_lang(Lang::Ko, || persist_lang(Lang::Ko, |l| i18n::save(&blocked, l)));
+        assert!(ko.unwrap_err().starts_with("언어 설정을 저장하지 못했습니다"));
+        assert_eq!(i18n::load_saved(&path), Some(Lang::Ko)); // 실패한 저장은 기존 설정을 건드리지 않는다
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn status_and_verdict_helpers_follow_the_language() {
+        let f = fields(&["a", "b"]);
+        let ok = pipeline::check_output(OutputFormat::StrictJson, &f, r#"{"a":1,"b":2}"#);
+        let missing = pipeline::check_output(OutputFormat::StrictJson, &f, r#"{"a":1}"#);
+        let empty_table = pipeline::check_output(OutputFormat::MarkdownTable, &f, "| a | b |\n|---|---|");
+        i18n::with_lang(Lang::En, || {
+            assert_eq!(
+                llm_status(&Ok(ok.clone())),
+                "LLM reply · output format and required fields passed"
+            );
+            assert_eq!(
+                llm_status(&Ok(missing.clone())),
+                "LLM reply · output format violation (see VIII on the right)"
+            );
+            assert_eq!(
+                llm_status(&Err("HTTP 500".into())),
+                "LLM run failed (details in VIII on the right)"
+            );
+            assert_eq!(
+                llm_verdict(&Ok(ok.clone())),
+                (true, "✔ Format and required fields OK".to_string())
+            );
+            assert_eq!(
+                llm_verdict(&Ok(missing.clone())),
+                (false, "Missing fields: b".to_string())
+            );
+            let (pass, text) = llm_verdict(&Ok(empty_table.clone()));
+            assert!(pass && text == "✔ Format OK · ⚠ table has no data rows", "{text}");
+            assert_eq!(
+                check_lines(&missing),
+                vec![(Tone::Warn, "⚠ Missing fields: b".to_string())]
+            );
+            assert_eq!(format_summary(&missing), "missing fields: b");
+            assert_eq!(drop_hint(Some(DropKind::Blueprint)), "Drop here to open the blueprint");
+            assert_eq!(drop_hint(Some(DropKind::Data)), "Drop here to load the data");
+            assert!(drop_hint(Some(DropKind::Unsupported)).starts_with("Unsupported file type"));
+            assert_eq!(drop_hint(None), "Drop here to open the file");
+            assert_eq!(
+                run_details(50, None, 10),
+                "Reply in 50 ms · no usage info (compressed prompt est. 10 tokens)"
+            );
+            let failed = LlmRun {
+                out: Err("HTTP 500".into()),
+                ms: 5,
+                max_tokens: 2048,
+            };
+            assert_eq!(run_line(&failed, 0), "Failed after 5 ms");
+            assert_eq!(window_title(" ", true, None), "● Untitled — Candy-Corn");
+            assert_eq!(window_title("plan.kiro", false, None), "plan.kiro — Candy-Corn");
+            assert_eq!(Pending::Close.label(), "close the window");
+            assert_eq!(panic_text(Box::new(42_i32)), "unknown error");
+        });
+        // 기본 언어(한국어)는 예전 문구 그대로
+        assert_eq!(drop_hint(None), "여기에 놓으면 파일을 엽니다");
+        assert_eq!(
+            llm_status(&Err("x".into())),
+            "LLM 실행 실패 (오른쪽 VIII에 자세한 내용)"
+        );
+        assert_eq!(Pending::Close.label(), "창 닫기");
+    }
+
+    #[test]
+    fn startup_role_and_goals_use_the_startup_language() {
+        let defaults = |lang| {
+            i18n::with_lang(lang, || {
+                (DEFAULT_ROLE.get(), DEFAULT_GOALS.map(|(t, on)| (t.get(), on)))
+            })
+        };
+        let (role, goals) = defaults(Lang::Ko);
+        assert_eq!(role, "매출 데이터를 분석해 근본 원인을 찾는 데이터 분석가");
+        assert_eq!(
+            goals,
+            [
+                ("결측치 0.2% 제외", true),
+                ("이상치 우선 탐지", true),
+                ("4M 기준 분류", false)
+            ]
+        );
+        let (role, goals) = defaults(Lang::En);
+        assert_eq!(role, "Data analyst who finds root causes in sales data");
+        assert_eq!(goals.map(|(_, on)| on), [true, true, false]);
+        assert!(goals.iter().all(|(t, _)| t.is_ascii() && !t.is_empty()));
+    }
+
+    #[test]
+    fn shared_phrases_translate_the_same_everywhere() {
+        // 내장 블루프린트·제약 템플릿·시작 화면에 같은 한국어 문장이 있으면 영어 문장도 같아야 한다
+        let mut seen = std::collections::HashMap::new();
+        let all = PRESETS
+            .iter()
+            .flat_map(|p| std::iter::once(p.role).chain(p.goals.iter().copied()))
+            .chain(
+                studio_canvas::TEMPLATES
+                    .iter()
+                    .flat_map(|(_, items)| items.iter().copied()),
+            )
+            .chain(std::iter::once(DEFAULT_ROLE))
+            .chain(DEFAULT_GOALS.iter().map(|(t, _)| *t));
+        let mut n = 0;
+        for t in all {
+            let en = *seen.entry(t.ko()).or_insert(t.en());
+            assert_eq!(en, t.en(), "{}", t.ko());
+            n += 1;
+        }
+        assert!(n > seen.len(), "겹치는 문장이 있어야 검사가 의미 있다");
+    }
+
+    #[test]
+    fn target_comparison_fits_the_narrowest_center_pane() {
+        // 최소 창 너비에서 가운데 패널은 CENTER_MIN_W이고, 카드 안 내용 폭은 바깥 여백(8)과 카드 여백(14)을 뺀 값이다.
+        // 표는 줄이 바뀌지 않으므로 가장 긴 표시("현재 · 최저가")가 붙는 타겟으로 그려 본다.
+        let inner = CENTER_MIN_W - 2.0 * 8.0 - 2.0 * 14.0;
+        let data =
+            pipeline::load_data(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/samples/sales.csv")), 8).unwrap();
+        let rows = pipeline::compare_targets(&PRESETS[0].to_blueprint().to_request(vec![], Some(data)));
+        for lang in Lang::ALL {
+            let ctx = egui::Context::default();
+            install_korean_font(&ctx);
+            theme::apply(&ctx, &THEMES[3]);
+            let mut used = 0.0;
+            for _ in 0..3 {
+                let out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    let area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(inner, 800.0));
+                    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area));
+                    i18n::with_lang(lang, || {
+                        compare_grid(&mut child, &THEMES[3], &rows, TargetModel::Gemini)
+                    });
+                    used = child.min_rect().width();
+                });
+                out.drop_without_applying_deltas();
+            }
+            assert!(used > inner * 0.5 && used <= inner + 0.5, "{lang:?}: {used} > {inner}");
+        }
+    }
+    #[test]
+    fn top_bar_reflows_at_min_width_in_both_languages() {
+        // 최소 창 너비(1000px)에서는 타겟·테마·언어가 둘째 줄로 내려가고, 기본 창 너비(1400px)에서는 한 줄이다.
+        // 어느 쪽이든 상단 바 내용이 패널 너비를 넘지 않는다 (가장 긴 테마 이름).
+        for lang in Lang::ALL {
+            for (window_w, want_compact) in [(1000.0, true), (1400.0, false)] {
+                let ctx = egui::Context::default();
+                install_korean_font(&ctx);
+                let p = THEMES[6];
+                theme::apply(&ctx, &p);
+                let mut project = "sales_analysis.kiro".to_string();
+                let (mut target, mut theme_idx) = (TargetModel::Gemini, 6);
+                let mut need = TOPBAR_NEED_GUESS;
+                let (mut available, mut used) = (0.0, 0.0);
+                for _ in 0..4 {
+                    let input = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(window_w, 700.0))),
+                        ..Default::default()
+                    };
+                    let out = ctx.run_ui(input, |ui| {
+                        egui::Panel::top("top")
+                            .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(16, 8)))
+                            .show(ui, |ui| {
+                                available = ui.available_width();
+                                i18n::with_lang(lang, || {
+                                    top_bar_ui(
+                                        ui,
+                                        &p,
+                                        TopBar {
+                                            logo: None,
+                                            project: &mut project,
+                                            dirty: true,
+                                            path: None,
+                                            target: &mut target,
+                                            theme_idx: &mut theme_idx,
+                                            need: &mut need,
+                                            compiling: false,
+                                            can_undo: true,
+                                            can_redo: true,
+                                        },
+                                    )
+                                });
+                                used = ui.min_rect().width();
+                            });
+                    });
+                    out.drop_without_applying_deltas();
+                }
+                assert_eq!(
+                    available < need,
+                    want_compact,
+                    "{lang:?} {window_w}: need {need}, available {available}"
+                );
+                assert!(used <= available + 0.5, "{lang:?} {window_w}: {used} > {available}");
+            }
+        }
     }
 }

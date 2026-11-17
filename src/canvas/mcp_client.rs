@@ -82,7 +82,7 @@ impl McpClient {
         // 따옴표로 감싼 경로("C:\Program Files\nodejs\npx.cmd")도 받는다
         let command = command.trim().trim_matches('"').trim();
         if command.is_empty() {
-            return Err("MCP command가 비어 있습니다".into());
+            return Err(tr!("MCP command가 비어 있습니다", "The MCP command is empty").into());
         }
         let program = resolve_program(command);
         let mut cmd = Command::new(&program);
@@ -97,7 +97,11 @@ impl McpClient {
         else {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("MCP 서버 파이프를 만들지 못했습니다".into());
+            return Err(tr!(
+                "MCP 서버 파이프를 만들지 못했습니다",
+                "Could not create the pipes for the MCP server"
+            )
+            .into());
         };
         let mut c = McpClient {
             child,
@@ -134,7 +138,13 @@ impl McpClient {
         if self.push_line(v) {
             Ok(())
         } else {
-            Err(self.with_stderr("MCP 쓰기 실패: 서버 입력이 닫혔습니다".into()))
+            Err(self.with_stderr(
+                tr!(
+                    "MCP 쓰기 실패: 서버 입력이 닫혔습니다",
+                    "MCP write failed: the server's input is closed"
+                )
+                .into(),
+            ))
         }
     }
 
@@ -159,12 +169,21 @@ impl McpClient {
                 Err(RecvTimeoutError::Timeout) => {
                     self.stop();
                     let secs = self.timeout.as_secs_f64();
-                    return Err(self.with_stderr(format!("MCP 응답 시간 초과 ({method}, {secs}초)")));
+                    return Err(self.with_stderr(trf!(
+                        "MCP 응답 시간 초과 ({method}, {secs}초)",
+                        "MCP response timed out ({method}, {secs}s)"
+                    )));
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     let msg = match wait_exit(&mut self.child, DIAG_WAIT).and_then(|s| s.code()) {
-                        Some(code) => format!("MCP 서버가 응답 전에 종료됨 ({method}, 종료 코드 {code})"),
-                        None => format!("MCP 서버가 응답 전에 종료됨 ({method})"),
+                        Some(code) => trf!(
+                            "MCP 서버가 응답 전에 종료됨 ({method}, 종료 코드 {code})",
+                            "The MCP server exited before responding ({method}, exit code {code})"
+                        ),
+                        None => trf!(
+                            "MCP 서버가 응답 전에 종료됨 ({method})",
+                            "The MCP server exited before responding ({method})"
+                        ),
                     };
                     return Err(self.with_stderr(msg));
                 }
@@ -185,7 +204,7 @@ impl McpClient {
             }
             if let Some(err) = msg.get("error") {
                 let text = err.get("message").and_then(Value::as_str).unwrap_or("unknown");
-                return Err(format!("MCP 오류: {text}"));
+                return Err(trf!("MCP 오류: {text}", "MCP error: {text}"));
             }
             return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
         }
@@ -202,7 +221,8 @@ impl McpClient {
             json!({ "jsonrpc": "2.0", "id": id, "result": {} })
         } else {
             let name = method.as_str().unwrap_or("?");
-            json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": format!("지원하지 않는 요청: {name}") } })
+            let message = trf!("지원하지 않는 요청: {name}", "Unsupported request: {name}");
+            json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": message } })
         };
         let _ = self.push_line(&reply);
     }
@@ -219,7 +239,7 @@ impl McpClient {
             })
             .unwrap_or_default();
         if r["isError"].as_bool().unwrap_or(false) {
-            Err(format!("도구 오류: {text}"))
+            Err(trf!("도구 오류: {text}", "Tool error: {text}"))
         } else {
             Ok(text)
         }
@@ -231,7 +251,7 @@ impl McpClient {
         if tail.is_empty() {
             msg
         } else {
-            format!("{msg}\n[서버 stderr]\n{tail}")
+            trf!("{msg}\n[서버 stderr]\n{tail}", "{msg}\n[server stderr]\n{tail}")
         }
     }
 
@@ -443,9 +463,15 @@ fn find_program(command: &str, path: Option<&OsStr>, pathext: Option<&OsStr>) ->
 }
 
 fn spawn_error(command: &str, program: &Path, e: &std::io::Error) -> String {
-    let mut msg = format!("MCP 서버 실행 실패 ({command}): {e}");
+    let mut msg = trf!(
+        "MCP 서버 실행 실패 ({command}): {e}",
+        "Failed to start the MCP server ({command}): {e}"
+    );
     if e.kind() == std::io::ErrorKind::NotFound && program == Path::new(command) {
-        msg += "\nPATH에서 실행 파일(.exe/.cmd/.bat/.com)을 찾지 못했습니다. 전체 경로를 쓰거나 PATH를 확인하세요";
+        msg += tr!(
+            "\nPATH에서 실행 파일(.exe/.cmd/.bat/.com)을 찾지 못했습니다. 전체 경로를 쓰거나 PATH를 확인하세요",
+            "\nNo executable (.exe/.cmd/.bat/.com) was found on PATH. Use the full path or check PATH"
+        );
     }
     msg
 }
@@ -453,6 +479,7 @@ fn spawn_error(command: &str, program: &Path, e: &std::io::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::{Lang, with_lang};
 
     /// 이 테스트 실행 파일을 가짜 MCP 서버로 다시 띄울 때 쓰는 테스트 이름
     const FAKE_TEST: &str = "canvas::mcp_client::tests::fake_server";
@@ -558,6 +585,11 @@ mod tests {
                 while let Some(msg) = recv() {
                     match msg["method"].as_str() {
                         Some("initialize") => emit(result(&msg["id"], init_result.clone()).as_bytes()),
+                        // 도구 이름이 "fail"이면 도구 오류(isError)로 답한다
+                        Some("tools/call") if msg["params"]["name"] == "fail" => {
+                            let body = json!({ "isError": true, "content": [{ "type": "text", "text": "boom" }] });
+                            emit(result(&msg["id"], body).as_bytes());
+                        }
                         Some("tools/call") => {
                             let text = format!("basic:{}", msg["params"]["arguments"]);
                             emit(
@@ -713,5 +745,46 @@ mod tests {
         let utf8 = "가나다 error".as_bytes();
         assert_eq!(decode_tail(&utf8[1..], true), "나다 error", "잘린 첫 글자는 버린다");
         assert_eq!(decode_tail(b"  plain\n", false), "plain");
+    }
+
+    #[test]
+    fn tool_errors_are_reported_with_their_text() {
+        let mut c = fake("basic", None, Duration::from_secs(20)).unwrap();
+        assert_eq!(c.call_tool("fail", json!({})).unwrap_err(), "도구 오류: boom");
+        let en = with_lang(Lang::En, || c.call_tool("fail", json!({})));
+        assert_eq!(en.unwrap_err(), "Tool error: boom");
+        assert_eq!(c.call_tool("echo", json!({ "n": 1 })).unwrap(), r#"basic:{"n":1}"#);
+    }
+
+    #[test]
+    fn client_errors_in_english() {
+        with_lang(Lang::En, || {
+            let err = McpClient::spawn("  ", "", Duration::from_secs(1)).err().unwrap();
+            assert_eq!(err, "The MCP command is empty");
+            let err = McpClient::spawn("cc-no-such-mcp-server", "", Duration::from_secs(1))
+                .err()
+                .unwrap();
+            assert!(
+                err.starts_with("Failed to start the MCP server (cc-no-such-mcp-server): "),
+                "{err}"
+            );
+            assert!(
+                err.ends_with(
+                    "\nNo executable (.exe/.cmd/.bat/.com) was found on PATH. Use the full path or check PATH"
+                ),
+                "{err}"
+            );
+            let err = fake("crash", None, Duration::from_secs(20)).err().unwrap();
+            assert!(
+                err.contains("The MCP server exited before responding (initialize, exit code 3)"),
+                "{err}"
+            );
+            assert!(
+                err.contains("[server stderr]\n치명적 오류: 설정 파일 없음"),
+                "서버가 쓴 글자는 그대로: {err}"
+            );
+            let err = fake("null_error", None, Duration::from_secs(20)).err().unwrap();
+            assert_eq!(err, "MCP error: parse error");
+        });
     }
 }

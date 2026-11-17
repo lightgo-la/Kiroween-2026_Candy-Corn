@@ -6,6 +6,7 @@
 
 use crate::ast::{OutputFormat, TargetModel};
 use crate::canvas::graph::Provider;
+use crate::i18n::Tr;
 use crate::pipeline::{self, CompileRequest, LoadedData};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -128,21 +129,30 @@ pub const MAX_SAMPLE_ROWS: usize = 50;
 
 impl Blueprint {
     pub fn load(path: &Path) -> Result<Blueprint, String> {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("파일을 읽을 수 없음: {e}"))?;
+        let text =
+            std::fs::read_to_string(path).map_err(|e| trf!("파일을 읽을 수 없음: {e}", "cannot read file: {e}"))?;
         Blueprint::parse(&text)
     }
 
     /// 블루프린트 JSON을 읽는다. 모든 블루프린트(v1 프로젝트 파일 포함)에는 숫자 version 키가 있으므로,
     /// 그것이 없는 JSON은 다른 종류의 파일로 보고 거부한다.
     pub fn parse(text: &str) -> Result<Blueprint, String> {
-        let value: serde_json::Value =
-            serde_json::from_str(text.trim_start_matches('\u{feff}')).map_err(|e| format!("형식 오류: {e}"))?;
+        let value: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
+            .map_err(|e| trf!("형식 오류: {e}", "invalid format: {e}"))?;
         if !value.get("version").is_some_and(serde_json::Value::is_u64) {
-            return Err("블루프린트 파일이 아닙니다 (version 항목 없음)".into());
+            return Err(tr!(
+                "블루프린트 파일이 아닙니다 (version 항목 없음)",
+                "not a blueprint file (no version field)"
+            )
+            .into());
         }
-        let bp: Blueprint = serde_json::from_value(value).map_err(|e| format!("형식 오류: {e}"))?;
+        let bp: Blueprint = serde_json::from_value(value).map_err(|e| trf!("형식 오류: {e}", "invalid format: {e}"))?;
         if bp.version > VERSION {
-            return Err(format!("더 새로운 형식(v{})의 블루프린트입니다", bp.version));
+            return Err(trf!(
+                "더 새로운 형식(v{})의 블루프린트입니다",
+                "the blueprint uses a newer format (v{})",
+                bp.version
+            ));
         }
         Ok(bp.normalized())
     }
@@ -151,7 +161,7 @@ impl Blueprint {
         let mut bp = self.clone();
         bp.version = VERSION;
         let text = serde_json::to_string_pretty(&bp).map_err(|e| e.to_string())?;
-        std::fs::write(path, text).map_err(|e| format!("저장 실패: {e}"))
+        std::fs::write(path, text).map_err(|e| trf!("저장 실패: {e}", "Save failed: {e}"))
     }
 
     /// 범위를 벗어난 값을 바로잡는다. 노드 좌표는 NaN·무한대를 버리고 ±POS_LIMIT로 자른다
@@ -231,14 +241,15 @@ impl Blueprint {
     }
 }
 
-/// 내장 블루프린트: 이름, 설명, 설정.
+/// 내장 블루프린트: 이름, 설명, 설정. 문구(이름·설명·역할·제약)는 두 언어로 적고 적용할 때 현재 언어를 쓴다.
+/// 필드 이름은 출력 스키마의 식별자라 언어와 관계없이 같다.
 pub struct Preset {
-    pub name: &'static str,
-    pub summary: &'static str,
+    pub name: Tr,
+    pub summary: Tr,
     pub target: TargetModel,
     pub format: OutputFormat,
-    pub role: &'static str,
-    pub goals: &'static [&'static str],
+    pub role: Tr,
+    pub goals: &'static [Tr],
     pub fields: &'static str,
     pub sample_rows: usize,
     pub theme: usize,
@@ -246,71 +257,107 @@ pub struct Preset {
 
 pub const PRESETS: [Preset; 5] = [
     Preset {
-        name: "매출 이상치 분석",
-        summary: "Claude · JSON · 샘플 8행 · 느와르",
+        name: Tr("매출 이상치 분석", "Sales Outlier Analysis"),
+        summary: Tr(
+            "Claude · JSON · 샘플 8행 · 느와르",
+            "Claude · JSON · 8 sample rows · Noir",
+        ),
         target: TargetModel::Claude,
         format: OutputFormat::StrictJson,
-        role: "매출 데이터를 분석해 근본 원인을 찾는 데이터 분석가",
+        role: Tr(
+            "매출 데이터를 분석해 근본 원인을 찾는 데이터 분석가",
+            "Data analyst who finds root causes in sales data",
+        ),
         goals: &[
-            "결측치 0.2% 제외",
-            "이상치 우선 탐지",
-            "데이터에 없는 내용은 추론하지 마",
+            Tr("결측치 0.2% 제외", "Exclude missing values (0.2%)"),
+            Tr("이상치 우선 탐지", "Detect outliers first"),
+            Tr(
+                "데이터에 없는 내용은 추론하지 마",
+                "Do not infer anything not in the data",
+            ),
         ],
         fields: "root_causes,outliers,recommendations",
         sample_rows: 8,
         theme: 3,
     },
     Preset {
-        name: "데이터 품질 점검",
-        summary: "GPT · 표 · 샘플 12행 · 안개 묘지",
+        name: Tr("데이터 품질 점검", "Data Quality Check"),
+        summary: Tr(
+            "GPT · 표 · 샘플 12행 · 안개 묘지",
+            "GPT · Table · 12 sample rows · Misty Graveyard",
+        ),
         target: TargetModel::Gpt,
         format: OutputFormat::MarkdownTable,
-        role: "데이터 품질 감사관",
+        role: Tr("데이터 품질 감사관", "Data quality auditor"),
         goals: &[
-            "결측치 비율을 컬럼별로 보고",
-            "중복 행 여부를 확인",
-            "데이터에 없는 내용은 추론하지 마",
+            Tr(
+                "결측치 비율을 컬럼별로 보고",
+                "Report the missing-value ratio for each column",
+            ),
+            Tr("중복 행 여부를 확인", "Check for duplicate rows"),
+            Tr(
+                "데이터에 없는 내용은 추론하지 마",
+                "Do not infer anything not in the data",
+            ),
         ],
         fields: "column,issue,severity,fix",
         sample_rows: 12,
         theme: 5,
     },
     Preset {
-        name: "경영진 요약 리포트",
-        summary: "Claude · JSON · 샘플 5행 · 벨벳",
+        name: Tr("경영진 요약 리포트", "Executive Summary Report"),
+        summary: Tr(
+            "Claude · JSON · 샘플 5행 · 벨벳",
+            "Claude · JSON · 5 sample rows · Velvet",
+        ),
         target: TargetModel::Claude,
         format: OutputFormat::StrictJson,
-        role: "경영진에게 보고하는 비즈니스 분석가",
+        role: Tr(
+            "경영진에게 보고하는 비즈니스 분석가",
+            "Business analyst reporting to executives",
+        ),
         goals: &[
-            "요약은 3문장 이내",
-            "숫자는 소수점 둘째 자리까지",
-            "핵심 지표를 먼저 제시",
+            Tr("요약은 3문장 이내", "Keep the summary to 3 sentences or fewer"),
+            Tr("숫자는 소수점 둘째 자리까지", "Round numbers to 2 decimal places"),
+            Tr("핵심 지표를 먼저 제시", "Present the key metrics first"),
         ],
         fields: "headline,key_metrics,next_steps",
         sample_rows: 5,
         theme: 4,
     },
     Preset {
-        name: "고객 세그먼트 분류",
-        summary: "Gemini · 표 · 샘플 20행 · 클래식 나이트",
+        name: Tr("고객 세그먼트 분류", "Customer Segmentation"),
+        summary: Tr(
+            "Gemini · 표 · 샘플 20행 · 클래식 나이트",
+            "Gemini · Table · 20 sample rows · Classic Night",
+        ),
         target: TargetModel::Gemini,
         format: OutputFormat::MarkdownTable,
-        role: "고객 데이터를 세그먼트로 분류하는 분석가",
+        role: Tr(
+            "고객 데이터를 세그먼트로 분류하는 분석가",
+            "Analyst who sorts customer data into segments",
+        ),
         goals: &[
-            "금액 4M 기준으로 분류",
-            "분류 근거를 한 줄로 설명",
-            "분류할 수 없으면 unknown으로 표기",
+            Tr("금액 4M 기준으로 분류", "Classify by the 4M amount threshold"),
+            Tr(
+                "분류 근거를 한 줄로 설명",
+                "Explain the basis for each segment in one line",
+            ),
+            Tr(
+                "분류할 수 없으면 unknown으로 표기",
+                "Mark anything that cannot be classified as unknown",
+            ),
         ],
         fields: "segment,reason,confidence",
         sample_rows: 20,
         theme: 0,
     },
     Preset {
-        name: "빈 블루프린트",
-        summary: "기본값에서 직접 구성",
+        name: Tr("빈 블루프린트", "Blank Blueprint"),
+        summary: Tr("기본값에서 직접 구성", "Build it yourself from the defaults"),
         target: TargetModel::Claude,
         format: OutputFormat::StrictJson,
-        role: "데이터 분석가",
+        role: Tr("데이터 분석가", "Data analyst"),
         goals: &[],
         fields: pipeline::DEFAULT_FIELDS,
         sample_rows: 8,
@@ -320,16 +367,17 @@ pub const PRESETS: [Preset; 5] = [
 
 impl Preset {
     /// 내장 블루프린트를 설정으로 만든다. 데이터와 노드 배치는 비워 둔다(현재 데이터를 유지).
+    /// 이름·역할·제약은 지금 언어의 문구로 채운다(적용한 뒤에는 사용자 내용이라 언어를 바꿔도 그대로 둔다).
     pub fn to_blueprint(&self) -> Blueprint {
         Blueprint {
-            project: format!("{}.kiro", self.name.replace(' ', "_")),
+            project: format!("{}.kiro", self.name.get().replace(' ', "_")),
             target: self.target,
-            role: self.role.into(),
+            role: self.role.get().into(),
             goals: self
                 .goals
                 .iter()
                 .map(|g| GoalSpec {
-                    text: g.to_string(),
+                    text: g.get().to_string(),
                     on: true,
                     pos: None,
                 })
@@ -346,6 +394,7 @@ impl Preset {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::{Lang, with_lang};
 
     #[test]
     fn save_load_roundtrip_and_relative_data_path() {
@@ -448,13 +497,101 @@ mod tests {
 
     #[test]
     fn presets_are_valid() {
-        for p in &PRESETS {
-            let bp = p.to_blueprint();
-            assert!(!pipeline::parse_fields(&bp.fields).is_empty(), "{}", p.name);
-            assert!(bp.theme < crate::theme::THEMES.len());
-            let r = pipeline::compile(&bp.to_request(vec![], None));
-            assert!(!r.ast.lint_warnings.iter().any(|d| d.severity == "ERROR"), "{}", p.name);
+        for lang in Lang::ALL {
+            for p in &PRESETS {
+                let bp = with_lang(lang, || p.to_blueprint());
+                let name = p.name.ko();
+                assert!(!pipeline::parse_fields(&bp.fields).is_empty(), "{name}");
+                assert!(bp.theme < crate::theme::THEMES.len());
+                let r = with_lang(lang, || pipeline::compile(&bp.to_request(vec![], None)));
+                assert!(
+                    !r.ast.lint_warnings.iter().any(|d| d.severity == "ERROR"),
+                    "{name} {lang:?}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn presets_exist_in_both_languages_with_identical_fields() {
+        let hangul = |s: &str| s.chars().any(|c| ('가'..='힣').contains(&c));
+        for p in &PRESETS {
+            for t in [p.name, p.summary, p.role].iter().chain(p.goals) {
+                assert!(!t.ko().trim().is_empty() && !t.en().trim().is_empty(), "{t:?}");
+                assert!(!hangul(t.en()), "{t:?}");
+            }
+            let ko = with_lang(Lang::Ko, || p.to_blueprint());
+            let en = with_lang(Lang::En, || p.to_blueprint());
+            // 언어에 따라 바뀌는 것은 문구뿐이다: 필드(출력 스키마 식별자)·타겟·형식·샘플 행 수·테마·제약 수는 같다
+            assert_eq!(ko.fields, en.fields, "{}", p.name.ko());
+            assert!(!hangul(&en.fields));
+            assert_eq!(
+                (ko.target, ko.format, ko.sample_rows, ko.theme),
+                (en.target, en.format, en.sample_rows, en.theme)
+            );
+            let on = |b: &Blueprint| b.goals.iter().map(|g| g.on).collect::<Vec<_>>();
+            assert_eq!(on(&ko), on(&en));
+            assert_eq!(ko.goals.len(), p.goals.len());
+        }
+    }
+
+    #[test]
+    fn applying_a_preset_uses_the_current_language() {
+        let en = with_lang(Lang::En, || PRESETS[0].to_blueprint());
+        assert_eq!(en.role, "Data analyst who finds root causes in sales data");
+        let goals: Vec<&str> = en.goals.iter().map(|g| g.text.as_str()).collect();
+        assert_eq!(
+            goals,
+            [
+                "Exclude missing values (0.2%)",
+                "Detect outliers first",
+                "Do not infer anything not in the data"
+            ]
+        );
+        assert_eq!(en.project, "Sales_Outlier_Analysis.kiro");
+        // 한국어는 예전 문구 그대로
+        let ko = with_lang(Lang::Ko, || PRESETS[0].to_blueprint());
+        assert_eq!(ko.role, "매출 데이터를 분석해 근본 원인을 찾는 데이터 분석가");
+        assert_eq!(ko.goals[1].text, "이상치 우선 탐지");
+        assert_eq!(ko.project, "매출_이상치_분석.kiro");
+    }
+
+    #[test]
+    fn load_errors_follow_the_language() {
+        // 부모가 파일인 경로: 읽기와 쓰기가 모두 실패한다
+        let missing = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("Cargo.toml")
+            .join("plan.kiro");
+        let missing = missing.as_path();
+        with_lang(Lang::En, || {
+            assert_eq!(
+                Blueprint::parse("{}").unwrap_err(),
+                "not a blueprint file (no version field)"
+            );
+            assert!(Blueprint::parse("{").unwrap_err().starts_with("invalid format: "));
+            assert!(
+                Blueprint::parse(r#"{"version":99}"#)
+                    .unwrap_err()
+                    .contains("newer format (v99)")
+            );
+            assert!(Blueprint::load(missing).unwrap_err().starts_with("cannot read file: "));
+            let e = Blueprint::default().save(missing).unwrap_err();
+            assert!(e.starts_with("Save failed: "), "{e}");
+        });
+        with_lang(Lang::Ko, || {
+            assert!(Blueprint::parse("{").unwrap_err().starts_with("형식 오류: "));
+            assert!(
+                Blueprint::load(missing)
+                    .unwrap_err()
+                    .starts_with("파일을 읽을 수 없음: ")
+            );
+            assert!(
+                Blueprint::default()
+                    .save(missing)
+                    .unwrap_err()
+                    .starts_with("저장 실패: ")
+            );
+        });
     }
 
     #[test]

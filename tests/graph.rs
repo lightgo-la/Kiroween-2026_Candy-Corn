@@ -512,3 +512,66 @@ fn the_sample_graph_runs_headless() {
     assert_eq!(r.code, 0, "{}", r.err);
     assert!(r.out.contains("다른 질문"), "{}", r.out);
 }
+
+// ---------- 영어 (--lang en) ----------
+
+fn has_hangul(s: &str) -> bool {
+    s.chars()
+        .any(|c| matches!(c, '\u{AC00}'..='\u{D7A3}' | '\u{1100}'..='\u{11FF}' | '\u{3130}'..='\u{318F}'))
+}
+
+/// `--lang en`이면 엔진 오류·메모·dry-run 요약·그래프 검증 오류가 영어로 나온다. 생략하면 한국어 그대로다.
+#[test]
+fn lang_en_reports_in_english() {
+    let w = work("lang_en");
+    // 허용하지 않은 MCP 노드: 영어 오류, 종료 코드 1, stdout은 비어 있다
+    let g = graph(vec![text(1, "hi"), mcp(2), output(3)], &[(1, 2), (2, 3)]);
+    let r = run_graph(&w, &g, &["--lang", "en"]);
+    assert_eq!(r.code, 1, "{}", r.err);
+    assert_eq!(r.out, "");
+    assert!(
+        r.err.contains(
+            "[fail] node 2: MCP execution is not allowed (tick 'Allow MCP execution' at the top or use --allow-mcp)"
+        ),
+        "{}",
+        r.err
+    );
+    assert!(r.err.contains("[skip] node 3"), "{}", r.err);
+    assert!(!has_hangul(&r.err), "stderr에 한국어가 남음: {}", r.err);
+    let r = run_graph(&w, &g, &[]);
+    assert!(
+        r.err.contains("[fail] node 2: MCP 실행이 허용되지 않았습니다"),
+        "{}",
+        r.err
+    );
+
+    // dry-run: 요약 낱말만 영어이고 `[dry-run]` 머리와 프롬프트 본문은 그대로다. 막힐 설정 경고도 영어다.
+    let g = graph(
+        vec![
+            text(1, "hi"),
+            llm(2, "OPENAI_API_KEY", "http://evil.invalid", true),
+            output(3),
+        ],
+        &[(1, 2), (2, 3)],
+    );
+    let r = run_graph(&w, &g, &["--lang", "en"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert_eq!(r.out, "[dry-run] Anthropic/m max_tokens=50 prompt 2 chars\n---\nhi\n");
+    assert!(
+        r.err.contains("[ok] node 2")
+            && r.err
+                .contains("⚠ Blocked in a real run: Custom endpoint (http://evil.invalid) is not allowed."),
+        "{}",
+        r.err
+    );
+    assert!(!has_hangul(&r.err), "stderr에 한국어가 남음: {}", r.err);
+    let r = run_graph(&w, &g, &[]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert_eq!(r.out, "[dry-run] Anthropic/m max_tokens=50 프롬프트 2자\n---\nhi\n");
+
+    // 그래프 파일 검증 오류
+    let bad = graph(vec![text(1, "a"), output(2)], &[(1, 2), (1, 2)]);
+    let r = run_graph(&w, &bad, &["--lang", "en"]);
+    assert_eq!((r.code, r.out.as_str()), (1, ""));
+    assert_eq!(r.err.trim(), "failed to load graph: Duplicate edge 1->2");
+}
