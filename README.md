@@ -1,19 +1,29 @@
-# Kiroween-2026_Candy-Corn
+# 🌽 Candy-Corn
 
-0. Day 1 (Nov 16) — Architecture & Core Engine
-1. Day 2 (Nov 17) — Async Worker & State Persistence
-2. Day 3 (Nov 18) — GUI Layout
-3. Day 4 (Nov 19) — Release
+> A prompt compiler for data analysis, written in Rust. Kiroween 2026 submission.
 
-
-# 0. test
 <img width="2527" height="1311" alt="Candy-Corn" src="https://github.com/user-attachments/assets/4171ba49-4529-422a-853a-668cc9aa94dd" />
 
-## About
+| | |
+|---|---|
+| **Hackathon** | Kiroween 2026 |
+| **Category** | TODO (e.g. Costume Contest / Frankenstein / Resurrection / Skeleton Crew) |
+| **Team** | lightgo-la |
+| **Repository** | https://github.com/lightgo-la/Kiroween-2026_Candy-Corn |
+| **Demo video** | TODO |
+| **License** | MIT. See [LICENSE](LICENSE) |
 
-Candy-Corn is a prompt compiler for data analysis, written in Rust. It takes a role, a list of constraints and a profile of a CSV/JSON data file, lints them, and writes a short structured prompt for the target model: XML for Claude, Markdown for GPT, delimited sections for Gemini. One executable, `Candy-Corn.exe`, contains a desktop GUI (egui), a terminal linter, a stdio MCP server and a separate graph tool.
+## Inspiration
 
-## Features
+TODO: Why a prompt compiler for data analysis? Describe the problem you wanted to solve.
+
+## What it does
+
+Candy-Corn takes a role, a list of constraints and a profile of a CSV/JSON data file, lints them, and writes a short structured prompt for the target model: XML for Claude, Markdown for GPT, delimited sections for Gemini.
+
+One executable, `Candy-Corn.exe`, contains a desktop GUI (egui), a terminal linter, a stdio MCP server and a separate graph tool.
+
+### Features
 
 - **Data profiling**: CSV, TSV, JSON arrays and NDJSON are read in one streaming pass: row count, column types, null ratios, min/max/mean/std, sampled rows and z-score (> 3) outliers. Encodings are detected (UTF-8, UTF-8/UTF-16 BOM, CP949), the delimiter is sniffed (`,` `;` tab `|`), binary files are rejected, and ID-like columns are left out of outlier detection.
 - **Lint passes**: filler words are compressed; duplicate constraints are removed and the later copy is kept; contradicting constraints are removed and the later instruction wins (uncertain pairs are kept with a warning); the output schema is checked (blank and duplicate fields are removed, no required fields is an ERROR). Every removal warning names the removed text.
@@ -25,7 +35,84 @@ Candy-Corn is a prompt compiler for data analysis, written in Rust. It takes a r
 - **Graph tool**: a node canvas that connects Text, Prompt, LLM, MCP and Output nodes, with saved test cases and a headless runner. MCP nodes and custom LLM endpoints run only when they are explicitly allowed.
 - **Languages**: English (default) and Korean for the UI and all messages. The compiled prompt is the same in both languages.
 
-## Modes and flags
+## How we built it
+
+- **Language and UI**: Rust (2024 edition), egui for the desktop GUI, clap for the command line.
+- **Shared pipeline**: the GUI, the CLI and the MCP server all use one compile pipeline (`src/pipeline.rs`): profiler → AST → lint passes → code generation → token report.
+- **Testing**: unit tests, 13,000 seeded random QC cases, source checks, 33 scenarios, 16 graph end-to-end tests, and a QA suite that runs the real binary 1,000 times.
+- **Localization**: Rust sources are English. Korean text lives only in `locales/` and `tests/fixtures/`, and `build.rs` turns it into macros and constants, so a missing translation is a compile error.
+
+### Development timeline
+
+| Day | Date | Focus |
+|---|---|---|
+| 1 | Nov 16 | Architecture & Core Engine |
+| 2 | Nov 17 | Async Worker & State Persistence |
+| 3 | Nov 18 | GUI Layout |
+| 4 | Nov 19 | Release |
+
+## How we used Kiro
+
+The `.kiro/` directory holds the steering docs, specs, agent and hooks used in this project.
+
+- **Steering**: `.kiro/steering/compiler-rules.md` is also read by the product itself and its bullets become constraints.
+- **Specs**: TODO (which features were built spec-first)
+- **Agent hooks**: TODO
+- **MCP**: Candy-Corn exposes a `compress_prompt` tool through `--mcp`. TODO: how it was used with Kiro
+- **Vibe coding**: TODO
+
+## Challenges we ran into
+
+TODO
+
+## Accomplishments we're proud of
+
+- One executable covers GUI, CLI, MCP server and graph tool.
+- Contradicting and duplicate constraints are detected and every removal names the removed text.
+- Bilingual (English/Korean) UI and messages, enforced by the build and by tests.
+
+## What we learned
+
+TODO
+
+## What's next
+
+TODO
+
+---
+
+## Getting started
+
+### Requirements
+
+- Rust 2024 edition. Developed with rustc 1.98 on Windows (`x86_64-pc-windows-msvc`).
+- `rc.exe` from the Windows SDK to embed the exe icon (without it the build only warns).
+- `C:\Windows\Fonts\malgun.ttf` is used as the Korean font in the GUI.
+- `.cargo/config.toml` puts the build output in `C:/cargo-target/candy-corn`.
+
+### Build
+
+```
+cargo build --release
+```
+
+### Quick start
+
+```
+Candy-Corn.exe --cli --data samples/sales.csv --constraint "Detect outliers first" --constraint "Do not detect outliers"
+Candy-Corn.exe --cli --lang ko --data samples/sales.csv --target gpt --format table
+Candy-Corn.exe --cli --blueprint plan.kiro
+```
+
+The first command prints a Claude XML prompt and reports this on stderr:
+
+```
+[WARN] Removed contradicting instruction: "Detect outliers first" ↔ "Do not detect outliers" (kept the later one)
+```
+
+## Usage
+
+### Modes
 
 | Command | What it does |
 |---|---|
@@ -36,33 +123,47 @@ Candy-Corn is a prompt compiler for data analysis, written in Rust. It takes a r
 | `--canvas [GRAPH.json]` | Graph tool GUI (`--graph GRAPH.json` also opens a file) |
 | `--run-graph GRAPH.json` | Runs a graph headless and prints the final output |
 
-`--cli` options: `--data FILE`, `--role TEXT` (default `Data analyst`), `--constraint TEXT` (repeatable), `--steering FILE.md`, `--target claude|gpt|gemini`, `--format json|table`, `--fields a,b,c` (default `root_causes,outliers,recommendations`), `--sample-rows N` (default 8, at most 50). With `--blueprint`, the role, target, format, fields and sample rows come from the blueprint; `--data` replaces its data path and `--constraint`/`--steering` add constraints.
+### Options
 
-`--run-graph` options: `--input TEXT` replaces the text of the test input node, `--allow-mcp` lets MCP nodes start local processes, and `--allow-custom-endpoint` allows an LLM Base URL other than the provider default (https or localhost only; the API key is sent there).
+`--cli`:
 
-Other options: `--theme 1-7` selects the GUI theme. `--lang en|ko` sets the UI and message language. Without it, the terminal modes (`--cli`, `--mcp`, `--run-graph`) use English, and the GUI uses the language saved in `%APPDATA%\Candy-Corn\settings.json` (English if there is none). `--help --lang ko` prints the Korean help.
+| Option | Description |
+|---|---|
+| `--data FILE` | Data file to profile |
+| `--role TEXT` | Role (default `Data analyst`) |
+| `--constraint TEXT` | Constraint (repeatable) |
+| `--steering FILE.md` | Steering file whose bullets become constraints |
+| `--target claude\|gpt\|gemini` | Target model |
+| `--format json\|table` | Output format |
+| `--fields a,b,c` | Output fields (default `root_causes,outliers,recommendations`) |
+| `--sample-rows N` | Sample rows (default 8, at most 50) |
 
-Examples:
+With `--blueprint`, the role, target, format, fields and sample rows come from the blueprint. `--data` replaces its data path, and `--constraint`/`--steering` add constraints.
+
+`--run-graph`:
+
+| Option | Description |
+|---|---|
+| `--input TEXT` | Replaces the text of the test input node |
+| `--allow-mcp` | Lets MCP nodes start local processes |
+| `--allow-custom-endpoint` | Allows an LLM Base URL other than the provider default (https or localhost only; the API key is sent there) |
+
+Other:
+
+- `--theme 1-7` selects the GUI theme.
+- `--lang en|ko` sets the UI and message language. Without it, the terminal modes (`--cli`, `--mcp`, `--run-graph`) use English, and the GUI uses the language saved in `%APPDATA%\Candy-Corn\settings.json` (English if there is none).
+- `--help --lang ko` prints the Korean help.
+
+## Testing
 
 ```
-Candy-Corn.exe --cli --data samples/sales.csv --constraint "Detect outliers first" --constraint "Do not detect outliers"
-Candy-Corn.exe --cli --lang ko --data samples/sales.csv --target gpt --format table
-Candy-Corn.exe --cli --blueprint plan.kiro
-```
-
-The first command prints a Claude XML prompt and reports `[WARN] Removed contradicting instruction: "Detect outliers first" ↔ "Do not detect outliers" (kept the later one)` on stderr.
-
-## Build and test
-
-Requirements: Rust 2024 edition; the project is developed with rustc 1.98 on Windows (`x86_64-pc-windows-msvc`). Embedding the exe icon needs `rc.exe` from the Windows SDK (without it the build only warns), and the GUI uses `C:\Windows\Fonts\malgun.ttf` as the Korean font. `.cargo/config.toml` puts the build output in `C:/cargo-target/candy-corn`.
-
-```
-cargo build --release
 cargo test                                  # unit tests, QC (13,000 seeded random cases), source checks, 33 scenarios, 16 graph e2e tests
 cargo test --test qa -- --ignored           # QA: 1,000 runs of the real binary
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
+
+`cargo test` also fails if a Rust file contains Hangul (`no_hangul_in_rust_sources`) or a translation is no longer used (`every_translation_is_used`).
 
 ## Project layout
 
@@ -86,8 +187,6 @@ tests/                scenario, graph and QA tests; tests/fixtures/ holds the Ko
 samples/              sales.csv, flow.canvas.json
 .kiro/                steering docs, specs, agent and hooks
 ```
-
-Rust sources are English. Korean exists only in `locales/` and `tests/fixtures/`; build.rs turns those files into macros and constants, so a missing Korean translation is a compile error. `cargo test` also fails if a Rust file contains Hangul (`no_hangul_in_rust_sources`) or a translation is no longer used (`every_translation_is_used`).
 
 ## License
 
