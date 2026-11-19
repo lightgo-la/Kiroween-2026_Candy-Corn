@@ -161,7 +161,7 @@ The first command prints a Claude XML prompt and reports this on stderr:
 1. Start `Candy-Corn.exe` (or the Start Menu shortcut). The studio has three panes: inputs on the left, the canvas and X-Ray in the center, the compiled prompt and the LLM run on the right.
 2. Click **🔑 API keys** at the top of the left pane and paste a key for the provider you want to use (optional; without a key the LLM run shows a mock reply).
 3. Load a CSV/JSON file with **📂 Load CSV/JSON** or drop it on the window, then write the role, constraints and output fields.
-4. Press Ctrl+Enter to compile, read the lint log and the token report, and run the prompt against the model from the right pane.
+4. Press Ctrl+Enter to compile, read the lint log and the token report, and run the prompt against the model from the right pane. VIII (LLM run result) shows the required fields as ✔/⚠/✖ chips, input/output token bars and the share of the output limit used, the reply as a JSON tree with tables or a Markdown table grid (📊 Structured) or as text (📝 Text), and a chart and table of the last 12 runs. **Save reply…** writes the reply to a file, and **↗ Separate window** opens VIII in its own window (**↙ Back to the pane** or closing the window puts it back).
 5. Save everything as a `.kiro` blueprint with Ctrl+S.
 
 Shortcuts:

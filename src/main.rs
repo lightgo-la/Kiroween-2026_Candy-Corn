@@ -10,6 +10,7 @@ mod canvas;
 mod history;
 mod keys;
 mod lexicon;
+mod llm_view;
 mod mcp_server;
 mod pipeline;
 mod profiler;

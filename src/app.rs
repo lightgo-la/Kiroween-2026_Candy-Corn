@@ -8,6 +8,7 @@ use crate::canvas::{graph::Provider, llm};
 use crate::history::{self, History};
 use crate::i18n::{self, Lang, Tr};
 use crate::keys::{self, KeysWindow};
+use crate::llm_view;
 use crate::pipeline::{self, CompileRequest, CompileResult, LoadedData, TargetCost};
 use crate::studio_canvas::{self, Action, Canvas, Goal, LlmView, Model, NodeKey};
 use crate::theme::{self, Palette, THEMES};
@@ -479,6 +480,8 @@ enum Dialog {
     QuickSave,
     LoadProject,
     SaveOutput,
+    /// Save the LLM reply body to a file
+    SaveReply,
     /// Go on with the action after a successful save ("Save" in the unsaved-changes prompt)
     SaveThen(Pending),
 }
@@ -592,6 +595,14 @@ pub struct StudioApp {
     llm_rx: Receiver<LlmMsg>,
     /// 🔑 API keys window and the cached state of the saved keys (the keys themselves are read only to start a run)
     keys: KeysWindow,
+    /// VIII (LLM run result) is shown in its own window instead of the right pane
+    llm_window: bool,
+    /// How the reply body is shown in VIII
+    llm_tab: llm_view::ReplyTab,
+    /// Recent finished runs (chart and table in VIII)
+    llm_history: Vec<llm_view::RunRecord>,
+    /// Provider and model of the run in progress, for its history entry
+    llm_meta: Option<(Provider, String)>,
     /// Moving fog of the fog themes (an app setting, so it is not saved in blueprints)
     fog_on: bool,
     /// The last opened or saved blueprint
@@ -702,6 +713,10 @@ impl StudioApp {
             llm_tx,
             llm_rx,
             keys: KeysWindow::load(),
+            llm_window: false,
+            llm_tab: llm_view::ReplyTab::default(),
+            llm_history: Vec::new(),
+            llm_meta: None,
             fog_on: true,
             saved: SavedState::default(),
             dirty: false,
@@ -837,6 +852,7 @@ impl StudioApp {
         let (max_tokens, temperature) = (opts.max_tokens, opts.effective_temperature(provider));
         let system = opts.system.trim().to_string();
         let generation = self.llm.start();
+        self.llm_meta = Some((provider, model.clone()));
         self.llm_out = None;
         self.status = trf!(
             "{} · {model} running... (max output {max_tokens})",
@@ -1067,6 +1083,19 @@ impl StudioApp {
             }
             self.status = llm_status(&run.out);
             self.status_err = !matches!(&run.out, Ok(c) if c.ok);
+            if let Some((provider, model)) = self.llm_meta.take() {
+                llm_view::push_record(
+                    &mut self.llm_history,
+                    llm_view::RunRecord {
+                        provider,
+                        model,
+                        ms: run.ms,
+                        usage: run.out.as_ref().ok().and_then(|c| c.usage),
+                        passed: matches!(&run.out, Ok(c) if c.ok),
+                        failed: run.out.is_err(),
+                    },
+                );
+            }
             self.llm_out = Some(run);
         }
     }
@@ -1306,6 +1335,35 @@ impl StudioApp {
         }
     }
 
+    /// Saves the body of the last LLM reply (.json for JSON output, .md for a table).
+    fn save_reply(&mut self) {
+        let Some(Ok(c)) = self.llm_out.as_ref().map(|r| &r.out) else {
+            return;
+        };
+        let json = self
+            .result
+            .as_ref()
+            .is_none_or(|r| r.ast.output_schema.format == OutputFormat::StrictJson);
+        let ext = if json { "json" } else { "md" };
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(tr!("LLM reply"), &[ext, "txt"])
+            .set_file_name(format!("reply.{ext}"))
+            .save_file()
+        else {
+            return;
+        };
+        match std::fs::write(&path, &c.pretty) {
+            Ok(()) => {
+                self.status = trf!("Reply saved: {}", path.display());
+                self.status_err = false;
+            }
+            Err(e) => {
+                self.status = trf!("Save failed: {e}", e = e);
+                self.status_err = true;
+            }
+        }
+    }
+
     /// Applies a built-in blueprint. The current data, LLM models and run options are kept, and the edits can be
     /// undone. It starts fresh from a template, so the link to the current file is dropped (Ctrl+S asks for a location
     /// instead of overwriting the previous .kiro).
@@ -1365,6 +1423,7 @@ impl StudioApp {
             }
             Dialog::LoadProject => self.load_project(ctx),
             Dialog::SaveOutput => self.save_output(),
+            Dialog::SaveReply => self.save_reply(),
             Dialog::SaveThen(p) => match self.quick_save() {
                 SaveOutcome::Saved => self.perform(p, ctx),
                 // Without a save, the follow-up action is not done either (so no changes are lost).
@@ -1958,22 +2017,77 @@ impl StudioApp {
                 });
         });
         ui.add_space(6.0);
-        self.llm_section(ui, p);
+        if self.llm_window {
+            self.llm_docked_note(ui, p);
+        } else {
+            self.llm_section(ui, p, false);
+        }
     }
 
-    fn llm_section(&mut self, ui: &mut egui::Ui, p: &Palette) {
+    /// What the right pane shows in place of VIII while it is in its own window.
+    fn llm_docked_note(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        if self.result.is_none() {
+            return;
+        }
+        theme::section_title(ui, p, "VIII", tr!("LLM run result"));
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(tr!("Shown in a separate window")).color(p.sub));
+            if ui.small_button(tr!("↙ Back to the pane")).clicked() {
+                self.llm_window = false;
+            }
+        });
+    }
+
+    /// Draws VIII in its own OS window while `llm_window` is on. Closing the window puts VIII back in the right pane.
+    fn llm_window_viewport(&mut self, ctx: &egui::Context, p: &Palette) {
+        if !self.llm_window {
+            return;
+        }
+        let builder = egui::ViewportBuilder::default()
+            .with_title(format!("Candy-Corn · {}", tr!("LLM run result")))
+            .with_inner_size([760.0, 720.0])
+            .with_min_inner_size([420.0, 320.0]);
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("llm-result-window"),
+            builder,
+            |ui, _class| {
+                if ui.input(|i| i.viewport().close_requested()) {
+                    self.llm_window = false;
+                    return;
+                }
+                egui::CentralPanel::default().frame(theme::backdrop(p)).show(ui, |ui| {
+                    theme::card(p).show(ui, |ui| {
+                        ui.set_min_size(ui.available_size());
+                        if self.result.is_none() {
+                            ui.label(RichText::new(tr!("Compile first to run the prompt")).color(p.sub));
+                            if ui.small_button(tr!("↙ Back to the pane")).clicked() {
+                                self.llm_window = false;
+                            }
+                        } else {
+                            self.llm_section(ui, p, true);
+                        }
+                    });
+                });
+            },
+        );
+    }
+
+    fn llm_section(&mut self, ui: &mut egui::Ui, p: &Palette, in_window: bool) {
         enum Act {
             Run,
             Cancel,
             Retry(u32),
             Keys,
+            Window(bool),
+            SaveReply,
         }
-        let Some((target, preview, has_data, prompt_tokens)) = self.result.as_ref().map(|r| {
+        let Some((target, preview, has_data, prompt_tokens, fields)) = self.result.as_ref().map(|r| {
             (
                 r.ast.target_model,
                 r.preview.clone(),
                 r.ast.data_sub_ast.is_some(),
                 r.comp_tokens,
+                r.ast.output_schema.required_fields.clone(),
             )
         }) else {
             return;
@@ -2010,6 +2124,21 @@ impl StudioApp {
             }
             if ui.small_button(tr!("🔑 API keys")).clicked() {
                 act = Some(Act::Keys);
+            }
+            if in_window {
+                if ui
+                    .small_button(tr!("↙ Back to the pane"))
+                    .on_hover_text(tr!("Close this window and show the result in the right pane again"))
+                    .clicked()
+                {
+                    act = Some(Act::Window(false));
+                }
+            } else if ui
+                .small_button(tr!("↗ Separate window"))
+                .on_hover_text(tr!("Open the LLM run result in its own window"))
+                .clicked()
+            {
+                act = Some(Act::Window(true));
             }
             if running {
                 ui.spinner();
@@ -2055,6 +2184,19 @@ impl StudioApp {
             ),
         };
         ui.label(RichText::new(note).small().color(p.sub));
+        if !self.llm_history.is_empty() {
+            let mut clear = false;
+            egui::CollapsingHeader::new(trf!("Run history ({n})", n = self.llm_history.len()))
+                .id_salt("viii-history")
+                .show(ui, |ui| {
+                    llm_view::latency_chart(ui, p, &self.llm_history);
+                    llm_view::history_table(ui, p, &self.llm_history);
+                    clear = ui.small_button(tr!("Clear history")).clicked();
+                });
+            if clear {
+                self.llm_history.clear();
+            }
+        }
         egui::ScrollArea::vertical()
             .id_salt("preview")
             .show(ui, |ui| match &self.llm_out {
@@ -2072,6 +2214,11 @@ impl StudioApp {
                     };
                     for (tone, line) in check_lines(c) {
                         ui.colored_label(tone_color(tone, p), line);
+                    }
+                    llm_view::field_chips(ui, p, &llm_view::field_states(&fields, &c.missing, &c.nulls));
+                    if let Some(u) = c.usage {
+                        ui.add_space(2.0);
+                        llm_view::token_bars(ui, p, u, prompt_tokens, run.max_tokens);
                     }
                     ui.label(
                         RichText::new(trf!(
@@ -2101,11 +2248,41 @@ impl StudioApp {
                         {
                             ui.ctx().copy_text(c.pretty.clone());
                         }
+                        if ui
+                            .add_enabled(!empty, egui::Button::new(tr!("Save reply…")).small())
+                            .clicked()
+                        {
+                            act = Some(Act::SaveReply);
+                        }
                     });
                     if empty {
                         ui.label(RichText::new(tr!("(empty reply)")).monospace().color(p.sub));
                     } else {
-                        ui.add(egui::Label::new(RichText::new(&c.pretty).monospace().color(p.sub)).selectable(true));
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(
+                                &mut self.llm_tab,
+                                llm_view::ReplyTab::Structured,
+                                tr!("📊 Structured"),
+                            );
+                            ui.selectable_value(&mut self.llm_tab, llm_view::ReplyTab::Text, tr!("📝 Text"));
+                        });
+                        ui.separator();
+                        let drawn = self.llm_tab == llm_view::ReplyTab::Structured && {
+                            let ok = llm_view::structured_view(ui, p, &c.pretty);
+                            if !ok {
+                                ui.label(
+                                    RichText::new(tr!("No JSON or table in the reply; showing the text"))
+                                        .small()
+                                        .color(p.sub),
+                                );
+                            }
+                            ok
+                        };
+                        if !drawn {
+                            ui.add(
+                                egui::Label::new(RichText::new(&c.pretty).monospace().color(p.sub)).selectable(true),
+                            );
+                        }
                     }
                 }
             });
@@ -2115,6 +2292,8 @@ impl StudioApp {
             Some(Act::Cancel) => self.cancel_llm(),
             Some(Act::Retry(limit)) => self.retry_longer(limit, &ctx),
             Some(Act::Keys) => self.keys.show_window(),
+            Some(Act::Window(on)) => self.llm_window = on,
+            Some(Act::SaveReply) => self.dialog = Some(Dialog::SaveReply),
             None => {}
         }
     }
@@ -2447,6 +2626,7 @@ impl eframe::App for StudioApp {
         if self.history.track(&self.snapshot(), now) {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(history::SETTLE_SECS));
         }
+        self.llm_window_viewport(&ctx, &p);
         self.confirm_modal(&ctx, &p);
         self.keys.show(&ctx);
         // File dialogs run after all widgets have been handled.
