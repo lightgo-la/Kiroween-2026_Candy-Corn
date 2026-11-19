@@ -7,7 +7,7 @@
 | | |
 |---|---|
 | **Hackathon** | Kiroween 2026 |
-| **Category** | TODO (e.g. Costume Contest / Frankenstein / Resurrection / Skeleton Crew) |
+| **Category** | Costume Contest |
 | **Team** | lightgo-la |
 | **Repository** | https://github.com/lightgo-la/Kiroween-2026_Candy-Corn |
 | **Demo video** | https://youtu.be/aEBaggybnm4 |
