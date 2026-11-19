@@ -10,7 +10,7 @@
 | **Category** | TODO (e.g. Costume Contest / Frankenstein / Resurrection / Skeleton Crew) |
 | **Team** | lightgo-la |
 | **Repository** | https://github.com/lightgo-la/Kiroween-2026_Candy-Corn |
-| **Demo video** | TODO |
+| **Demo video** | [TODO](https://youtu.be/aEBaggybnm4) |
 | **License** | MIT. See [LICENSE](LICENSE) |
 
 ## Inspiration
