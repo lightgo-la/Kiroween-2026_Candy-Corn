@@ -4,6 +4,11 @@
 
 <img width="2527" height="1311" alt="Candy-Corn" src="https://github.com/user-attachments/assets/4171ba49-4529-422a-853a-668cc9aa94dd" />
 
+![Built with Rust](https://img.shields.io/badge/Built%20with-Rust-dea584?logo=rust&logoColor=white)
+![GUI](https://img.shields.io/badge/GUI-egui%20%2F%20eframe-007ec6)
+![Built with Kiro](https://img.shields.io/badge/Kiro-IDE%20%26%20CLI-8a2be2)
+![Hackathon](https://img.shields.io/badge/Hackathon-Kiroween%202026-ff6b00)
+![License](https://img.shields.io/badge/License-MIT-dfb317)
 | | |
 |---|---|
 | **Hackathon** | Kiroween 2026 |
