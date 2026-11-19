@@ -1543,7 +1543,7 @@ mod tests {
             assert!(r.ok(), "{:?}", r.errors);
             assert!(
                 r.final_text
-                    .starts_with("[dry-run] Anthropic/claude-sonnet-4-5 max_tokens=1024 prompt "),
+                    .starts_with("[dry-run] Anthropic/claude-sonnet-5-5 max_tokens=1024 prompt "),
                 "{}",
                 r.final_text
             );

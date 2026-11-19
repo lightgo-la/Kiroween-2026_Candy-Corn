@@ -1641,6 +1641,22 @@ impl StudioApp {
     }
 
     fn left_pane(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        // AI API settings are at the top, so they can be set before anything else (keys and endpoints).
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .button(tr!("🔑 API keys"))
+                .on_hover_text(tr!(
+                    "Keys for the LLM run, saved for this Windows user (not in the blueprint)"
+                ))
+                .clicked()
+            {
+                self.keys.show_window();
+            }
+            if !self.keys.has_key(self.llm_provider()) {
+                ui.label(RichText::new(tr!("No key yet · add one in 🔑 API keys")).color(p.warn()));
+            }
+        });
+        ui.add_space(6.0);
         theme::section_title(ui, p, "I", tr!("Data source"));
         let mut reload = false;
         ui.horizontal(|ui| {
@@ -1774,6 +1790,7 @@ impl StudioApp {
                             key_env: provider.default_key_env(),
                             model: &mut self.llm_models[provider_index(provider)],
                             model_hint: provider.default_model(),
+                            models: provider.models(),
                             has_key,
                             running: self.llm.running,
                             verdict,
@@ -1970,6 +1987,7 @@ impl StudioApp {
         let mut act = None;
         ui.horizontal_wrapped(|ui| {
             ui.label(provider.label());
+            keys::model_menu(ui, provider.models(), &mut self.llm_models[provider_index(provider)]);
             ui.add(
                 egui::TextEdit::singleline(&mut self.llm_models[provider_index(provider)])
                     .desired_width(150.0)

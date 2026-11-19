@@ -9,7 +9,6 @@
   "Saved · {tail}": "저장됨 · {tail}",
   "From the {var} environment variable": "환경 변수 {var}에서 읽음",
   "Not set": "설정 안 됨",
-  "Paste a new key": "새 키 붙여 넣기",
   "Remove": "삭제",
   "Close": "닫기",
   "Saved the {} key. It is used from the next run": "{} 키를 저장했습니다. 다음 실행부터 쓰입니다",
@@ -40,5 +39,9 @@
   "{} connection works (model {})": "{} 연결 성공 (모델 {})",
   "{} connection failed: {e}": "{} 연결 실패: {e}",
   "No key to test": "테스트할 키가 없습니다",
-  "internal error": "내부 오류"
+  "internal error": "내부 오류",
+  "Paste your {} API key here": "여기에 {} API 키를 붙여 넣으세요",
+  "Latest models": "최신 모델",
+  "Pick one of the latest models (or type any model ID)": "최신 모델 중에서 고르세요 (다른 모델 ID를 직접 입력해도 됩니다)",
+  "Model used by Test connection. The model of a run is set in the LLM node": "연결 테스트에 쓸 모델입니다. 실행에 쓸 모델은 LLM 노드에서 정합니다"
 }

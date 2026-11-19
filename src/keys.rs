@@ -135,6 +135,28 @@ pub fn base_url(p: Provider) -> Result<String, String> {
     clean_base_url(p, &load_base_url(&path, p))
 }
 
+/// "▾" button that lists the provider's current models; picking one writes its ID into `model`. Returns true when
+/// the model changed. The model field next to it still accepts any other ID.
+pub fn model_menu(ui: &mut egui::Ui, models: &[(&str, &str)], model: &mut String) -> bool {
+    let mut changed = false;
+    ui.menu_button("▾", |ui| {
+        ui.label(RichText::new(tr!("Latest models")).small().weak());
+        for (id, name) in models {
+            let on = model.trim() == *id;
+            if ui.selectable_label(on, format!("{name}  ·  {id}")).clicked() {
+                if !on {
+                    *model = (*id).to_string();
+                    changed = true;
+                }
+                ui.close();
+            }
+        }
+    })
+    .response
+    .on_hover_text(tr!("Pick one of the latest models (or type any model ID)"));
+    changed
+}
+
 /// The key to use for `var`: with `use_saved`, a saved key first, then the environment variable.
 /// A saved key that cannot be read counts as missing.
 pub fn lookup(var: &str, use_saved: bool) -> Option<(String, Source)> {
@@ -210,10 +232,15 @@ pub struct KeysWindow {
     message: Option<(bool, String)>,
     /// Text of the base URL fields (loaded from the settings file when the window opens)
     urls: [String; 3],
+    /// Model used by each provider's connection test (picked in the window)
+    test_models: [String; 3],
     /// Providers whose connection test is running
     testing: [bool; 3],
     test_tx: std::sync::mpsc::Sender<(usize, Result<String, String>)>,
     test_rx: std::sync::mpsc::Receiver<(usize, Result<String, String>)>,
+    /// Size of the window in the last frame (for the layout test)
+    #[cfg(test)]
+    last_size: egui::Vec2,
 }
 
 enum KeyAct {
@@ -234,9 +261,12 @@ impl KeysWindow {
             input_ids: [None; 3],
             message: None,
             urls: Default::default(),
+            test_models: Provider::ALL.map(|p| p.default_model().to_string()),
             testing: [false; 3],
             test_tx,
             test_rx,
+            #[cfg(test)]
+            last_size: egui::Vec2::ZERO,
         };
         w.refresh();
         w
@@ -298,12 +328,12 @@ impl KeysWindow {
         };
         self.testing[i] = true;
         self.message = None;
+        let model = self.test_models[i].clone();
         let (tx, ctx) = (self.test_tx.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let model = p.default_model();
             let req = crate::canvas::llm::LlmRequest {
                 provider: p,
-                model,
+                model: &model,
                 system: "",
                 prompt: "ping",
                 api_key: &key,
@@ -313,7 +343,7 @@ impl KeysWindow {
             };
             let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::canvas::llm::call(&req)))
                 .unwrap_or_else(|_| Err(tr!("internal error").into()))
-                .map(|_| model.to_string());
+                .map(|_| model.clone());
             let _ = tx.send((i, out));
             ctx.request_repaint();
         });
@@ -327,8 +357,14 @@ impl KeysWindow {
         let mut act = None;
         let mut close = false;
         let modal = egui::Modal::new(egui::Id::unique("api-keys")).show(ctx, |ui| {
-            ui.set_max_width(640.0);
-            ui.label(RichText::new(tr!("🔑 API keys")).strong().size(16.0));
+            // Fit small windows: the width follows the window (up to 640) and the body scrolls, with Close always visible.
+            let screen = ctx.content_rect().size();
+            ui.set_max_width(640.0_f32.min((screen.x - 80.0).max(280.0)));
+            egui::ScrollArea::vertical()
+                .max_height((screen.y - 160.0).max(200.0))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+            ui.label(RichText::new(tr!("🔑 API keys")).strong().size(18.0));
             ui.label(
                 RichText::new(tr!(
                     "Keys are saved in Windows Credential Manager for your Windows user and are never written to blueprints, graph files or logs. A saved key is used before the environment variable."
@@ -336,16 +372,13 @@ impl KeysWindow {
                 .small(),
             );
             ui.add_space(8.0);
-            egui::Grid::new("api-keys-grid")
-                .num_columns(4)
-                .spacing([12.0, 10.0])
-                .show(ui, |ui| {
-                    for (i, p) in Provider::ALL.into_iter().enumerate() {
-                        let var = p.default_key_env();
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new(p.label()).strong());
-                            ui.label(RichText::new(var).small().weak());
-                        });
+            for (i, p) in Provider::ALL.into_iter().enumerate() {
+                let var = p.default_key_env();
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(p.label()).strong().size(15.0));
+                        ui.label(RichText::new(var).small().weak());
                         let st = &self.states[i];
                         let status = match (&st.error, &st.saved_tail) {
                             (Some(e), _) => {
@@ -358,31 +391,49 @@ impl KeysWindow {
                             (None, None) => RichText::new(tr!("Not set")).weak(),
                         };
                         ui.label(status);
+                    });
+                    ui.horizontal(|ui| {
+                        let input_w = (ui.available_width() - 150.0).max(160.0);
                         let resp = ui.add(
                             egui::TextEdit::singleline(&mut self.inputs[i])
                                 .password(true)
                                 .id_salt(("api-key-input", i))
-                                .hint_text(tr!("Paste a new key"))
-                                .desired_width(220.0),
+                                .hint_text(trf!("Paste your {} API key here", p.label()))
+                                .desired_width(input_w),
                         );
                         self.input_ids[i] = Some(resp.id);
                         let typed = !self.inputs[i].trim().is_empty();
                         let enter = resp.lost_focus() && ui.input(|inp| inp.key_pressed(egui::Key::Enter));
-                        ui.horizontal(|ui| {
-                            if ui.add_enabled(typed, egui::Button::new(tr!("Save"))).clicked() || (enter && typed) {
-                                act = Some(KeyAct::Save(i));
-                            }
-                            if ui
-                                .add_enabled(self.states[i].saved_tail.is_some(), egui::Button::new(tr!("Remove")))
-                                .clicked()
-                            {
-                                act = Some(KeyAct::Remove(i));
-                            }
-                        });
-                        ui.end_row();
-                    }
+                        if ui.add_enabled(typed, egui::Button::new(tr!("Save"))).clicked() || (enter && typed) {
+                            act = Some(KeyAct::Save(i));
+                        }
+                        if ui
+                            .add_enabled(self.states[i].saved_tail.is_some(), egui::Button::new(tr!("Remove")))
+                            .clicked()
+                        {
+                            act = Some(KeyAct::Remove(i));
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(tr!("Model")).small());
+                        let current = p
+                            .models()
+                            .iter()
+                            .find(|(id, _)| *id == self.test_models[i])
+                            .map_or(self.test_models[i].clone(), |(_, name)| (*name).to_string());
+                        egui::ComboBox::from_id_salt(("api-test-model", i))
+                            .selected_text(current)
+                            .width(200.0)
+                            .show_ui(ui, |ui| {
+                                for (id, name) in p.models() {
+                                    ui.selectable_value(&mut self.test_models[i], (*id).to_string(), format!("{name}  ·  {id}"));
+                                }
+                            })
+                            .response
+                            .on_hover_text(tr!("Model used by Test connection. The model of a run is set in the LLM node"));
+                    });
                 });
-            ui.add_space(10.0);
+            }            ui.add_space(10.0);
             ui.label(RichText::new(tr!("Endpoint (optional)")).strong());
             ui.label(
                 RichText::new(tr!(
@@ -429,11 +480,16 @@ impl KeysWindow {
                 ui.add_space(4.0);
                 ui.label(RichText::new(text).color(if *err { theme::ERR } else { theme::OK }));
             }
+                });
             ui.add_space(8.0);
             if ui.button(tr!("Close")).clicked() {
                 close = true;
             }
         });
+        #[cfg(test)]
+        {
+            self.last_size = modal.response.rect.size();
+        }
         let changed = match act {
             Some(KeyAct::Save(i)) => {
                 let p = Provider::ALL[i];
@@ -812,6 +868,11 @@ mod tests {
                 });
                 out.drop_without_applying_deltas();
             }
+            assert!(
+                w.last_size.x <= 700.0 && w.last_size.y <= 500.0,
+                "{lang:?}: {:?}",
+                w.last_size
+            );
             assert!(w.open, "{lang:?}");
             assert!(w.input_ids.iter().all(Option::is_some), "{lang:?}");
         }
@@ -837,6 +898,22 @@ mod tests {
     }
 
     #[test]
+    fn model_lists_include_the_default_and_have_unique_ids() {
+        for p in Provider::ALL {
+            let ids: Vec<&str> = p.models().iter().map(|(id, _)| *id).collect();
+            assert!(ids.contains(&p.default_model()), "{p:?}");
+            let mut sorted = ids.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), ids.len(), "{p:?}");
+            assert!(
+                ids.iter()
+                    .all(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_graphic()))
+            );
+        }
+    }
+
+    #[test]
     fn base_url_must_be_https_or_loopback() {
         for bad in [
             "http://evil.example.com",
@@ -853,6 +930,34 @@ mod tests {
             "",
         ] {
             assert!(clean_base_url(Provider::OpenAi, good).is_ok(), "{good}");
+        }
+    }
+
+    #[test]
+    fn the_window_fits_a_small_screen() {
+        let screen = egui::vec2(560.0, 360.0);
+        for lang in Lang::ALL {
+            let ctx = egui::Context::default();
+            let mut w = KeysWindow::load();
+            w.show_window();
+            w.message = Some((true, "x".repeat(200)));
+            for _ in 0..2 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
+                    ..Default::default()
+                };
+                let out = ctx.run_ui(input, |ui| {
+                    i18n::with_lang(lang, || {
+                        let _ = w.show(ui.ctx());
+                    });
+                });
+                out.drop_without_applying_deltas();
+            }
+            assert!(
+                w.last_size.x <= screen.x && w.last_size.y <= screen.y,
+                "{lang:?}: {:?}",
+                w.last_size
+            );
         }
     }
 }

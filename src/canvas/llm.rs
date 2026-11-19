@@ -1,4 +1,4 @@
-//! LLM API client (Anthropic / OpenAI / Gemini). Keys are read only from environment variables.
+//! LLM API client (Anthropic / OpenAI / Gemini). The caller passes the key and the base URL (see `crate::keys`).
 
 use super::graph::Provider;
 use serde_json::{Value, json};

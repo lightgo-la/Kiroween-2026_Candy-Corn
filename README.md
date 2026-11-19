@@ -31,7 +31,7 @@ One executable, `Candy-Corn.exe`, contains a desktop GUI (egui), a terminal lint
 - **Lint passes**: filler words are compressed; duplicate constraints are removed and the later copy is kept; contradicting constraints are removed and the later instruction wins (uncertain pairs are kept with a warning); the output schema is checked (blank and duplicate fields are removed, no required fields is an ERROR). Every removal warning names the removed text.
 - **Code generation**: Claude XML, GPT Markdown, Gemini sections. Text that comes from the data is sanitized so it cannot open a new prompt section.
 - **Token report**: original vs. compressed token counts (tiktoken `o200k_base`, the same approximation for every vendor) and the estimated input-cost saving.
-- **LLM run** (GUI): sends the compiled prompt to Anthropic, OpenAI or Gemini and checks that the reply follows the output format and contains the required fields. API keys are read only from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `GEMINI_API_KEY`. The stop reason, token usage and latency are shown, and a reply cut off at the token limit is reported as cut off. Without a key the result is a mock reply built from the schema. In 🔑 API keys, each provider also has an optional endpoint (a proxy or a local OpenAI-compatible server; https, or http for localhost) saved in `settings.json`, and a "Test connection" button.
+- **LLM run** (GUI): sends the compiled prompt to Anthropic, OpenAI or Gemini and checks that the reply follows the output format and contains the required fields. Keys come from the 🔑 API keys window (saved in Windows Credential Manager, never in blueprints or logs) or from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `GEMINI_API_KEY`; a saved key wins. The stop reason, token usage and latency are shown, and a reply cut off at the token limit is reported as cut off. Without a key the result is a mock reply built from the schema. In 🔑 API keys, each provider also has an optional endpoint (a proxy or a local OpenAI-compatible server; https, or http for localhost) saved in `settings.json`, and a "Test connection" button. See [API keys and endpoints](#api-keys-and-endpoints).
 - **Blueprints**: all settings of the studio canvas (data path, sample rows, role, constraints, output format and fields, target, theme, LLM model and options, node layout) are saved as a `.kiro` JSON file. Five built-in blueprints are included, and the CLI reads the same files.
 - **Steering rules**: the `- ` and `* ` bullets of `.kiro/steering/compiler-rules.md` are added as constraints when the GUI starts, or with `--steering` on the CLI.
 - **Graph tool**: a node canvas that connects Text, Prompt, LLM, MCP and Output nodes, with saved test cases and a headless runner. MCP nodes and custom LLM endpoints run only when they are explicitly allowed.
@@ -106,7 +106,7 @@ The `.kiro/` directory holds the steering docs, specs, agent and hooks used in t
 
 ### Install
 
-`Candy-Corn-Setup-0.1.0.exe` installs Candy-Corn on 64-bit Windows 10 or 11 for the current user, without an admin prompt.
+Download `Candy-Corn-Setup-0.1.0.exe` from the [Releases](https://github.com/lightgo-la/Kiroween-2026_Candy-Corn/releases) page, or build it with [Build the installer](#build-the-installer). It installs Candy-Corn on 64-bit Windows 10 or 11 for the current user, without an admin prompt.
 
 - Files go to `%LOCALAPPDATA%\Programs\Candy-Corn`: `Candy-Corn.exe`, `README.md`, `LICENSE.txt` and `samples\`.
 - Start Menu shortcuts open the studio, the graph tool (`--canvas`) and the samples folder. A desktop shortcut is optional.
@@ -155,6 +155,50 @@ The first command prints a Claude XML prompt and reports this on stderr:
 ```
 
 ## Usage
+
+### Studio (GUI)
+
+1. Start `Candy-Corn.exe` (or the Start Menu shortcut). The studio has three panes: inputs on the left, the canvas and X-Ray in the center, the compiled prompt and the LLM run on the right.
+2. Click **🔑 API keys** at the top of the left pane and paste a key for the provider you want to use (optional; without a key the LLM run shows a mock reply).
+3. Load a CSV/JSON file with **📂 Load CSV/JSON** or drop it on the window, then write the role, constraints and output fields.
+4. Press Ctrl+Enter to compile, read the lint log and the token report, and run the prompt against the model from the right pane.
+5. Save everything as a `.kiro` blueprint with Ctrl+S.
+
+Shortcuts:
+
+| Keys | Action |
+|---|---|
+| Ctrl+Enter | Compile |
+| Ctrl+S / Ctrl+Shift+S | Save blueprint / Save as |
+| Ctrl+O | Open blueprint |
+| Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z) | Undo / Redo |
+
+Themes (`--theme 1-7` or the Theme picker): 01 Classic Halloween, 02 Jack-o'-Lantern Glow, 03 Pumpkin Patch Light, 04 Premium Noir (default), 05 Premium Velvet, 06 Misty Graveyard, 07 Misty Haunted Manor. The fog effect of 06 and 07 can be turned off.
+
+### API keys and endpoints
+
+The **🔑 API keys** window opens from the top of the left pane, the blueprint settings node, the LLM node and the graph tool's top bar.
+
+- **Key**: each provider (Anthropic, OpenAI, Gemini) has its own card. Paste the key and press Save or Enter. It is saved in Windows Credential Manager as `Candy-Corn/<VARIABLE>` for the current Windows user, and only its last 4 characters are shown. A saved key is used before the environment variable. `--run-graph` reads only the environment.
+- **Endpoint (optional)**: a custom base URL, for example a proxy or a local OpenAI-compatible server. It must be https (http only for localhost, 127.0.0.1 and [::1]), because the key is sent there. Leave it empty for the provider's own address. It is saved under `base_urls` in `settings.json`, not in blueprints, and is used by the studio's LLM run.
+- **Model**: each card has a model picker for Test connection.
+- **Test connection**: sends a 16-token `ping` with the saved key and the picked model to the address in the field and shows whether it worked.
+
+### Models
+
+Every model field (the LLM node, the LLM run result and the graph tool's LLM node) has a **▾** button that lists the latest models of the provider; any other model ID can still be typed. Defaults are in bold.
+
+| Provider | Models |
+|---|---|
+| Anthropic | `claude-fable-5-2`, `claude-opus-5-5`, **`claude-sonnet-5-5`**, `claude-haiku-5-5` |
+| OpenAI | `gpt-6.2-astra`, **`gpt-6.2-sol`**, `gpt-6.1-terra`, `gpt-6-luna` |
+| Gemini | `gemini-4-carbon`, `gemini-4-argon`, **`gemini-4-neon`**, `gemini-4-hydrogen` |
+
+The list comes from the providers' model pages (November 2026) and lives in `Provider::models` in `src/canvas/graph.rs`. Blueprints keep the model they were saved with.
+
+### Settings file
+
+`%APPDATA%\Candy-Corn\settings.json` holds the UI language (`lang`) and the custom endpoints (`base_urls`). The `CANDY_CORN_SETTINGS` environment variable points to a different file, and an empty value turns the settings file off. API keys are never stored there.
 
 ### Modes
 
@@ -214,6 +258,14 @@ To call `compress_prompt` from Kiro, add the server to `.kiro/settings/mcp.json`
 ```
 
 The path is the installer's default. With a source build, use the path of your `Candy-Corn.exe`.
+
+## Troubleshooting
+
+- **SmartScreen warning**: the installer is not code-signed. Choose More info > Run anyway.
+- **Korean text shows as boxes**: the GUI needs `malgun.ttf`, `NanumGothic.ttf` or `gulim.ttc` in `C:\Windows\Fonts`.
+- **`No ... API key`**: add a key in 🔑 API keys or set the environment variable, then use Test connection.
+- **Custom endpoint rejected**: use https, or http only for localhost.
+- **Build fails to link during development**: a GUI started with `cargo run` locks the debug exe; close it first.
 
 ## Testing
 

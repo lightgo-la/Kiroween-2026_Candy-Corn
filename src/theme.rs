@@ -198,6 +198,19 @@ pub fn apply(ctx: &egui::Context, p: &Palette) {
     ctx.global_style_mut(|s| {
         s.spacing.item_spacing = egui::vec2(8.0, 7.0);
         s.spacing.button_padding = egui::vec2(10.0, 5.0);
+        // One type scale for the whole app: body text 13, small 10, headings 19 (egui defaults: 12.5, 9, 18).
+        use egui::{
+            FontFamily::{Monospace, Proportional},
+            FontId, TextStyle,
+        };
+        s.text_styles = [
+            (TextStyle::Heading, FontId::new(19.0, Proportional)),
+            (TextStyle::Body, FontId::new(13.0, Proportional)),
+            (TextStyle::Button, FontId::new(13.0, Proportional)),
+            (TextStyle::Small, FontId::new(10.0, Proportional)),
+            (TextStyle::Monospace, FontId::new(12.5, Monospace)),
+        ]
+        .into();
     });
 }
 

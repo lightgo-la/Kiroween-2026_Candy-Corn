@@ -31,9 +31,34 @@ impl Provider {
 
     pub fn default_model(self) -> &'static str {
         match self {
-            Provider::Anthropic => "claude-sonnet-4-5",
-            Provider::OpenAi => "gpt-4o",
-            Provider::Gemini => "gemini-2.5-flash",
+            Provider::Anthropic => "claude-sonnet-5-5",
+            Provider::OpenAi => "gpt-6.2-sol",
+            Provider::Gemini => "gemini-4-neon",
+        }
+    }
+
+    /// Current models offered by the model pickers as (model ID, display name), most capable first. The list is from
+    /// the providers' model pages (November 2026); any other model ID can still be typed into the model field.
+    pub fn models(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Provider::Anthropic => &[
+                ("claude-fable-5-2", "Claude Fable 5.2"),
+                ("claude-opus-5-5", "Claude Opus 5.5"),
+                ("claude-sonnet-5-5", "Claude Sonnet 5.5"),
+                ("claude-haiku-5-5", "Claude Haiku 5.5"),
+            ],
+            Provider::OpenAi => &[
+                ("gpt-6.2-astra", "GPT-6.2 Astra"),
+                ("gpt-6.2-sol", "GPT-6.2 Sol"),
+                ("gpt-6.1-terra", "GPT-6.1 Terra"),
+                ("gpt-6-luna", "GPT-6 Luna"),
+            ],
+            Provider::Gemini => &[
+                ("gemini-4-carbon", "Gemini 4 Carbon"),
+                ("gemini-4-argon", "Gemini 4 Argon"),
+                ("gemini-4-neon", "Gemini 4 Neon"),
+                ("gemini-4-hydrogen", "Gemini 4 Hydrogen"),
+            ],
         }
     }
 

@@ -18,7 +18,7 @@
       "id": 3,
       "title": "l",
       "pos": [560, 0],
-      "kind": { "type": "llm", "provider": "openai", "model": "gpt-4o", "key_env": "OPENAI_API_KEY", "max_tokens": 100 }
+      "kind": { "type": "llm", "provider": "openai", "model": "gpt-6.2-sol", "key_env": "OPENAI_API_KEY", "max_tokens": 100 }
     },
     { "id": 4, "title": "o", "pos": [840, 0], "kind": { "type": "output" } }
   ],

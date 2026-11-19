@@ -96,6 +96,8 @@ pub struct LlmView<'a> {
     pub key_env: &'static str,
     pub model: &'a mut String,
     pub model_hint: &'static str,
+    /// Current models of the provider for the model picker (model ID, display name)
+    pub models: &'static [(&'static str, &'static str)],
     pub has_key: bool,
     pub running: bool,
     /// (passed, one-line summary)
@@ -1134,6 +1136,7 @@ impl Canvas {
             |ui| {
                 ui.horizontal(|ui| {
                     ui.label(llm.provider);
+                    crate::keys::model_menu(ui, llm.models, llm.model);
                     ui.add(
                         egui::TextEdit::singleline(llm.model)
                             .id_salt("canvas-llm-model")
@@ -1621,7 +1624,7 @@ mod tests {
                 theme_idx: 6, // longest theme name
                 fog: true,
                 sample_rows: 8,
-                llm_model: "claude-sonnet-4-5".into(),
+                llm_model: "claude-sonnet-5-5".into(),
                 opts: LlmOptions::default(),
                 loaded,
                 result,
@@ -1667,7 +1670,8 @@ mod tests {
                             provider: "Anthropic",
                             key_env: "ANTHROPIC_API_KEY",
                             model: &mut self.llm_model,
-                            model_hint: "claude-sonnet-4-5",
+                            model_hint: "claude-sonnet-5-5",
+                            models: crate::canvas::graph::Provider::Anthropic.models(),
                             has_key: full,
                             running: full,
                             verdict: full.then(|| (false, "x".repeat(60))),
