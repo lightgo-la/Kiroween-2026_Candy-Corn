@@ -7,6 +7,7 @@ use crate::blueprint::{self, Blueprint, GoalSpec, LlmOptions, PRESETS};
 use crate::canvas::{graph::Provider, llm};
 use crate::history::{self, History};
 use crate::i18n::{self, Lang, Tr};
+use crate::keys::{self, KeysWindow};
 use crate::pipeline::{self, CompileRequest, CompileResult, LoadedData, TargetCost};
 use crate::studio_canvas::{self, Action, Canvas, Goal, LlmView, Model, NodeKey};
 use crate::theme::{self, Palette, THEMES};
@@ -93,15 +94,6 @@ fn provider_for(t: TargetModel) -> Provider {
 
 fn provider_index(p: Provider) -> usize {
     Provider::ALL.iter().position(|x| *x == p).unwrap_or(0)
-}
-
-/// Reads the API key from the environment. The key is never shown on screen or written to files or logs.
-/// A running process does not see environment variables set later, so the app must be restarted after setting one.
-fn api_key(p: Provider) -> Option<String> {
-    std::env::var(p.default_key_env())
-        .ok()
-        .map(|k| k.trim().to_string())
-        .filter(|k| !k.is_empty())
 }
 
 /// Clears egui's own undo history kept in each text box.
@@ -598,6 +590,8 @@ pub struct StudioApp {
     llm_out: Option<LlmRun>,
     llm_tx: Sender<LlmMsg>,
     llm_rx: Receiver<LlmMsg>,
+    /// 🔑 API keys window and the cached state of the saved keys (the keys themselves are read only to start a run)
+    keys: KeysWindow,
     /// Moving fog of the fog themes (an app setting, so it is not saved in blueprints)
     fog_on: bool,
     /// The last opened or saved blueprint
@@ -707,6 +701,7 @@ impl StudioApp {
             llm_out: None,
             llm_tx,
             llm_rx,
+            keys: KeysWindow::load(),
             fog_on: true,
             saved: SavedState::default(),
             dirty: false,
@@ -807,10 +802,24 @@ impl StudioApp {
     fn start_llm(&mut self, ctx: &egui::Context) {
         let Some(r) = &self.result else { return };
         let provider = provider_for(r.ast.target_model);
-        let Some(key) = api_key(provider) else {
-            self.status = trf!("Environment variable {} is not set", provider.default_key_env());
+        // The key saved in the API keys window first, then the environment variable.
+        let Some((key, _)) = keys::lookup(provider.default_key_env(), true) else {
+            self.status = trf!(
+                "No {} API key. Add one in 🔑 API keys or set {}",
+                provider.label(),
+                provider.default_key_env()
+            );
             self.status_err = true;
             return;
+        };
+        // The custom endpoint saved in the API keys window (empty: the provider's own address).
+        let base_url = match keys::base_url(provider) {
+            Ok(u) => u,
+            Err(e) => {
+                self.status = e;
+                self.status_err = true;
+                return;
+            }
         };
         let model = {
             let m = self.llm_models[provider_index(provider)].trim();
@@ -844,7 +853,7 @@ impl StudioApp {
                 system: &system,
                 prompt: &prompt,
                 api_key: &key,
-                base_url: "",
+                base_url: &base_url,
                 max_tokens,
                 temperature,
             };
@@ -1393,6 +1402,7 @@ impl StudioApp {
                 Action::LoadProject => self.request(Pending::OpenDialog, ctx),
                 Action::SaveOutput => self.dialog = Some(Dialog::SaveOutput),
                 Action::SetLang(lang) => self.switch_lang(lang, ctx),
+                Action::OpenKeys => self.keys.show_window(),
             }
         }
     }
@@ -1738,7 +1748,7 @@ impl StudioApp {
                 let prompt_tokens = self.result.as_ref().map_or(0, |r| r.comp_tokens);
                 let details = self.llm_out.as_ref().map(|run| run_line(run, prompt_tokens));
                 let retry = self.llm_out.as_ref().and_then(retry_limit);
-                let has_key = api_key(provider).is_some();
+                let has_key = self.keys.has_key(provider);
                 let fog_theme = self.palette().fog;
                 let dirty = self.dirty;
                 let actions = {
@@ -1939,6 +1949,7 @@ impl StudioApp {
             Run,
             Cancel,
             Retry(u32),
+            Keys,
         }
         let Some((target, preview, has_data, prompt_tokens)) = self.result.as_ref().map(|r| {
             (
@@ -1952,7 +1963,7 @@ impl StudioApp {
         };
         theme::section_title(ui, p, "VIII", tr!("LLM run result"));
         let provider = provider_for(target);
-        let has_key = api_key(provider).is_some();
+        let has_key = self.keys.has_key(provider);
         let stale = self.stale;
         let running = self.llm.running;
         let ready = has_key && self.llm_ready();
@@ -1971,12 +1982,16 @@ impl StudioApp {
                 btn
             } else {
                 btn.on_disabled_hover_text(trf!(
-                    "Put your API key in the {} environment variable, then restart the app",
+                    "Add your {} API key in 🔑 API keys (or set {})",
+                    provider.label(),
                     provider.default_key_env()
                 ))
             };
             if btn.clicked() {
                 act = Some(Act::Run);
+            }
+            if ui.small_button(tr!("🔑 API keys")).clicked() {
+                act = Some(Act::Keys);
             }
             if running {
                 ui.spinner();
@@ -2017,8 +2032,8 @@ impl StudioApp {
                 with_system = with_system
             ),
             (false, _) => trf!(
-                "{} is not set, so only the schema skeleton (mock reply) is shown. Set it and restart the app",
-                provider.default_key_env()
+                "No {} API key, so only the schema skeleton (mock reply) is shown. Add one in 🔑 API keys",
+                provider.label()
             ),
         };
         ui.label(RichText::new(note).small().color(p.sub));
@@ -2081,6 +2096,7 @@ impl StudioApp {
             Some(Act::Run) => self.start_llm(&ctx),
             Some(Act::Cancel) => self.cancel_llm(),
             Some(Act::Retry(limit)) => self.retry_longer(limit, &ctx),
+            Some(Act::Keys) => self.keys.show_window(),
             None => {}
         }
     }
@@ -2349,8 +2365,8 @@ impl eframe::App for StudioApp {
         theme::paint_backdrop(ui.painter(), ctx.content_rect(), &p);
         theme::paint_fog(&ctx, &p, self.fog_on);
 
-        // While the save prompt is open, shortcuts and file drops are not accepted.
-        let modal_open = self.confirm.is_some();
+        // While the save prompt or the API keys window is open, shortcuts and file drops are not accepted.
+        let modal_open = self.confirm.is_some() || self.keys.open;
         self.handle_drops(&ctx, modal_open);
         if !modal_open {
             self.shortcuts(&ctx);
@@ -2414,6 +2430,7 @@ impl eframe::App for StudioApp {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(history::SETTLE_SECS));
         }
         self.confirm_modal(&ctx, &p);
+        self.keys.show(&ctx);
         // File dialogs run after all widgets have been handled.
         if let Some(d) = self.dialog.take() {
             self.run_dialog(d, &ctx);

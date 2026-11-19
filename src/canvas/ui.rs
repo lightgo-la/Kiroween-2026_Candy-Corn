@@ -8,6 +8,7 @@
 use super::exec::{self, Event, RunOptions, RunReport};
 use super::graph::{Edge, Graph, Node, NodeKind, PromptFormat, PromptTarget, Provider, TestSpec};
 use crate::i18n::{self, Lang};
+use crate::keys::KeysWindow;
 use eframe::egui::{self, Align2, Color32, FontId, Id, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, pos2, vec2};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -494,6 +495,8 @@ pub struct CanvasApp {
     cancel: Arc<AtomicBool>,
     allow_mcp: bool,
     allow_custom_endpoint: bool,
+    /// 🔑 API keys window and the cached state of the saved keys
+    keys: KeysWindow,
     status: String,
     status_err: bool,
     deferred: Option<Deferred>,
@@ -527,6 +530,7 @@ impl CanvasApp {
             cancel: Arc::new(AtomicBool::new(false)),
             allow_mcp: false,
             allow_custom_endpoint: false,
+            keys: KeysWindow::load(),
             status: tr!("Ready").into(),
             status_err: false,
             deferred: None,
@@ -805,6 +809,7 @@ impl CanvasApp {
             // A relative data_path starts from the folder of the graph file that was opened or saved.
             base_dir: self.path.as_deref().and_then(exec::base_dir_of),
             cancel: Some(cancel),
+            saved_keys: true,
         }
     }
 
@@ -885,8 +890,8 @@ impl CanvasApp {
     // ---------- Screen ----------
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() {
-            return; // no shortcuts while text is being typed
+        if ctx.egui_wants_keyboard_input() || self.keys.open {
+            return; // no shortcuts while text is being typed or the API keys window is open
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::D)) {
             self.duplicate_selected();
@@ -981,6 +986,13 @@ impl CanvasApp {
                 self.run_flow(ctx);
             }
             ui.separator();
+            if ui
+                .button(tr!("🔑 API keys"))
+                .on_hover_text(tr!("Save the API keys for the LLM nodes. Saved keys are used in this window, not by --run-graph"))
+                .clicked()
+            {
+                self.keys.show_window();
+            }
             self.language_picker(ui);
             ui.separator();
             let color = if self.status_err {
@@ -1286,6 +1298,7 @@ impl CanvasApp {
             .filter_map(|u| self.graph.node(*u).map(|n| n.title.clone()))
             .collect();
         let allow_custom = self.allow_custom_endpoint;
+        let key_states = Provider::ALL.map(|p| self.keys.state(p).clone());
         let Some(node) = self.graph.nodes.iter_mut().find(|n| n.id == id) else {
             return;
         };
@@ -1402,6 +1415,18 @@ impl CanvasApp {
                             ui.colored_label(
                                 RED,
                                 trf!("The key variable name must use uppercase letters, digits and underscores and end with _API_KEY (e.g. {})", provider.default_key_env()),
+                            );
+                        } else if key_env.trim() == provider.default_key_env() {
+                            let st = &key_states[Provider::ALL.iter().position(|p| *p == *provider).unwrap_or(0)];
+                            let line = match &st.saved_tail {
+                                Some(t) => trf!("Key: saved · {tail}", tail = t),
+                                None if st.env => tr!("Key: from the environment variable").into(),
+                                None => tr!("No key yet · add one in 🔑 API keys").into(),
+                            };
+                            ui.label(RichText::new(line).small());
+                        } else {
+                            ui.label(
+                                RichText::new(tr!("A custom variable name reads only the environment variable")).small(),
                             );
                         }
                         ui.horizontal(|ui| {
@@ -1638,6 +1663,7 @@ impl CanvasApp {
             .size_range(260.0..=620.0)
             .show(ui, |ui| self.inspector(ui));
         egui::CentralPanel::default().show(ui, |ui| self.canvas(ui));
+        self.keys.show(&ctx);
         // File dialogs, graph replacement and language switches run after all widgets are processed.
         if let Some(d) = self.deferred.take() {
             self.run_deferred(d, &ctx);

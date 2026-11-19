@@ -6,6 +6,7 @@
 use super::graph::{Graph, NodeKind, PromptFormat, PromptTarget, Provider};
 use super::{llm, mcp_client};
 use crate::ast::{OutputFormat, TargetModel, codegen};
+use crate::keys;
 use crate::pipeline::{self, CompileRequest};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -27,6 +28,9 @@ pub struct RunOptions {
     pub base_dir: Option<PathBuf>,
     /// Stop signal. run_graph checks it between nodes and skips the remaining nodes once it is set.
     pub cancel: Option<Arc<AtomicBool>>,
+    /// If true (the GUI), an LLM node may use the key saved in the 🔑 API keys window, but only when its key variable
+    /// is the provider's own (ANTHROPIC_API_KEY for Anthropic, ...). `--run-graph` leaves it false.
+    pub saved_keys: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -210,6 +214,22 @@ pub fn valid_key_env(name: &str) -> bool {
 
 fn is_port(p: &str) -> bool {
     !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The API key of an LLM node. With `saved_keys` (the GUI), the key saved in the 🔑 API keys window comes first, but
+/// only for the provider's own variable (ANTHROPIC_API_KEY for Anthropic, ...), so a graph file cannot send the key
+/// saved for one provider to another provider's address. Otherwise the environment variable is read.
+fn node_key(provider: Provider, key_env: &str, saved_keys: bool) -> Result<String, String> {
+    let use_saved = saved_keys && key_env == provider.default_key_env();
+    match keys::lookup(key_env, use_saved) {
+        Some((key, _)) => Ok(key),
+        None if use_saved => Err(trf!(
+            "No {} API key. Add one in 🔑 API keys or set {}",
+            provider.label(),
+            key_env
+        )),
+        None => Err(trf!("Environment variable {key_env} is not set", key_env = key_env)),
+    }
 }
 
 /// Reads (scheme, host) from an address, in lowercase. None if there is user info (`@`), a backslash, whitespace or
@@ -534,14 +554,13 @@ fn exec_node(kind: &NodeKind, id: u32, input: &str, opts: &RunOptions) -> Result
                     note,
                 });
             }
-            let key = std::env::var(key_env)
-                .map_err(|_| trf!("Environment variable {key_env} is not set", key_env = key_env))?;
+            let key = node_key(*provider, key_env, opts.saved_keys)?;
             let reply = llm::call(&llm::LlmRequest {
                 provider: *provider,
                 model,
                 system,
                 prompt: input,
-                api_key: key.trim(),
+                api_key: &key,
                 base_url,
                 max_tokens: *max_tokens,
                 // Values outside the range the provider accepts give HTTP 400, so clamp them to the limit.
@@ -1192,6 +1211,34 @@ mod tests {
     }
 
     const UNSET_KEY: &str = "CC_EXEC_TEST_UNSET_API_KEY";
+
+    #[test]
+    fn saved_keys_are_used_only_in_the_gui_and_only_for_the_providers_own_variable() {
+        assert!(std::env::var(UNSET_KEY).is_err(), "the test variable must not be set");
+        // The in-memory test store (one per thread) stands in for Windows Credential Manager.
+        keys::save("ANTHROPIC_API_KEY", "sk-saved-for-exec-test").unwrap();
+        keys::save(UNSET_KEY, "sk-saved-custom-name").unwrap();
+        // GUI: the saved key wins over an environment variable of the same name.
+        assert_eq!(
+            node_key(Provider::Anthropic, "ANTHROPIC_API_KEY", true).as_deref(),
+            Ok("sk-saved-for-exec-test")
+        );
+        // --run-graph: never the saved key.
+        assert_ne!(
+            node_key(Provider::Anthropic, "ANTHROPIC_API_KEY", false).as_deref(),
+            Ok("sk-saved-for-exec-test")
+        );
+        // Another provider naming that variable does not get the saved key.
+        assert_ne!(
+            node_key(Provider::OpenAi, "ANTHROPIC_API_KEY", true).as_deref(),
+            Ok("sk-saved-for-exec-test")
+        );
+        // A custom variable name reads only the environment.
+        let err = node_key(Provider::Anthropic, UNSET_KEY, true).unwrap_err();
+        assert!(err.contains(UNSET_KEY) && err.contains("is not set"), "{err}");
+        keys::remove("ANTHROPIC_API_KEY").unwrap();
+        keys::remove(UNSET_KEY).unwrap();
+    }
 
     #[test]
     fn custom_endpoint_needs_explicit_trust() {

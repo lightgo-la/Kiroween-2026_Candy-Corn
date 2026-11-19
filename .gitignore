@@ -14,3 +14,6 @@ desktop.ini
 
 # Copy of the release executable (cargo build --release output)
 /Candy-Corn.exe
+
+# Installer output (installer\build.ps1)
+/dist

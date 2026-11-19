@@ -133,6 +133,8 @@ pub enum Action {
     ReloadSample,
     /// Change the UI language (language picker in the settings node)
     SetLang(Lang),
+    /// Open the 🔑 API keys window
+    OpenKeys,
 }
 
 /// Constraint node templates: (category, sentences). Picking one adds a constraint with the sentence in the current
@@ -187,7 +189,7 @@ pub const FLOW_FRAME: Duration = Duration::from_millis(50);
 /// Estimated node height, used when the height measured in the last frame is unknown (before the first draw).
 fn default_height(key: NodeKey) -> f32 {
     match key {
-        NodeKey::Settings => 200.0,
+        NodeKey::Settings => 224.0,
         NodeKey::Data => 210.0,
         NodeKey::Role => 160.0,
         NodeKey::Output => 150.0,
@@ -874,6 +876,16 @@ impl Canvas {
                         actions.push(Action::LoadProject);
                     }
                 });
+                // API keys are an app setting for this Windows user; they are never saved in the blueprint.
+                if ui
+                    .small_button(tr!("🔑 API keys"))
+                    .on_hover_text(tr!(
+                        "Keys for the LLM run, saved for this Windows user (not in the blueprint)"
+                    ))
+                    .clicked()
+                {
+                    actions.push(Action::OpenKeys);
+                }
             },
         );
 
@@ -1171,11 +1183,19 @@ impl Canvas {
                         );
                     }
                     (None, false, _) => {
-                        ui.label(
-                            RichText::new(trf!("Set {} and restart the app", llm.key_env))
-                                .small()
-                                .color(p.sub),
-                        );
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(tr!("No API key yet")).small().color(p.sub));
+                            if ui
+                                .small_button(tr!("🔑 API keys"))
+                                .on_hover_text(trf!(
+                                    "A saved key is used first, then the {} environment variable",
+                                    llm.key_env
+                                ))
+                                .clicked()
+                            {
+                                actions.push(Action::OpenKeys);
+                            }
+                        });
                     }
                     (None, true, false) => {
                         ui.label(RichText::new(tr!("Compile first")).small().color(p.sub));
@@ -1398,11 +1418,11 @@ mod tests {
     fn default_layout_matches_previous_fixed_spacing() {
         let placed: HashMap<NodeKey, Pos2> = layout_positions(&[1, 2, 3], |_| None).into_iter().collect();
         assert_eq!(placed[&NodeKey::Settings], Pos2::new(0.0, 0.0));
-        // The settings node got a language picker row, so its estimated height went from 150 to 200 (the left column
-        // moves down by 50)
-        assert_eq!(placed[&NodeKey::Data], Pos2::new(0.0, 220.0));
-        assert_eq!(placed[&NodeKey::Role], Pos2::new(0.0, 450.0));
-        assert_eq!(placed[&NodeKey::Output], Pos2::new(0.0, 630.0));
+        // The settings node got a language picker row (estimated height 150 -> 200) and then an API keys button row
+        // (200 -> 224), so the left column moves down by 74 in total
+        assert_eq!(placed[&NodeKey::Data], Pos2::new(0.0, 244.0));
+        assert_eq!(placed[&NodeKey::Role], Pos2::new(0.0, 474.0));
+        assert_eq!(placed[&NodeKey::Output], Pos2::new(0.0, 654.0));
         assert_eq!(placed[&NodeKey::Goal(2)], Pos2::new(290.0, 112.0));
         assert_eq!(placed[&NodeKey::Root], Pos2::new(590.0, 120.0));
         assert_eq!(placed[&NodeKey::Result], Pos2::new(590.0, 310.0));

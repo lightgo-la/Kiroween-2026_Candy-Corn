@@ -185,12 +185,18 @@ pub fn load_saved(path: &Path) -> Option<Lang> {
 
 /// Saves the language to the settings file, keeping other keys; writes a temp file and swaps it in.
 pub fn save(path: &Path, lang: Lang) -> Result<(), String> {
+    update(path, |v| v["lang"] = serde_json::json!(lang.code()))
+}
+
+/// Reads the settings file (a missing or broken file counts as an empty object), lets `edit` change it and writes it
+/// back through a temp file, keeping the keys `edit` does not touch.
+pub fn update(path: &Path, edit: impl FnOnce(&mut serde_json::Value)) -> Result<(), String> {
     let mut v = std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str::<serde_json::Value>(t.trim_start_matches('\u{feff}')).ok())
         .filter(serde_json::Value::is_object)
         .unwrap_or_else(|| serde_json::json!({}));
-    v["lang"] = serde_json::json!(lang.code());
+    edit(&mut v);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -202,7 +208,6 @@ pub fn save(path: &Path, lang: Lang) -> Result<(), String> {
         e.to_string()
     })
 }
-
 /// Saves the language to the default settings file (does nothing when the settings file is disabled).
 pub fn save_default(lang: Lang) -> Result<(), String> {
     match settings_path() {

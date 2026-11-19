@@ -8,6 +8,7 @@ mod ast;
 mod blueprint;
 mod canvas;
 mod history;
+mod keys;
 mod lexicon;
 mod mcp_server;
 mod pipeline;
@@ -473,6 +474,8 @@ fn run_graph_cli(
         // A Prompt node's relative data_path is relative to the folder of the graph file.
         base_dir: exec::base_dir_of(path),
         cancel: None,
+        // Terminal runs read API keys from environment variables only, never the keys saved in the GUI.
+        saved_keys: false,
     };
     match exec::run_graph(&g, &opts, |e| match e {
         exec::Event::Done { id, ms, note, .. } => match note {
