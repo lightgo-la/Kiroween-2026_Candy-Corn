@@ -1,0 +1,18 @@
+{
+  "anomalies": [
+    { "date": "2026-09-05", "page": "/pricing", "metric": "sessions", "value": 48210, "normal_value": 1172, "severity": "high" },
+    { "date": "2026-09-05", "page": "/pricing", "metric": "users", "value": 47350, "normal_value": 967, "severity": "high" },
+    { "date": "2026-09-05", "page": "/pricing", "metric": "bounce_rate", "value": 0.97, "normal_value": 0.341, "severity": "high" },
+    { "date": "2026-09-05", "page": "/pricing", "metric": "avg_session_sec", "value": 3, "normal_value": 145, "severity": "high" },
+    { "date": "2026-09-12", "page": "all pages", "metric": "conversions", "value": null, "normal_value": 46, "severity": "medium" }
+  ],
+  "likely_causes": [
+    "The 2026-09-05 spike on /pricing looks like bot or crawler traffic: sessions were 41 times normal, the bounce rate was 97% and visits lasted 3 seconds, while conversions (30) and revenue (1824) stayed at their normal level (about 30 and 1828).",
+    "On 2026-09-12 conversions and revenue are empty for all four pages at once, which points to a tracking or reporting outage, not to a drop in sales."
+  ],
+  "next_steps": [
+    "Leave 2026-09-05 /pricing out of trend charts and block or filter the source of that traffic.",
+    "Check the analytics pipeline for 2026-09-12 and backfill conversions and revenue if the raw events exist.",
+    "Add an alert for a bounce rate above 0.9 together with an average session under 10 seconds."
+  ]
+}

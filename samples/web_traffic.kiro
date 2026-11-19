@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "project": "web_traffic.kiro",
+  "target": "Claude",
+  "role": "Web analytics analyst who investigates traffic anomalies",
+  "goals": [
+    { "text": "Compare each page with its own normal range, not with the whole site", "on": true },
+    { "text": "Tell bot-like traffic from real visitors using bounce rate, session time and conversions", "on": true },
+    { "text": "Do not infer anything not in the data", "on": true }
+  ],
+  "format": "StrictJson",
+  "fields": "anomalies,likely_causes,next_steps",
+  "sample_rows": 8,
+  "theme": 3,
+  "data_path": "web_traffic.tsv"
+}

@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "project": "sales_outliers.kiro",
+  "target": "Claude",
+  "role": "Data analyst who finds root causes in sales data",
+  "goals": [
+    { "text": "Exclude missing values", "on": true },
+    { "text": "Detect outliers first", "on": true },
+    { "text": "Do not infer anything not in the data", "on": true }
+  ],
+  "format": "StrictJson",
+  "fields": "root_causes,outliers,region_averages,recommendations",
+  "sample_rows": 8,
+  "theme": 3,
+  "data_path": "sales.csv"
+}

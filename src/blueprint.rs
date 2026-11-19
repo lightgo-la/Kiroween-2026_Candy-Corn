@@ -134,7 +134,7 @@ pub const MAX_SAMPLE_ROWS: usize = 50;
 
 impl Blueprint {
     pub fn load(path: &Path) -> Result<Blueprint, String> {
-        let text = std::fs::read_to_string(path).map_err(|e| trf!("cannot read file: {e}", e = e))?;
+        let text = pipeline::read_text_auto(path)?;
         Blueprint::parse(&text)
     }
 
@@ -692,5 +692,26 @@ mod tests {
         for c in changed {
             assert_ne!(c.fingerprint(), fp);
         }
+    }
+
+    #[test]
+    fn blueprints_in_other_encodings_load() {
+        let dir = std::env::temp_dir().join(format!("cc_bp_enc_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let json = r#"{"version":3,"role":"encoded role"}"#;
+        let mut utf16 = vec![0xFF, 0xFE];
+        utf16.extend(json.encode_utf16().flat_map(u16::to_le_bytes));
+        let mut utf8_bom = vec![0xEF, 0xBB, 0xBF];
+        utf8_bom.extend(json.as_bytes());
+        for (name, bytes) in [
+            ("u16.kiro", utf16),
+            ("bom.kiro", utf8_bom),
+            ("plain.kiro", json.as_bytes().to_vec()),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            assert_eq!(Blueprint::load(&path).unwrap().role, "encoded role", "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

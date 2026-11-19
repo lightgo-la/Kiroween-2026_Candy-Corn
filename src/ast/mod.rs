@@ -120,12 +120,22 @@ const INFERENCE_PREFIXES: [&str; 4] = ["infer", "guess", "speculat", "fabricat"]
 const INFERENCE_BANS: &[&str] = lexicon::AST_KO_INFERENCE_BANS;
 const INFERENCE_BAN_WORDS: [&str; 2] = ["without", "no"];
 
+/// Whether `lower` has `marker` starting at a word boundary and, unless the marker is a word stem, ending at one:
+/// "not in the data" must not match "not in the database".
+fn has_marker(lower: &str, marker: &str, stem: bool) -> bool {
+    lower.match_indices(marker).any(|(i, m)| {
+        let before = lower[..i].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
+        let after = lower[i + m.len()..].chars().next().is_none_or(|c| !c.is_alphanumeric());
+        before && (stem || after)
+    })
+}
+
 fn is_factuality(text: &str) -> bool {
     let lower = text.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
     if FACTUALITY_MARKERS
         .iter()
-        .chain(lexicon::AST_KO_FACTUALITY_MARKERS)
-        .any(|k| lower.contains(k))
+        .any(|k| has_marker(&lower, k, *k == "hallucinat"))
+        || lexicon::AST_KO_FACTUALITY_MARKERS.iter().any(|k| lower.contains(k))
     {
         return true;
     }
@@ -280,5 +290,15 @@ mod tests {
         for (t, want) in english.into_iter().chain(ordinary) {
             assert_eq!(kind(t), want, "{t}");
         }
+    }
+
+    #[test]
+    fn factuality_markers_match_whole_words() {
+        assert!(is_factuality("Use only from the data"));
+        assert!(is_factuality("Report only what is not in the data"));
+        assert!(is_factuality("Do not hallucinate values"));
+        // "not in the data" is inside "not in the database", which is an ordinary rule
+        assert!(!is_factuality("Flag customers who are not in the database"));
+        assert!(!is_factuality("Round amounts to 2 decimals"));
     }
 }

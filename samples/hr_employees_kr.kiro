@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "project": "hr_employees_kr.kiro",
+  "target": "Claude",
+  "role": "인사 데이터 분석가",
+  "goals": [
+    { "text": "직급별 연봉 범위를 먼저 비교할 것", "on": true },
+    { "text": "임원은 일반 직급과 분리해서 볼 것", "on": true },
+    { "text": "데이터에 없는 내용은 추론하지 말 것", "on": true }
+  ],
+  "format": "StrictJson",
+  "fields": "anomalies,pay_by_rank,recommendations",
+  "sample_rows": 8,
+  "theme": 4,
+  "data_path": "hr_employees_kr.csv"
+}

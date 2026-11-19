@@ -1,0 +1,22 @@
+{
+  "nps_summary": { "responses": 120, "promoters": 40, "passives": 41, "detractors": 39, "nps": 0.8 },
+  "themes": [
+    { "theme": "Praise: speed, templates, support, report automation", "mentions": 29, "sentiment": "positive" },
+    { "theme": "Import failures and slow dashboards on large files", "mentions": 12, "sentiment": "negative" },
+    { "theme": "Pricing and plan confusion (Pro vs Team)", "mentions": 11, "sentiment": "negative" },
+    { "theme": "Missing features (bulk API, export formats)", "mentions": 10, "sentiment": "neutral" },
+    { "theme": "Korean file names and the mobile layout", "mentions": 8, "sentiment": "negative" },
+    { "theme": "Too many emails, unsubscribe does not work", "mentions": 6, "sentiment": "negative" },
+    { "theme": "Filters lost after an update", "mentions": 4, "sentiment": "negative" }
+  ],
+  "data_quality_issues": [
+    "R-0008 took 186 minutes to complete (others take 2 to 9 minutes); leave it out of timing statistics.",
+    "22 of 120 responses have no support_rating (people who never contacted support), so the support average covers 98 answers.",
+    "40 responses (33%) have no comment, so the themes cover 80 comments."
+  ],
+  "recommendations": [
+    "Fix CSV import for files over 50 MB and speed up the dashboard on large files: the largest negative theme.",
+    "Make the Pro and Team plan difference clear on the pricing page; 11 comments mention it.",
+    "Repair the unsubscribe link."
+  ]
+}

@@ -1,0 +1,221 @@
+﻿ticket_id;created_at;channel;priority;category;first_response_min;resolution_hours;reopened;csat;agent;subject
+T-50001;2026-10-01 07:03;web_form;high;feature_request;260;5.2;yes;4;Mina;Bulk edit for product tags
+T-50002;2026-10-01 07:04;phone;high;feature_request;2;11.1;yes;5;Sofia;Webhook for refunds
+T-50003;2026-10-01 11:12;email;low;bug;27;65.2;no;5;Tom;Dashboard freezes with large files
+T-50004;2026-10-01 14:24;chat;high;refund;7;8.1;no;;Jae;Partial refund for a damaged item
+T-50005;2026-10-01 14:47;email;medium;bug;153;20.8;no;3;Mina;Export to CSV drops the last row
+T-50006;2026-10-01 16:02;web_form;low;bug;33;12.2;yes;5;Daniel;Dashboard freezes with large files
+T-50007;2026-10-01 16:44;chat;medium;login;6;6.3;no;5;Priya;Password reset email never arrives
+T-50008;2026-10-01 17:21;chat;medium;login;4;17.6;no;5;Priya;2FA code rejected after phone change
+T-50009;2026-10-01 20:56;email;high;bug;119;312.0;yes;1;Daniel;Export to CSV drops the last row
+T-50010;2026-10-02 08:47;phone;medium;billing;1;9.6;no;;Jae;Invoice shows the wrong VAT number
+T-50011;2026-10-02 10:51;chat;urgent;shipping;5;1.6;no;5;Mina;"Tracking link shows ""label created"" only"
+T-50012;2026-10-02 15:59;phone;low;shipping;2;14.6;no;5;Sofia;Package stuck in transit for 6 days
+T-50013;2026-10-02 16:46;web_form;high;bug;136;10.8;no;3;Daniel;"""Pay"" button does nothing on iOS 19"
+T-50014;2026-10-02 16:46;web_form;low;shipping;165;43.8;no;5;Mina;Package stuck in transit for 6 days
+T-50015;2026-10-02 17:45;email;urgent;shipping;134;1.4;no;1;Tom;"Tracking link shows ""label created"" only"
+T-50016;2026-10-02 18:09;email;low;refund;158;51.1;no;4;Mina;Refund not received, order #10234
+T-50017;2026-10-02 18:53;web_form;high;bug;89;22.7;no;4;Jae;"""Pay"" button does nothing on iOS 19"
+T-50018;2026-10-02 19:28;chat;urgent;shipping;7;1.3;yes;4;Mina;"Tracking link shows ""label created"" only"
+T-50019;2026-10-02 22:20;web_form;high;bug;128;19.1;no;5;Mina;Dashboard freezes with large files
+T-50020;2026-10-03 09:01;chat;urgent;refund;8;1.7;no;;Sofia;Partial refund for a damaged item
+T-50021;2026-10-03 09:41;chat;urgent;bug;3;3.5;no;;Sofia;Dashboard freezes with large files
+T-50022;2026-10-03 10:17;phone;low;login;2;8.8;yes;4;Tom;2FA code rejected after phone change
+T-50023;2026-10-03 17:48;phone;urgent;billing;3;4.4;no;3;Sofia;"Charged twice; need a refund"
+T-50024;2026-10-03 18:33;phone;medium;refund;0;28.6;no;;Sofia;Refund to a closed card
+T-50025;2026-10-03 19:38;web_form;high;login;162;18.7;no;;Priya;Password reset email never arrives
+T-50026;2026-10-03 19:57;phone;medium;shipping;0;17.4;no;5;Jae;"Tracking link shows ""label created"" only"
+T-50027;2026-10-03 21:20;web_form;high;bug;211;6.0;no;4;Tom;Dashboard freezes with large files
+T-50028;2026-10-03 21:41;chat;medium;refund;1;23.3;no;4;Jae;Refund to a closed card
+T-50029;2026-10-03 22:40;email;medium;bug;22;7.1;no;;Jae;Dashboard freezes with large files
+T-50030;2026-10-04 07:41;email;medium;login;156;44.3;no;;Mina;Locked out after 3 attempts
+T-50031;2026-10-04 11:21;email;high;billing;188;4.0;no;5;Sofia;"Charged twice; need a refund"
+T-50032;2026-10-04 12:50;chat;medium;shipping;3;4.9;no;;Priya;Package stuck in transit for 6 days
+T-50033;2026-10-04 13:57;web_form;high;login;249;11.3;no;4;Jae;2FA code rejected after phone change
+T-50034;2026-10-04 17:44;email;low;refund;121;57.8;no;3;Sofia;Refund not received, order #10234
+T-50035;2026-10-04 18:10;web_form;medium;bug;211;21.7;no;5;Jae;Export to CSV drops the last row
+T-50036;2026-10-04 18:14;chat;low;bug;4;25.6;no;5;Jae;Export to CSV drops the last row
+T-50037;2026-10-05 07:01;web_form;high;bug;67;7.7;no;5;Jae;Export to CSV drops the last row
+T-50038;2026-10-05 07:04;chat;urgent;billing;7;1.6;yes;5;Jae;Card declined at checkout, but the bank says OK
+T-50039;2026-10-05 07:05;chat;medium;refund;1;34.5;yes;5;Mina;Refund to a closed card
+T-50040;2026-10-05 14:12;web_form;low;bug;87;57.9;no;;Mina;Dashboard freezes with large files
+T-50041;2026-10-05 20:00;email;medium;shipping;191;16.9;yes;;Mina;Package stuck in transit for 6 days
+T-50042;2026-10-05 22:40;web_form;low;shipping;137;70.8;no;5;Mina;Delivered to the wrong address
+T-50043;2026-10-06 10:53;email;high;shipping;212;22.1;no;;Priya;Package stuck in transit for 6 days
+T-50044;2026-10-06 15:55;email;high;shipping;206;13.8;no;5;Mina;Delivered to the wrong address
+T-50045;2026-10-06 17:02;email;medium;billing;136;16.7;no;5;Daniel;Card declined at checkout, but the bank says OK
+T-50046;2026-10-06 18:46;email;high;feature_request;106;5.4;no;5;Daniel;Webhook for refunds
+T-50047;2026-10-06 19:58;web_form;medium;shipping;71;41.5;no;5;Sofia;Delivered to the wrong address
+T-50048;2026-10-06 20:16;chat;low;feature_request;6;22.0;no;5;Priya;Please add dark mode to the mobile app
+T-50049;2026-10-06 21:05;phone;low;billing;3;12.9;no;3;Mina;"Charged twice; need a refund"
+T-50050;2026-10-07 07:14;chat;medium;feature_request;2;23.5;no;4;Jae;Bulk edit for product tags
+T-50051;2026-10-07 08:35;chat;low;shipping;4;19.5;yes;3;Daniel;Delivered to the wrong address
+T-50052;2026-10-07 10:13;web_form;medium;billing;196;27.1;no;3;Sofia;"Charged twice; need a refund"
+T-50053;2026-10-07 12:34;web_form;high;refund;137;13.9;no;2;Priya;Refund not received, order #10234
+T-50054;2026-10-07 12:43;phone;high;bug;2;9.6;no;5;Mina;Export to CSV drops the last row
+T-50055;2026-10-07 13:16;email;medium;billing;29;28.2;no;4;Mina;"Charged twice; need a refund"
+T-50056;2026-10-07 16:48;chat;low;billing;7;48.1;no;5;Sofia;"Charged twice; need a refund"
+T-50057;2026-10-07 17:24;email;high;refund;128;16.1;no;5;Priya;Refund not received, order #10234
+T-50058;2026-10-07 19:39;web_form;medium;shipping;280;25.7;no;5;Tom;Delivered to the wrong address
+T-50059;2026-10-07 19:51;email;low;shipping;132;62.5;no;5;Priya;Package stuck in transit for 6 days
+T-50060;2026-10-07 20:10;phone;low;bug;1;38.3;no;3;Priya;Export to CSV drops the last row
+T-50061;2026-10-07 22:24;email;medium;bug;78;17.2;no;4;Mina;Dashboard freezes with large files
+T-50062;2026-10-08 08:42;email;high;login;207;19.6;no;5;Priya;Locked out after 3 attempts
+T-50063;2026-10-08 09:01;email;medium;billing;139;15.6;no;5;Mina;"Charged twice; need a refund"
+T-50064;2026-10-08 10:06;email;high;billing;165;17.7;no;;Priya;"Charged twice; need a refund"
+T-50065;2026-10-08 15:37;chat;high;billing;1;8.4;no;5;Tom;Invoice shows the wrong VAT number
+T-50066;2026-10-08 17:23;chat;medium;login;2;17.4;no;;Jae;2FA code rejected after phone change
+T-50067;2026-10-08 18:35;web_form;medium;refund;207;15.0;no;5;Sofia;Partial refund for a damaged item
+T-50068;2026-10-08 19:31;web_form;high;billing;46;16.7;no;5;Tom;"Charged twice; need a refund"
+T-50069;2026-10-09 09:46;email;medium;billing;233;18.7;no;5;Daniel;Card declined at checkout, but the bank says OK
+T-50070;2026-10-09 13:35;web_form;low;refund;135;25.6;no;5;Priya;Refund not received, order #10234
+T-50071;2026-10-09 13:55;email;medium;billing;196;34.3;no;;Mina;Invoice shows the wrong VAT number
+T-50072;2026-10-09 16:02;email;high;billing;98;23.9;no;4;Priya;Invoice shows the wrong VAT number
+T-50073;2026-10-09 18:40;email;medium;billing;2880;7.5;no;;Tom;Card declined at checkout, but the bank says OK
+T-50074;2026-10-09 21:36;email;medium;bug;197;33.5;yes;4;Mina;"""Pay"" button does nothing on iOS 19"
+T-50075;2026-10-09 23:00;chat;low;refund;6;59.0;no;4;Priya;Refund not received, order #10234
+T-50076;2026-10-10 08:06;web_form;high;shipping;266;23.8;no;5;Mina;Package stuck in transit for 6 days
+T-50077;2026-10-10 08:39;email;low;billing;209;68.8;no;;Jae;Card declined at checkout, but the bank says OK
+T-50078;2026-10-10 15:15;email;low;login;237;15.5;no;;Sofia;Locked out after 3 attempts
+T-50079;2026-10-10 15:41;web_form;low;bug;242;60.9;no;;Daniel;Export to CSV drops the last row
+T-50080;2026-10-10 15:55;phone;medium;billing;1;33.4;no;4;Sofia;Card declined at checkout, but the bank says OK
+T-50081;2026-10-10 16:17;chat;medium;feature_request;6;23.6;no;4;Priya;Please add dark mode to the mobile app
+T-50082;2026-10-10 19:44;phone;medium;billing;2;22.3;no;4;Mina;"Charged twice; need a refund"
+T-50083;2026-10-10 21:13;email;low;login;57;49.2;no;5;Mina;Locked out after 3 attempts
+T-50084;2026-10-11 08:16;email;medium;login;35;45.4;no;4;Mina;2FA code rejected after phone change
+T-50085;2026-10-11 09:33;phone;high;billing;3;5.0;no;;Tom;Card declined at checkout, but the bank says OK
+T-50086;2026-10-11 09:47;email;medium;shipping;89;39.4;no;;Tom;Package stuck in transit for 6 days
+T-50087;2026-10-11 12:57;web_form;medium;bug;193;33.0;no;1;Daniel;"""Pay"" button does nothing on iOS 19"
+T-50088;2026-10-11 13:54;web_form;low;refund;214;22.8;no;4;Mina;Refund not received, order #10234
+T-50089;2026-10-11 19:55;web_form;high;refund;243;11.7;no;5;Mina;Refund to a closed card
+T-50090;2026-10-11 20:00;phone;high;bug;3;8.0;no;5;Sofia;Dashboard freezes with large files
+T-50091;2026-10-11 21:29;chat;high;login;3;18.2;no;4;Priya;2FA code rejected after phone change
+T-50092;2026-10-11 22:14;chat;medium;bug;1;36.6;no;4;Daniel;"""Pay"" button does nothing on iOS 19"
+T-50093;2026-10-12 09:48;email;medium;shipping;66;43.7;yes;5;Priya;Package stuck in transit for 6 days
+T-50094;2026-10-12 13:46;email;medium;feature_request;136;9.5;no;;Daniel;Bulk edit for product tags
+T-50095;2026-10-12 15:01;chat;high;login;7;23.8;no;4;Priya;Password reset email never arrives
+T-50096;2026-10-12 16:59;chat;medium;billing;1;40.2;no;;Sofia;Card declined at checkout, but the bank says OK
+T-50097;2026-10-12 19:15;phone;medium;bug;3;34.0;no;;Mina;"""Pay"" button does nothing on iOS 19"
+T-50098;2026-10-12 19:42;email;urgent;bug;101;7.2;no;4;Mina;Export to CSV drops the last row
+T-50099;2026-10-12 20:39;phone;low;feature_request;2;8.7;yes;3;Jae;Bulk edit for product tags
+T-50100;2026-10-12 22:03;chat;high;billing;6;21.0;no;5;Priya;"Charged twice; need a refund"
+T-50101;2026-10-12 22:09;phone;low;bug;2;61.5;no;3;Mina;Export to CSV drops the last row
+T-50102;2026-10-13 09:35;phone;low;login;0;20.7;no;3;Sofia;2FA code rejected after phone change
+T-50103;2026-10-13 10:03;chat;medium;refund;8;13.9;no;3;Priya;Partial refund for a damaged item
+T-50104;2026-10-13 11:09;email;medium;refund;176;26.8;no;;Priya;Refund not received, order #10234
+T-50105;2026-10-13 11:14;phone;high;shipping;1;23.7;yes;;Daniel;"Tracking link shows ""label created"" only"
+T-50106;2026-10-13 12:34;web_form;low;refund;112;22.5;no;5;Daniel;Partial refund for a damaged item
+T-50107;2026-10-13 12:56;phone;urgent;refund;3;4.8;no;5;Daniel;Refund to a closed card
+T-50108;2026-10-13 15:27;phone;medium;shipping;2;44.1;no;2;Jae;"Tracking link shows ""label created"" only"
+T-50109;2026-10-13 15:48;chat;medium;billing;1;11.2;no;5;Mina;Card declined at checkout, but the bank says OK
+T-50110;2026-10-13 17:03;web_form;high;billing;197;19.0;no;;Tom;"Charged twice; need a refund"
+T-50111;2026-10-13 17:14;email;medium;login;70;21.1;no;5;Tom;Locked out after 3 attempts
+T-50112;2026-10-13 17:56;chat;medium;shipping;8;25.7;no;4;Jae;Delivered to the wrong address
+T-50113;2026-10-13 19:24;phone;urgent;login;1;6.1;no;5;Priya;Password reset email never arrives
+T-50114;2026-10-14 08:44;web_form;urgent;feature_request;241;2.6;no;4;Jae;Webhook for refunds
+T-50115;2026-10-14 15:29;chat;medium;bug;8;11.5;no;3;Sofia;"""Pay"" button does nothing on iOS 19"
+T-50116;2026-10-15 08:03;email;low;login;161;66.1;yes;5;Daniel;Password reset email never arrives
+T-50117;2026-10-15 11:27;chat;medium;login;2;14.3;no;1;Tom;Password reset email never arrives
+T-50118;2026-10-15 16:15;web_form;high;refund;48;6.1;no;4;Sofia;Refund not received, order #10234
+T-50119;2026-10-15 18:08;email;low;billing;44;70.9;no;5;Mina;Card declined at checkout, but the bank says OK
+T-50120;2026-10-15 19:47;phone;low;login;1;64.2;no;4;Jae;Locked out after 3 attempts
+T-50121;2026-10-16 08:08;email;urgent;shipping;54;4.0;no;;Priya;"Tracking link shows ""label created"" only"
+T-50122;2026-10-16 11:05;chat;low;billing;4;15.5;no;5;Sofia;"Charged twice; need a refund"
+T-50123;2026-10-16 12:41;email;medium;refund;121;41.7;no;5;Priya;Refund to a closed card
+T-50124;2026-10-16 17:19;chat;low;billing;6;34.2;no;5;Daniel;Card declined at checkout, but the bank says OK
+T-50125;2026-10-16 20:44;email;high;feature_request;63;3.0;no;;Sofia;Bulk edit for product tags
+T-50126;2026-10-16 22:30;chat;low;shipping;6;44.0;no;5;Daniel;Delivered to the wrong address
+T-50127;2026-10-17 13:18;email;low;bug;197;23.0;no;5;Sofia;Export to CSV drops the last row
+T-50128;2026-10-17 16:53;phone;medium;shipping;0;46.1;no;5;Mina;"Tracking link shows ""label created"" only"
+T-50129;2026-10-17 21:20;web_form;low;billing;35;37.9;no;4;Daniel;Card declined at checkout, but the bank says OK
+T-50130;2026-10-17 21:57;email;low;billing;186;52.4;no;4;Daniel;Invoice shows the wrong VAT number
+T-50131;2026-10-17 22:59;phone;urgent;feature_request;3;2.1;no;3;Daniel;Bulk edit for product tags
+T-50132;2026-10-18 11:51;chat;low;refund;3;65.8;no;5;Mina;Refund to a closed card
+T-50133;2026-10-18 14:16;web_form;medium;bug;179;29.3;no;;Daniel;"""Pay"" button does nothing on iOS 19"
+T-50134;2026-10-18 14:47;email;medium;feature_request;144;46.8;no;5;Tom;Please add dark mode to the mobile app
+T-50135;2026-10-18 18:36;email;medium;bug;164;42.7;no;1;Priya;Export to CSV drops the last row
+T-50136;2026-10-18 19:14;chat;low;billing;6;67.7;no;2;Tom;Invoice shows the wrong VAT number
+T-50137;2026-10-18 20:07;chat;urgent;billing;2;6.0;no;;Jae;Card declined at checkout, but the bank says OK
+T-50138;2026-10-18 21:03;email;low;billing;104;49.0;no;5;Sofia;Card declined at checkout, but the bank says OK
+T-50139;2026-10-19 07:51;web_form;medium;refund;238;32.9;no;1;Daniel;Refund not received, order #10234
+T-50140;2026-10-19 10:17;chat;urgent;login;7;5.3;no;;Tom;Locked out after 3 attempts
+T-50141;2026-10-19 11:31;email;low;refund;164;41.4;no;;Priya;Refund to a closed card
+T-50142;2026-10-19 16:02;web_form;low;refund;32;35.4;no;2;Mina;Partial refund for a damaged item
+T-50143;2026-10-19 18:46;web_form;high;shipping;174;8.1;no;1;Tom;"Tracking link shows ""label created"" only"
+T-50144;2026-10-19 20:22;phone;low;shipping;3;56.6;no;;Jae;Delivered to the wrong address
+T-50145;2026-10-19 22:52;chat;medium;billing;2;23.8;yes;;Tom;Invoice shows the wrong VAT number
+T-50146;2026-10-20 12:30;email;low;shipping;49;8.8;no;4;Priya;"Tracking link shows ""label created"" only"
+T-50147;2026-10-20 13:15;email;medium;shipping;164;43.0;no;5;Tom;Package stuck in transit for 6 days
+T-50148;2026-10-20 13:19;chat;medium;feature_request;5;23.2;no;;Jae;Webhook for refunds
+T-50149;2026-10-20 13:23;email;medium;shipping;62;37.8;no;5;Daniel;"Tracking link shows ""label created"" only"
+T-50150;2026-10-20 14:16;web_form;high;login;225;21.6;no;1;Tom;2FA code rejected after phone change
+T-50151;2026-10-20 14:25;chat;low;shipping;8;25.9;no;3;Jae;"Tracking link shows ""label created"" only"
+T-50152;2026-10-20 14:38;chat;urgent;feature_request;6;3.8;no;3;Jae;Bulk edit for product tags
+T-50153;2026-10-20 15:49;web_form;medium;billing;36;4.2;no;5;Jae;Invoice shows the wrong VAT number
+T-50154;2026-10-20 17:37;web_form;medium;refund;222;18.7;no;5;Tom;Partial refund for a damaged item
+T-50155;2026-10-20 18:28;email;high;bug;173;19.4;no;;Mina;"""Pay"" button does nothing on iOS 19"
+T-50156;2026-10-20 20:05;chat;low;shipping;4;23.3;no;;Priya;Delivered to the wrong address
+T-50157;2026-10-20 20:06;chat;medium;billing;2;4.8;yes;5;Tom;"Charged twice; need a refund"
+T-50158;2026-10-21 08:09;chat;urgent;bug;6;6.5;no;;Mina;Export to CSV drops the last row
+T-50159;2026-10-21 16:11;web_form;medium;login;263;5.2;no;;Daniel;2FA code rejected after phone change
+T-50160;2026-10-21 19:40;web_form;high;shipping;279;17.0;yes;5;Mina;Delivered to the wrong address
+T-50161;2026-10-21 20:33;phone;medium;login;2;28.0;yes;2;Sofia;Locked out after 3 attempts
+T-50162;2026-10-22 08:58;email;high;refund;81;19.4;no;3;Sofia;Partial refund for a damaged item
+T-50163;2026-10-22 10:34;chat;high;billing;4;22.3;no;;Priya;"Charged twice; need a refund"
+T-50164;2026-10-22 11:13;email;high;login;223;9.2;no;5;Sofia;Password reset email never arrives
+T-50165;2026-10-22 11:26;email;low;refund;28;17.2;no;5;Mina;Partial refund for a damaged item
+T-50166;2026-10-23 12:24;chat;medium;feature_request;2;21.9;no;4;Mina;Webhook for refunds
+T-50167;2026-10-23 14:25;email;high;billing;43;19.7;no;5;Sofia;Card declined at checkout, but the bank says OK
+T-50168;2026-10-23 17:58;email;high;refund;66;15.9;no;5;Daniel;Refund to a closed card
+T-50169;2026-10-23 18:08;email;high;billing;49;5.7;yes;;Tom;Invoice shows the wrong VAT number
+T-50170;2026-10-23 21:42;email;high;shipping;156;21.2;no;3;Sofia;Delivered to the wrong address
+T-50171;2026-10-24 07:57;email;low;login;115;8.4;no;5;Sofia;2FA code rejected after phone change
+T-50172;2026-10-24 08:56;email;medium;bug;69;31.3;no;;Daniel;Export to CSV drops the last row
+T-50173;2026-10-24 13:00;email;high;shipping;209;4.5;yes;5;Mina;Delivered to the wrong address
+T-50174;2026-10-24 15:31;email;medium;refund;32;35.3;no;4;Sofia;Refund to a closed card
+T-50175;2026-10-24 16:12;chat;low;login;2;41.3;no;2;Tom;Password reset email never arrives
+T-50176;2026-10-24 18:11;web_form;low;shipping;225;65.3;no;3;Tom;Delivered to the wrong address
+T-50177;2026-10-25 08:51;email;medium;billing;120;17.0;no;4;Tom;"Charged twice; need a refund"
+T-50178;2026-10-25 10:14;chat;high;refund;3;16.1;no;;Daniel;Refund to a closed card
+T-50179;2026-10-25 11:58;phone;high;feature_request;0;9.5;no;4;Jae;Please add dark mode to the mobile app
+T-50180;2026-10-25 13:20;email;high;shipping;37;2.8;no;5;Sofia;Package stuck in transit for 6 days
+T-50181;2026-10-25 16:13;email;low;login;52;55.9;no;;Sofia;Password reset email never arrives
+T-50182;2026-10-25 17:00;chat;medium;bug;5;33.8;no;;Tom;"""Pay"" button does nothing on iOS 19"
+T-50183;2026-10-25 17:16;email;urgent;login;209;1.4;no;;Tom;Locked out after 3 attempts
+T-50184;2026-10-25 17:59;chat;high;billing;1;6.7;no;4;Sofia;"Charged twice; need a refund"
+T-50185;2026-10-25 18:39;email;medium;refund;117;7.2;no;5;Priya;Refund not received, order #10234
+T-50186;2026-10-25 18:45;email;medium;login;67;21.2;no;5;Sofia;2FA code rejected after phone change
+T-50187;2026-10-25 21:22;phone;low;billing;1;46.3;no;;Mina;Card declined at checkout, but the bank says OK
+T-50188;2026-10-26 13:36;email;medium;shipping;132;13.5;no;5;Sofia;"Tracking link shows ""label created"" only"
+T-50189;2026-10-26 15:31;web_form;medium;bug;177;23.9;no;;Jae;"""Pay"" button does nothing on iOS 19"
+T-50190;2026-10-26 18:55;email;low;billing;224;39.0;no;5;Sofia;Card declined at checkout, but the bank says OK
+T-50191;2026-10-26 22:06;chat;medium;bug;1;39.6;no;2;Mina;"""Pay"" button does nothing on iOS 19"
+T-50192;2026-10-27 10:57;phone;low;refund;0;17.5;no;5;Jae;Refund not received, order #10234
+T-50193;2026-10-27 14:44;email;low;billing;91;23.9;yes;3;Jae;Card declined at checkout, but the bank says OK
+T-50194;2026-10-27 15:07;email;medium;login;101;8.0;no;;Tom;2FA code rejected after phone change
+T-50195;2026-10-28 10:29;phone;medium;refund;2;19.8;no;;Priya;Partial refund for a damaged item
+T-50196;2026-10-28 10:46;email;high;login;115;18.9;no;;Sofia;Locked out after 3 attempts
+T-50197;2026-10-28 11:56;phone;low;shipping;2;60.5;no;;Tom;"Tracking link shows ""label created"" only"
+T-50198;2026-10-28 16:02;web_form;medium;billing;108;32.8;no;5;Daniel;Card declined at checkout, but the bank says OK
+T-50199;2026-10-28 18:14;phone;high;bug;1;24.0;no;;Mina;"""Pay"" button does nothing on iOS 19"
+T-50200;2026-10-28 18:44;email;high;login;220;15.3;no;2;Sofia;Locked out after 3 attempts
+T-50201;2026-10-28 20:34;phone;high;refund;2;19.6;no;5;Tom;Refund not received, order #10234
+T-50202;2026-10-28 20:42;chat;low;bug;7;10.4;yes;4;Tom;"""Pay"" button does nothing on iOS 19"
+T-50203;2026-10-29 08:26;web_form;high;billing;92;7.5;no;4;Jae;Card declined at checkout, but the bank says OK
+T-50204;2026-10-29 08:47;email;medium;billing;197;6.9;no;4;Priya;Card declined at checkout, but the bank says OK
+T-50205;2026-10-29 11:51;email;medium;bug;46;39.1;no;5;Priya;Dashboard freezes with large files
+T-50206;2026-10-29 12:28;email;medium;refund;23;38.8;no;4;Mina;Refund not received, order #10234
+T-50207;2026-10-29 13:32;web_form;high;shipping;297;8.8;no;5;Priya;Package stuck in transit for 6 days
+T-50208;2026-10-29 16:27;email;medium;billing;152;32.9;yes;5;Daniel;Card declined at checkout, but the bank says OK
+T-50209;2026-10-29 16:52;web_form;medium;billing;131;32.7;no;1;Mina;"Charged twice; need a refund"
+T-50210;2026-10-29 17:04;chat;low;billing;7;26.8;yes;5;Jae;"Charged twice; need a refund"
+T-50211;2026-10-29 18:40;chat;high;refund;3;7.5;yes;4;Jae;Partial refund for a damaged item
+T-50212;2026-10-29 20:46;email;medium;refund;136;22.0;no;;Tom;Refund not received, order #10234
+T-50213;2026-10-30 08:05;email;low;bug;234;56.3;no;4;Mina;Dashboard freezes with large files
+T-50214;2026-10-30 08:19;chat;low;feature_request;1;9.7;no;3;Jae;Webhook for refunds
+T-50215;2026-10-30 10:03;chat;high;bug;8;9.4;no;4;Jae;"""Pay"" button does nothing on iOS 19"
+T-50216;2026-10-30 10:13;phone;medium;shipping;0;16.3;no;5;Daniel;"Tracking link shows ""label created"" only"
+T-50217;2026-10-30 11:59;email;medium;feature_request;216;42.5;no;3;Daniel;Bulk edit for product tags
+T-50218;2026-10-30 15:37;email;medium;refund;153;32.8;no;;Daniel;Refund to a closed card
+T-50219;2026-10-30 15:44;email;high;bug;196;3.6;no;4;Jae;Export to CSV drops the last row
+T-50220;2026-10-30 17:45;chat;medium;login;5;33.0;no;;Daniel;2FA code rejected after phone change

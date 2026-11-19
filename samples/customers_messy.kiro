@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "project": "customers_messy.kiro",
+  "target": "Gpt",
+  "role": "Data quality auditor",
+  "goals": [
+    { "text": "Report the number of affected rows for each problem", "on": true },
+    { "text": "Name the customer ids behind duplicate and extreme values", "on": true },
+    { "text": "Do not infer anything not in the data", "on": true }
+  ],
+  "format": "MarkdownTable",
+  "fields": "column,issue,severity,affected_rows,fix",
+  "sample_rows": 12,
+  "theme": 5,
+  "data_path": "customers_messy.csv"
+}

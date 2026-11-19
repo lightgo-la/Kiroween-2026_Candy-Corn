@@ -173,7 +173,12 @@ pub fn run_graph(g: &Graph, opts: &RunOptions, mut on_event: impl FnMut(Event)) 
             .collect::<Vec<_>>()
             .join("\n\n")
     } else {
-        last_ok.and_then(|i| rep.outputs.get(&i).cloned()).unwrap_or_default()
+        // Without an Output node the last successful node is the result, but only when nothing failed or was
+        // stopped: after a failure it would be a text from upstream (the input, a compiled prompt) shown as the result.
+        last_ok
+            .filter(|_| rep.errors.is_empty() && !rep.cancelled)
+            .and_then(|i| rep.outputs.get(&i).cloned())
+            .unwrap_or_default()
     };
     rep.total_ms = t0.elapsed().as_millis();
     Ok(rep)
@@ -201,6 +206,17 @@ pub fn base_dir_of(graph_file: &Path) -> Option<PathBuf> {
 }
 
 // ---------- Security checks ----------
+
+/// A key variable name for an error message. Anything that is not a short plain name is hidden (only its last
+/// characters are shown), because an API key pasted into the name field would otherwise end up in logs and status
+/// lines.
+fn shown_key_env(name: &str) -> String {
+    if name.chars().count() <= 30 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        name.to_string()
+    } else {
+        crate::keys::tail(name)
+    }
+}
 
 /// Checks the name of the environment variable the API key is read from: `^[A-Z][A-Z0-9_]*_API_KEY$`.
 /// This keeps a graph file from pointing at PATH or another secret variable and sending it out.
@@ -293,6 +309,10 @@ pub fn check_endpoint(provider: Provider, base_url: &str, allow_custom: bool) ->
             "Custom endpoint ({url}) is not allowed. The API key would be sent to that address (tick 'Allow custom endpoint' at the top or use --allow-custom-endpoint)",
             url = url
         ));
+    }
+    // A query or fragment would swallow the API path that is appended to the address
+    if url.contains(['?', '#']) {
+        return Err(trf!("Invalid endpoint address: {url}", url = url));
     }
     match url_scheme_host(url) {
         Some((scheme, _)) if scheme == "https" => Ok(()),
@@ -393,6 +413,10 @@ fn compile_prompt(cfg: &PromptCfg, input: &str, base_dir: Option<&Path>) -> Resu
         None
     } else {
         let path = resolve_data_path(cfg.data_path, base_dir);
+        // A graph file is not trusted: a network path would send the user's sign-in hash to that host
+        if let Some(why) = pipeline::untrusted_path_problem(&path) {
+            return Err(trf!("Could not read the data file ({}): {e}", path.display(), e = why));
+        }
         Some(
             pipeline::load_data(&path, 8)
                 .map_err(|e| trf!("Could not read the data file ({}): {e}", path.display(), e = e))?,
@@ -523,7 +547,7 @@ fn exec_node(kind: &NodeKind, id: u32, input: &str, opts: &RunOptions) -> Result
                 return Err(trf!(
                     "Key environment variable name '{key_env}' is not allowed (use uppercase letters, digits and underscores, ending in _API_KEY; e.g. {})",
                     provider.default_key_env(),
-                    key_env = key_env
+                    key_env = shown_key_env(key_env)
                 ));
             }
             if !*dry_run {
@@ -555,6 +579,15 @@ fn exec_node(kind: &NodeKind, id: u32, input: &str, opts: &RunOptions) -> Result
                 });
             }
             let key = node_key(*provider, key_env, opts.saved_keys)?;
+            // The endpoint saved in the 🔑 API keys window applies to the provider's own key when the node has no
+            // address of its own (the GUI only; --run-graph never reads saved settings)
+            let saved_url;
+            let base_url = if opts.saved_keys && base_url.trim().is_empty() && key_env == provider.default_key_env() {
+                saved_url = crate::keys::base_url(*provider)?;
+                saved_url.as_str()
+            } else {
+                base_url.as_str()
+            };
             let reply = llm::call(&llm::LlmRequest {
                 provider: *provider,
                 model,
@@ -1554,5 +1587,61 @@ mod tests {
             );
             assert!(r.final_text.contains("Do not infer anything that is not in the data"));
         });
+    }
+
+    #[test]
+    fn a_failed_run_without_an_output_node_has_no_result() {
+        // Text -> MCP (not allowed): the original text must not be shown as the result of the graph
+        let mut g = Graph::default();
+        let t = g.add(
+            NodeKind::Text {
+                text: "secret original".into(),
+            },
+            [0.0; 2],
+        );
+        let m = g.add(NodeKind::new_mcp(), [0.0; 2]);
+        g.connect(t, m).unwrap();
+        let r = run_graph(&g, &RunOptions::default(), |_| {}).unwrap();
+        assert!(r.errors.contains_key(&m));
+        assert_eq!(r.final_text, "");
+    }
+
+    #[test]
+    fn a_prompt_node_does_not_open_network_paths() {
+        if !cfg!(windows) {
+            return;
+        }
+        let node = NodeKind::Prompt {
+            role: "r".into(),
+            constraints: String::new(),
+            fields: "a".into(),
+            target: PromptTarget::Claude,
+            format: PromptFormat::Json,
+            data_path: r"\\evil.example\share\a.csv".into(),
+        };
+        let e = with_lang(Lang::En, || run(&node, "x", &RunOptions::default())).unwrap_err();
+        assert!(e.contains("Network and device paths"), "{e}");
+    }
+
+    #[test]
+    fn a_pasted_api_key_is_not_echoed_in_the_name_error() {
+        let key = "sk-ant-api03-FAKEKEYFORTESTING0000000000";
+        let e = with_lang(Lang::En, || run(&llm_node(key, "", true), "hi", &RunOptions::default())).unwrap_err();
+        assert!(!e.contains(key) && !e.contains("FAKEKEY"), "{e}");
+        // A short plain name that is merely wrong is still shown, so the user can see what to fix
+        assert_eq!(shown_key_env("anthropic_api_key"), "anthropic_api_key");
+        assert_eq!(shown_key_env(key), crate::keys::tail(key));
+    }
+
+    #[test]
+    fn an_endpoint_with_a_query_or_fragment_is_refused() {
+        for url in [
+            "https://gw.example.com/?k=x",
+            "https://gw.example.com/v1#frag",
+            "http://localhost:1234?x=1",
+        ] {
+            assert!(check_endpoint(Provider::OpenAi, url, true).is_err(), "{url}");
+        }
+        assert!(check_endpoint(Provider::OpenAi, "https://gw.example.com/v1", true).is_ok());
     }
 }

@@ -42,6 +42,64 @@ pub struct CompileResult {
     pub preview: String,
 }
 
+/// File extensions loaded as data (the GUI file dialog, drag and drop and the MCP server use the same list).
+pub const DATA_EXTS: [&str; 6] = ["csv", "tsv", "txt", "json", "jsonl", "ndjson"];
+
+/// Why a data path that comes from a file or a tool call (a graph, a blueprint, an MCP client) must not be opened, or
+/// None when it is fine. A network path makes Windows send the user's sign-in hash to that host, and a device path or
+/// a device name (`CON`, `NUL`, `COM1`) can block the program. A path the user picks in a dialog or types on the
+/// command line is their own choice and is not checked.
+pub fn untrusted_path_problem(path: &Path) -> Option<String> {
+    use std::path::{Component, Prefix};
+    for c in path.components() {
+        match c {
+            Component::Prefix(p) if !matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) => {
+                return Some(
+                    tr!("Network and device paths are not opened from a file. Copy the data to a local folder first")
+                        .into(),
+                );
+            }
+            Component::Normal(name) if cfg!(windows) && is_reserved_device_name(&name.to_string_lossy()) => {
+                return Some(trf!("{name} is a reserved device name", name = name.to_string_lossy()));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Windows device names, with or without an extension (`CON`, `nul.txt`, `COM1`).
+fn is_reserved_device_name(name: &str) -> bool {
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end()
+        .to_ascii_uppercase();
+    let numbered = |prefix: &str| {
+        stem.strip_prefix(prefix)
+            .is_some_and(|n| n.len() == 1 && matches!(n.as_bytes()[0], b'1'..=b'9'))
+    };
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered("COM") || numbered("LPT")
+}
+
+/// Why an MCP client may not profile this path: the checks of `untrusted_path_problem`, and only data files by
+/// extension (an agent that was talked into it must not read an arbitrary text file this way).
+pub fn mcp_data_path_problem(path: &Path) -> Option<String> {
+    untrusted_path_problem(path).or_else(|| {
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        (!DATA_EXTS.contains(&ext.as_str())).then(|| {
+            trf!(
+                "Only data files (.csv, .tsv, .txt, .json, .jsonl, .ndjson) can be profiled over MCP: {}",
+                path.display()
+            )
+        })
+    })
+}
+
 pub fn load_data(path: &Path, sample_rows: usize) -> Result<LoadedData, String> {
     let data = csv_profiler::profile_file(path, sample_rows)?;
     let (raw_tokens, _) = raw_file_tokens(path)?;
@@ -111,7 +169,9 @@ pub fn parse_fields(s: &str) -> Vec<String> {
 /// not become a constraint).
 pub fn parse_steering_rules(md: &str) -> Vec<String> {
     let mut fence: Option<(char, usize)> = None;
-    let mut rules = Vec::new();
+    let mut rules: Vec<String> = Vec::new();
+    // Whether the previous line was a rule or a continuation of one (a blank line or any other line ends it)
+    let mut open_rule = false;
     for line in md.trim_start_matches('\u{feff}').lines() {
         let l = line.trim_start();
         if let Some((ch, len)) = fence {
@@ -122,15 +182,34 @@ pub fn parse_steering_rules(md: &str) -> Vec<String> {
         }
         if let Some(open) = opens_fence(l) {
             fence = Some(open);
+            open_rule = false;
             continue;
         }
-        if let Some(r) = l
-            .strip_prefix("- ")
-            .or_else(|| l.strip_prefix("* "))
-            .map(str::trim)
-            .filter(|r| !r.is_empty())
-        {
-            rules.push(r.to_string());
+        let bullet = l.strip_prefix("- ").or_else(|| l.strip_prefix("* ")).map(str::trim);
+        match bullet {
+            // `* * *` and `- - -` are horizontal rules, and an empty bullet has no text
+            Some(r) if r.chars().all(|c| matches!(c, '-' | '*' | '_' | ' ')) => open_rule = false,
+            Some(r) => {
+                rules.push(r.to_string());
+                open_rule = true;
+            }
+            None => {
+                // An indented line under a bullet is the rest of that rule ("- Exclude rows where amount is negative
+                // / unless the refund flag is set")
+                let indent = line.chars().take_while(|c| c.is_whitespace()).count();
+                let text = l.trim_end();
+                let continues = open_rule
+                    && (indent >= 2 || line.starts_with('\t'))
+                    && !text.is_empty()
+                    && !text.starts_with(['#', '>', '|']);
+                match rules.last_mut() {
+                    Some(last) if continues => {
+                        last.push(' ');
+                        last.push_str(text);
+                    }
+                    _ => open_rule = false,
+                }
+            }
         }
     }
     rules
@@ -377,7 +456,7 @@ pub fn check_output(format: OutputFormat, fields: &[String], text: &str) -> Outp
                 ok: table.is_some() && missing.is_empty(),
                 error: table.is_none().then(|| tr!("No Markdown table found").to_string()),
                 missing,
-                table_rows: table.map(|t| t.rows),
+                table_rows: table.map(|t| t.body.len()),
                 ..OutputCheck::default()
             }
         }
@@ -390,9 +469,26 @@ pub fn check_output(format: OutputFormat, fields: &[String], text: &str) -> Outp
 fn header_has(header: &[String], field: &str) -> bool {
     let want = field.replace(['\n', '\r'], " ");
     let want = want.trim();
-    header
-        .iter()
-        .any(|c| c == field || c == want || strip_emphasis(c) == want)
+    header.iter().any(|c| {
+        c == field
+            || c == want
+            || strip_emphasis(c) == want
+            || unescape_md(c) == want
+            || unescape_md(strip_emphasis(c)) == want
+    })
+}
+
+/// Removes the backslash of Markdown escapes (`root\_causes` → `root_causes`): a backslash before ASCII punctuation.
+fn unescape_md(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' && chars.peek().is_some_and(char::is_ascii_punctuation) {
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Strips Markdown emphasis and code marks around the whole cell (`**x**`, `__x__`, `*x*`, `_x_`, `` `x` ``).
@@ -413,8 +509,13 @@ fn strip_emphasis(cell: &str) -> &str {
 /// A Markdown table found in a reply.
 struct Table {
     header: Vec<String>,
-    /// Number of body rows (header and separator rows excluded)
-    rows: usize,
+    /// Body rows (header and separator rows excluded), one list of cells per row
+    body: Vec<Vec<String>>,
+}
+
+/// The Markdown table of a reply as (header cells, body rows), found the same way as the format check finds it.
+pub fn parse_reply_table(text: &str) -> Option<(Vec<String>, Vec<Vec<String>>)> {
+    find_table(strip_fence(text.trim())).map(|t| (t.header, t.body))
 }
 
 /// The header cells and the number of body rows of a Markdown table. Like GFM it looks for the separator row
@@ -428,21 +529,23 @@ fn find_table(body: &str) -> Option<Table> {
         let cells = table_cells(lines[i]);
         (!lines[i].is_empty() && cells.len() == width).then(|| Table {
             header: cells,
-            rows: lines[i + 2..]
+            body: lines[i + 2..]
                 .iter()
                 .take_while(|l| !l.is_empty() && l.contains('|'))
-                .count(),
+                .map(|l| table_cells(l))
+                .collect(),
         })
     });
     gfm.or_else(|| {
         let i = lines.iter().position(|l| l.starts_with('|'))?;
         Some(Table {
             header: table_cells(lines[i]),
-            rows: lines[i + 1..]
+            body: lines[i + 1..]
                 .iter()
                 .take_while(|l| l.starts_with('|'))
                 .filter(|l| delimiter_width(l).is_none())
-                .count(),
+                .map(|l| table_cells(l))
+                .collect(),
         })
     })
 }
@@ -1115,5 +1218,92 @@ mod tests {
         // Data load errors pass the profiler's message up unchanged
         let e = with_lang(Lang::En, || load_data(&p.with_extension("csv"), 2).unwrap_err());
         assert_eq!(e, "cannot open file: no such file or directory (os error 2)");
+    }
+
+    #[test]
+    fn steering_rules_keep_wrapped_lines_and_skip_horizontal_rules() {
+        let md = "# Rules\n- Exclude rows where amount is negative\n  unless the refund flag is set\n* * *\n- - -\n- Round to 2 decimals\n\nplain paragraph\n- Last rule\n\tcontinued here\n";
+        assert_eq!(
+            parse_steering_rules(md),
+            [
+                "Exclude rows where amount is negative unless the refund flag is set",
+                "Round to 2 decimals",
+                "Last rule continued here"
+            ]
+        );
+        // A blank line ends the rule, and a heading or a table row is not part of it
+        assert_eq!(parse_steering_rules("- A\n\n  not a continuation\n"), ["A"]);
+        assert_eq!(parse_steering_rules("- A\n  # heading\n  | a | b |\n"), ["A"]);
+        // An empty bullet has no text
+        assert!(parse_steering_rules("- \n*   \n").is_empty());
+    }
+
+    #[test]
+    fn table_headers_with_escaped_or_emphasized_names_match() {
+        let fields = f(&["root_causes", "outliers"]);
+        let c = check_output(
+            OutputFormat::MarkdownTable,
+            &fields,
+            "| root\\_causes | **outliers** |\n|---|---|\n| a | b |",
+        );
+        assert!(c.ok, "{c:?}");
+        let missing = check_output(
+            OutputFormat::MarkdownTable,
+            &fields,
+            "| root\\_cause | outliers |\n|---|---|\n| a | b |",
+        );
+        assert_eq!(missing.missing, ["root_causes"]);
+    }
+
+    #[test]
+    fn the_reply_table_is_the_one_the_format_check_counts() {
+        let reply = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | x\\|y |\n\n| c | d |\n|---|---|\n| 5 | 6 |\n```";
+        let (header, rows) = parse_reply_table(reply).unwrap();
+        assert_eq!(header, ["a", "b"]);
+        assert_eq!(rows, vec![f(&["1", "2"]), f(&["3", "x|y"])]);
+        let c = check_output(OutputFormat::MarkdownTable, &f(&["a", "b"]), reply);
+        assert_eq!(c.table_rows, Some(rows.len()));
+        assert!(parse_reply_table("no table here").is_none());
+    }
+
+    #[test]
+    fn network_and_device_paths_are_not_opened_from_files() {
+        if cfg!(windows) {
+            for bad in [
+                r"\\evil.example\share\a.csv",
+                "//evil.example/share/a.csv",
+                r"\\evil.example@SSL@443\s\a.csv",
+                r"\\.\pipe\x",
+                r"\\?\UNC\evil\share\a.csv",
+                "CON",
+                "nul.txt",
+                "COM1",
+                "lpt9.csv",
+                r"C:\x\PRN",
+            ] {
+                assert!(untrusted_path_problem(Path::new(bad)).is_some(), "{bad}");
+            }
+            for ok in ["COM0", "COM10", "console.csv", "nullable.csv", "CONTROL.csv"] {
+                assert!(untrusted_path_problem(Path::new(ok)).is_none(), "{ok}");
+            }
+        }
+        for ok in [
+            "data.csv",
+            "sub/data.csv",
+            "../d.csv",
+            r"C:\data\a.csv",
+            r"\\?\C:\data\a.csv",
+        ] {
+            if cfg!(windows) || !ok.contains(r"\\") {
+                assert!(untrusted_path_problem(Path::new(ok)).is_none(), "{ok}");
+            }
+        }
+        // An MCP client may profile data files only
+        assert!(mcp_data_path_problem(Path::new("secret.env")).is_some());
+        assert!(mcp_data_path_problem(Path::new("noext")).is_some());
+        assert!(mcp_data_path_problem(Path::new("d.CSV")).is_none());
+        for ext in DATA_EXTS {
+            assert!(mcp_data_path_problem(Path::new(&format!("d.{ext}"))).is_none(), "{ext}");
+        }
     }
 }

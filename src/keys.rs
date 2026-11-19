@@ -79,20 +79,27 @@ pub fn from_env(var: &str) -> Option<String> {
 /// Settings-file object that maps a provider's key variable name to its custom base URL.
 const BASE_URLS_KEY: &str = "base_urls";
 
-/// The custom base URL saved for `p` in the settings file at `path`. Empty if there is none.
-pub fn load_base_url(path: &std::path::Path, p: Provider) -> String {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return String::new();
+/// The custom base URL saved for `p` in the settings file at `path`. Empty if there is none. A file that exists but
+/// cannot be read or parsed is an error: ignoring it would send the key and the data to the provider's public
+/// address although the user chose another one.
+pub fn load_base_url(path: &std::path::Path, p: Provider) -> Result<String, String> {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(e) => return Err(trf!("Could not read the settings file: {e}", e = e)),
     };
-    serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
-        .ok()
-        .and_then(|v| {
-            v.get(BASE_URLS_KEY)?
-                .get(p.default_key_env())?
-                .as_str()
-                .map(str::to_string)
-        })
-        .unwrap_or_default()
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| String::from(tr!("The settings file is not UTF-8 text. Fix it or delete it")))?;
+    if text.trim().is_empty() {
+        return Ok(String::new());
+    }
+    let v: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
+        .map_err(|e| trf!("The settings file is not valid JSON ({e}). Fix it or delete it", e = e))?;
+    Ok(v.get(BASE_URLS_KEY)
+        .and_then(|m| m.get(p.default_key_env()))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_default())
 }
 
 /// Checks a base URL typed in the window. Typing it here is the explicit trust that custom endpoints need: the key is
@@ -132,7 +139,7 @@ pub fn base_url(p: Provider) -> Result<String, String> {
     let Some(path) = crate::i18n::settings_path() else {
         return Ok(String::new());
     };
-    clean_base_url(p, &load_base_url(&path, p))
+    clean_base_url(p, &load_base_url(&path, p)?)
 }
 
 /// "▾" button that lists the provider's current models; picking one writes its ID into `model`. Returns true when
@@ -232,6 +239,8 @@ pub struct KeysWindow {
     message: Option<(bool, String)>,
     /// Text of the base URL fields (loaded from the settings file when the window opens)
     urls: [String; 3],
+    /// The addresses as they are saved in the settings file (to tell a tested address that was never saved)
+    saved_urls: [String; 3],
     /// Model used by each provider's connection test (picked in the window)
     test_models: [String; 3],
     /// Providers whose connection test is running
@@ -261,6 +270,7 @@ impl KeysWindow {
             input_ids: [None; 3],
             message: None,
             urls: Default::default(),
+            saved_urls: Default::default(),
             test_models: Provider::ALL.map(|p| p.default_model().to_string()),
             testing: [false; 3],
             test_tx,
@@ -288,11 +298,27 @@ impl KeysWindow {
     }
 
     pub fn show_window(&mut self) {
+        // Already open (the button of the separate result window can be pressed while the window is up): keep what
+        // was typed
+        if self.open {
+            return;
+        }
         self.refresh();
         self.message = None;
         let path = crate::i18n::settings_path();
-        for (url, p) in self.urls.iter_mut().zip(Provider::ALL) {
-            *url = path.as_deref().map(|f| load_base_url(f, p)).unwrap_or_default();
+        for (i, p) in Provider::ALL.into_iter().enumerate() {
+            let loaded = path
+                .as_deref()
+                .map(|f| load_base_url(f, p))
+                .unwrap_or(Ok(String::new()));
+            match loaded {
+                Ok(u) => self.urls[i] = u,
+                Err(e) => {
+                    self.urls[i] = String::new();
+                    self.message = Some((true, e));
+                }
+            }
+            self.saved_urls[i] = self.urls[i].clone();
         }
         self.open = true;
     }
@@ -328,7 +354,10 @@ impl KeysWindow {
         };
         self.testing[i] = true;
         self.message = None;
-        let model = self.test_models[i].clone();
+        let model = match self.test_models[i].trim() {
+            "" => p.default_model().to_string(),
+            m => m.to_string(),
+        };
         let (tx, ctx) = (self.test_tx.clone(), ctx.clone());
         std::thread::spawn(move || {
             let req = crate::canvas::llm::LlmRequest {
@@ -416,21 +445,15 @@ impl KeysWindow {
                     });
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(tr!("Model")).small());
-                        let current = p
-                            .models()
-                            .iter()
-                            .find(|(id, _)| *id == self.test_models[i])
-                            .map_or(self.test_models[i].clone(), |(_, name)| (*name).to_string());
-                        egui::ComboBox::from_id_salt(("api-test-model", i))
-                            .selected_text(current)
-                            .width(200.0)
-                            .show_ui(ui, |ui| {
-                                for (id, name) in p.models() {
-                                    ui.selectable_value(&mut self.test_models[i], (*id).to_string(), format!("{name}  ·  {id}"));
-                                }
-                            })
-                            .response
-                            .on_hover_text(tr!("Model used by Test connection. The model of a run is set in the LLM node"));
+                        model_menu(ui, p.models(), &mut self.test_models[i]);
+                        // A text field, not a fixed list: a local server or a proxy has its own model names
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.test_models[i])
+                                .id_salt(("api-test-model", i))
+                                .hint_text(p.default_model())
+                                .desired_width(200.0),
+                        )
+                        .on_hover_text(tr!("Model used by Test connection. The model of a run is set in the LLM node"));
                     });
                 });
             }            ui.add_space(10.0);
@@ -541,6 +564,7 @@ impl KeysWindow {
                                 trf!("Saved the {} endpoint. It is used from the next run", p.label()),
                             )
                         });
+                        self.saved_urls[i] = url.clone();
                         self.urls[i] = url;
                     }
                     Err(e) => self.message = Some((true, e)),
@@ -556,7 +580,17 @@ impl KeysWindow {
         while let Ok((i, res)) = self.test_rx.try_recv() {
             self.testing[i] = false;
             let label = Provider::ALL[i].label();
+            // The test used the address in the field; tell when that address is not the saved one yet
+            let unsaved = self.urls[i].trim().trim_end_matches('/') != self.saved_urls[i];
             self.message = Some(match res {
+                Ok(model) if unsaved => (
+                    false,
+                    trf!(
+                        "{} connection works (model {}). This address is not saved yet: press Save next to it",
+                        label,
+                        model
+                    ),
+                ),
                 Ok(model) => (false, trf!("{} connection works (model {})", label, model)),
                 Err(e) => (true, trf!("{} connection failed: {e}", label, e = e)),
             });
@@ -884,16 +918,16 @@ mod tests {
         let path = dir.join("settings.json");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, r#"{"lang":"ko"}"#).unwrap();
-        assert_eq!(load_base_url(&path, Provider::OpenAi), "");
+        assert_eq!(load_base_url(&path, Provider::OpenAi).unwrap(), "");
         let saved = save_base_url(&path, Provider::OpenAi, " http://localhost:8080/ ").unwrap();
         assert_eq!(saved, "http://localhost:8080");
-        assert_eq!(load_base_url(&path, Provider::OpenAi), "http://localhost:8080");
-        assert_eq!(load_base_url(&path, Provider::Gemini), "");
+        assert_eq!(load_base_url(&path, Provider::OpenAi).unwrap(), "http://localhost:8080");
+        assert_eq!(load_base_url(&path, Provider::Gemini).unwrap(), "");
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["lang"], "ko");
         // An empty URL removes the entry
         assert_eq!(save_base_url(&path, Provider::OpenAi, "  ").unwrap(), "");
-        assert_eq!(load_base_url(&path, Provider::OpenAi), "");
+        assert_eq!(load_base_url(&path, Provider::OpenAi).unwrap(), "");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -959,5 +993,59 @@ mod tests {
                 w.last_size
             );
         }
+    }
+
+    #[test]
+    fn an_unreadable_settings_file_stops_the_endpoint_lookup_and_is_kept_when_rewritten() {
+        let dir = std::env::temp_dir().join(format!("cc_keys_bad_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        // A missing file just means no custom endpoint
+        assert_eq!(load_base_url(&path, Provider::OpenAi).unwrap(), "");
+        // A hand-edit mistake (trailing comma) is an error, not "use the public address"
+        let broken = r#"{"lang":"ko","base_urls":{"OPENAI_API_KEY":"http://localhost:1234"},}"#;
+        std::fs::write(&path, broken).unwrap();
+        let e = i18n::with_lang(Lang::En, || load_base_url(&path, Provider::OpenAi)).unwrap_err();
+        assert!(e.contains("not valid JSON"), "{e}");
+        // A UTF-16 file is not UTF-8 text either
+        std::fs::write(&path, [0xFF, 0xFE, b'{', 0, b'}', 0]).unwrap();
+        assert!(load_base_url(&path, Provider::OpenAi).is_err());
+        // Saving over the broken file keeps a copy of what was there
+        std::fs::write(&path, broken).unwrap();
+        save_base_url(&path, Provider::Gemini, "https://gw.example.com").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("json.bad")).unwrap(),
+            broken
+        );
+        assert_eq!(
+            load_base_url(&path, Provider::Gemini).unwrap(),
+            "https://gw.example.com"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_endpoint_may_not_carry_a_query_or_fragment() {
+        for bad in [
+            "https://gw.example.com/?k=x",
+            "https://gw.example.com/v1#x",
+            "http://localhost:1234/?a=b",
+        ] {
+            assert!(clean_base_url(Provider::OpenAi, bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            clean_base_url(Provider::OpenAi, "http://localhost:1234/v1/").unwrap(),
+            "http://localhost:1234/v1"
+        );
+    }
+
+    #[test]
+    fn the_window_keeps_typed_endpoints_when_opened_again() {
+        let mut w = KeysWindow::load();
+        w.show_window();
+        w.urls[0] = "http://localhost:1234".into();
+        w.show_window(); // the separate result window's button does this while the window is up
+        assert_eq!(w.urls[0], "http://localhost:1234");
     }
 }

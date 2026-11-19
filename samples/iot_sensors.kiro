@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "project": "iot_sensors.kiro",
+  "target": "Gemini",
+  "role": "Maintenance engineer for a factory sensor network",
+  "goals": [
+    { "text": "Judge each device against its own earlier readings", "on": true },
+    { "text": "Give the timestamp of every finding", "on": true },
+    { "text": "Do not infer anything not in the data", "on": true }
+  ],
+  "format": "StrictJson",
+  "fields": "faults,degrading_devices,recommended_actions",
+  "sample_rows": 10,
+  "theme": 5,
+  "data_path": "iot_sensors.ndjson"
+}

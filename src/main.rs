@@ -390,6 +390,14 @@ fn run_cli(cli: Cli) -> ExitCode {
         .data
         .clone()
         .or_else(|| bp.as_ref().and_then(|b| b.data_path_from(cli.blueprint.as_deref())));
+    // A path typed with --data is the user's own choice; one that comes out of a blueprint file is not trusted
+    if cli.data.is_none()
+        && let Some(p) = &data_path
+        && let Some(why) = pipeline::untrusted_path_problem(p)
+    {
+        eprintln!("{}", trf!("failed to load data: {e}", e = why));
+        return ExitCode::FAILURE;
+    }
     let data = match &data_path {
         Some(p) => match pipeline::load_data(p, sample_rows) {
             Ok(d) => Some(d),

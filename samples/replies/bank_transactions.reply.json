@@ -1,0 +1,14 @@
+{
+  "suspicious_transactions": [
+    { "txn_id": "TX4100182", "posted_at": "2026-10-17 02:41", "merchant": "AUTH CHECK *ZX81", "amount": -1.0, "balance_after": 13738.58, "risk": "medium" },
+    { "txn_id": "TX4100183", "posted_at": "2026-10-17 02:43", "merchant": "AUTH CHECK *ZX81", "amount": -1.0, "balance_after": 13737.58, "risk": "medium" },
+    { "txn_id": "TX4100184", "posted_at": "2026-10-17 02:44", "merchant": "AUTH CHECK *ZX81", "amount": -1.0, "balance_after": 13736.58, "risk": "medium" },
+    { "txn_id": "TX4100185", "posted_at": "2026-10-17 03:12", "merchant": "WIRE TRANSFER - UNKNOWN BENEFICIARY", "amount": -9850.0, "balance_after": 3886.58, "risk": "high" }
+  ],
+  "pattern": "Three card checks of 1.00 from the same unknown merchant within 3 minutes (02:41 to 02:44), followed 28 minutes later by a wire of 9850.00 to an unknown beneficiary. Small test charges before a large transfer are a typical sign of a stolen card or account. The wire took the balance from 13736.58 to 3886.58, a drop of 72%.",
+  "recommended_action": [
+    "Contact the account holder now and try to recall the wire TX4100185.",
+    "Block the card that was used for *ZX81 and issue a new one.",
+    "Add a rule that holds a wire when three card checks of 1.00 or less come within 5 minutes."
+  ]
+}

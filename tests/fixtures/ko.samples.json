@@ -1,0 +1,6 @@
+{
+  "_note": "Korean test inputs for the sample data tests (tests/samples.rs). Used through ko_fixture!(key).",
+  "samples.hr.header": "* 사원번호 [text]",
+  "samples.hr.salary_outlier": "연봉_만원: max 25000",
+  "samples.hr.rank_header": "직급"
+}

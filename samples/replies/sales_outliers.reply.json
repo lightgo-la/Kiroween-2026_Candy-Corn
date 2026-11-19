@@ -1,0 +1,14 @@
+{
+  "root_causes": [
+    "Order 301 from Seoul has amount 900000, about 628 times the median of 1434.",
+    "Without that order the Seoul average is about 1448, in line with Busan (1428) and Daegu (1438), so the whole regional gap comes from this one order."
+  ],
+  "outliers": [
+    { "order_id": 301, "region": "Seoul", "amount": 900000, "typical_amount": 1434, "times_typical": 628 }
+  ],
+  "region_averages": { "Seoul": 10345, "Busan": 1428, "Daegu": 1438 },
+  "recommendations": [
+    "Check order 301 with the Seoul sales team: 900000 is either a data entry error (extra zeros) or a one-off contract.",
+    "Report the regional averages with and without order 301, so the Seoul figure is not read as a trend."
+  ]
+}

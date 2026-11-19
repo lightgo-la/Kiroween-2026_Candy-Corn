@@ -454,6 +454,7 @@ impl Graph {
     /// Structure check: duplicate node ids, edges to missing nodes, port rule violations (edges leaving Output,
     /// edges entering Text), self-connections, duplicate edges, cycles.
     pub fn validate(&self) -> Result<(), String> {
+        const POS_MAX: f32 = 1e12;
         let mut seen = HashSet::new();
         if let Some(n) = self.nodes.iter().find(|n| !seen.insert(n.id)) {
             return Err(trf!("Duplicate node id {}", n.id));
@@ -462,6 +463,13 @@ impl Graph {
         if let Some(n) = self.nodes.iter().find(|n| !n.pos.iter().all(|v| v.is_finite())) {
             return Err(trf!(
                 "Node {} has an invalid position (coordinates must be finite numbers)",
+                n.id
+            ));
+        }
+        // Coordinates this large overflow the canvas math (the view becomes infinite and a save writes null)
+        if let Some(n) = self.nodes.iter().find(|n| n.pos.iter().any(|v| v.abs() > POS_MAX)) {
+            return Err(trf!(
+                "Node {} is too far from the origin (coordinates must stay within ±1e12)",
                 n.id
             ));
         }
@@ -962,5 +970,15 @@ mod tests {
         assert_eq!(g.node(copy).unwrap().title, "Summarizer copy");
         let again = with_lang(Lang::En, || g.duplicate_node(p)).unwrap();
         assert_eq!(g.node(again).unwrap().title, "Summarizer copy 2");
+    }
+
+    #[test]
+    fn positions_that_would_break_the_canvas_are_refused() {
+        let graph = |pos: &str| {
+            format!(r#"{{"nodes":[{{"id":1,"title":"t","pos":{pos},"kind":{{"type":"output"}}}}],"edges":[]}}"#)
+        };
+        assert!(Graph::from_json(&graph("[3e38,3e38]")).is_err());
+        assert!(Graph::from_json(&graph("[0.0,-2e12]")).is_err());
+        assert!(Graph::from_json(&graph("[3e9,-3e9]")).is_ok());
     }
 }

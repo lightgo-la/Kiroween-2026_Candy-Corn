@@ -1,0 +1,15 @@
+{
+  "faults": [
+    { "device_id": "D-04", "ts": "2026-10-04T02:30:00Z", "metric": "temperature_c", "value": 92.4, "normal_value": 40.9, "status": "fault" }
+  ],
+  "degrading_devices": [
+    { "device_id": "D-05", "metric": "vibration_mm_s", "since": "2026-10-04T04:00:00Z", "first_value": 3.48, "latest_value": 7.8, "trend": "rising" },
+    { "device_id": "D-06", "metric": "battery_v", "since": "2026-10-04T06:00:00Z", "first_value": 3.52, "latest_value": 3.09, "trend": "falling" }
+  ],
+  "recommended_actions": [
+    "D-04 (line B) read 92.4 C once at 2026-10-04T02:30:00Z, while its other readings stay near 41 C. Check the sensor and its wiring first, then the equipment it measures.",
+    "D-05 (line B): vibration rose from 3.48 to 7.8 mm/s in 4.5 hours. Schedule a bearing inspection.",
+    "D-06 (line B): battery fell from 3.52 V to 3.09 V in 2.5 hours. Replace the battery before the sensor drops out.",
+    "D-02 has no humidity value in 7 of its 50 readings. Check its connection."
+  ]
+}

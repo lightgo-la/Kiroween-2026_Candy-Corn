@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "project": "bank_transactions.kiro",
+  "target": "Claude",
+  "role": "Fraud analyst reviewing one checking account",
+  "goals": [
+    { "text": "Look for patterns across several transactions, not only single large amounts", "on": true },
+    { "text": "Give the transaction id, time and balance after for every suspicious item", "on": true },
+    { "text": "Do not infer anything not in the data", "on": true }
+  ],
+  "format": "StrictJson",
+  "fields": "suspicious_transactions,pattern,recommended_action",
+  "sample_rows": 10,
+  "theme": 5,
+  "data_path": "bank_transactions.txt"
+}

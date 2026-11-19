@@ -1,0 +1,133 @@
+response_id,submitted_at,plan,nps,ease_of_use,support_rating,would_recommend,minutes_to_complete,comment
+R-0001,2026-10-20 06:08,Free,5,3,1,no,6.5,"Lost my filters after the update, very frustrating"
+R-0002,2026-10-20 15:15,Team,7,3,4,maybe,6.7,"Good overall, but the dashboard is slow on large files."
+R-0003,2026-10-20 17:40,Pro,10,4,4,yes,2.3,Best tool we tried this year
+R-0004,2026-10-20 21:50,Enterprise,3,2,1,no,7.9,"Too many emails, and unsubscribe does not work"
+R-0005,2026-10-21 01:48,Team,8,4,4,maybe,5.2,Missing an API for bulk updates
+R-0006,2026-10-21 05:29,Free,5,3,1,no,2.2,"Two issues:
+1) login loops on Safari
+2) CSV import fails on files over 50 MB"
+R-0007,2026-10-21 07:03,Pro,8,4,,maybe,6.0,
+R-0008,2026-10-21 10:02,Free,4,3,2,no,186.0,"Pricing page said ""Pro"" but I was charged for Team."
+R-0009,2026-10-21 11:15,Free,7,3,4,maybe,8.4,
+R-0010,2026-10-21 13:01,Pro,9,5,4,yes,8.5,Best tool we tried this year
+R-0011,2026-10-21 13:13,Free,5,2,3,no,2.8,"Two issues:
+1) login loops on Safari
+2) CSV import fails on files over 50 MB"
+R-0012,2026-10-21 20:11,Free,4,2,2,no,3.1,
+R-0013,2026-10-21 21:19,Enterprise,3,1,1,no,7.2,한글 파일명이 깨져서 업로드가 안 됩니다
+R-0014,2026-10-22 00:17,Team,9,5,3,yes,4.0,Fast and simple. The CSV import saved me hours.
+R-0015,2026-10-22 00:41,Team,7,3,4,maybe,5.0,"Good overall, but the dashboard is slow on large files."
+R-0016,2026-10-22 02:03,Pro,6,4,4,no,6.3,"Too many emails, and unsubscribe does not work"
+R-0017,2026-10-22 03:20,Pro,10,4,5,yes,4.5,"Support answered in 5 minutes, great!"
+R-0018,2026-10-22 05:44,Pro,8,5,4,maybe,6.0,Missing an API for bulk updates
+R-0019,2026-10-22 07:45,Free,9,5,4,yes,7.4,보고서 자동화가 정말 편해요
+R-0020,2026-10-22 09:54,Pro,8,3,3,maybe,6.8,
+R-0021,2026-10-22 12:02,Pro,6,3,3,no,2.3,"Too many emails, and unsubscribe does not work"
+R-0022,2026-10-22 13:39,Pro,8,4,3,maybe,7.9,"Pricing is fine for Pro, Team feels expensive"
+R-0023,2026-10-22 15:12,Pro,7,4,3,maybe,4.2,
+R-0024,2026-10-22 15:41,Pro,8,4,3,maybe,2.2,"Good overall, but the dashboard is slow on large files."
+R-0025,2026-10-22 17:47,Free,5,3,1,no,4.1,"Too many emails, and unsubscribe does not work"
+R-0026,2026-10-22 18:44,Team,7,4,3,maybe,3.1,
+R-0027,2026-10-22 19:06,Free,6,3,2,no,4.6,"Too many emails, and unsubscribe does not work"
+R-0028,2026-10-22 19:26,Free,4,2,2,no,3.9,
+R-0029,2026-10-22 20:15,Team,8,3,3,maybe,4.4,"Good overall, but the dashboard is slow on large files."
+R-0030,2026-10-23 02:48,Team,9,4,5,yes,8.0,"Love the templates, my team uses them daily"
+R-0031,2026-10-23 04:06,Pro,8,4,3,maybe,3.6,모바일 화면이 조금 불편해요
+R-0032,2026-10-23 06:58,Pro,9,5,,yes,2.6,보고서 자동화가 정말 편해요
+R-0033,2026-10-23 07:04,Enterprise,5,3,,no,8.2,
+R-0034,2026-10-23 07:20,Team,7,4,2,maybe,3.9,
+R-0035,2026-10-23 08:49,Free,4,1,3,no,4.7,"Too many emails, and unsubscribe does not work"
+R-0036,2026-10-23 10:33,Pro,7,4,,maybe,4.4,Missing an API for bulk updates
+R-0037,2026-10-23 11:32,Team,7,4,2,maybe,2.3,
+R-0038,2026-10-23 13:14,Team,9,4,5,yes,2.9,"Love the templates, my team uses them daily"
+R-0039,2026-10-23 16:07,Pro,7,3,4,maybe,8.7,"Would like more export formats (Parquet, XLSX)"
+R-0040,2026-10-23 16:19,Pro,9,5,5,yes,7.3,
+R-0041,2026-10-23 19:07,Pro,6,3,4,no,5.3,한글 파일명이 깨져서 업로드가 안 됩니다
+R-0042,2026-10-23 20:49,Free,5,2,,no,3.8,"Lost my filters after the update, very frustrating"
+R-0043,2026-10-23 21:22,Free,4,2,1,no,2.8,한글 파일명이 깨져서 업로드가 안 됩니다
+R-0044,2026-10-23 22:53,Team,7,3,2,maybe,4.4,Missing an API for bulk updates
+R-0045,2026-10-24 00:04,Free,4,2,2,no,8.2,"Pricing page said ""Pro"" but I was charged for Team."
+R-0046,2026-10-24 00:43,Pro,7,4,2,maybe,2.4,모바일 화면이 조금 불편해요
+R-0047,2026-10-24 02:14,Team,9,4,5,yes,2.3,Fast and simple. The CSV import saved me hours.
+R-0048,2026-10-24 08:03,Pro,7,3,3,maybe,5.1,
+R-0049,2026-10-24 09:54,Pro,9,5,,yes,5.5,Fast and simple. The CSV import saved me hours.
+R-0050,2026-10-24 10:06,Pro,10,5,5,yes,3.3,Best tool we tried this year
+R-0051,2026-10-24 11:55,Team,10,5,4,yes,7.3,
+R-0052,2026-10-24 15:37,Pro,6,2,2,no,6.2,
+R-0053,2026-10-24 19:34,Pro,6,4,2,no,3.7,"Two issues:
+1) login loops on Safari
+2) CSV import fails on files over 50 MB"
+R-0054,2026-10-24 22:29,Team,7,3,,maybe,4.9,
+R-0055,2026-10-24 22:53,Pro,6,3,3,no,9.0,
+R-0056,2026-10-25 01:56,Free,7,4,4,maybe,3.8,
+R-0057,2026-10-25 02:20,Free,9,4,5,yes,6.8,Best tool we tried this year
+R-0058,2026-10-25 03:25,Pro,9,4,,yes,7.4,
+R-0059,2026-10-25 03:44,Free,5,2,3,no,2.8,
+R-0060,2026-10-25 03:49,Free,5,2,2,no,5.6,
+R-0061,2026-10-25 05:48,Free,9,4,3,yes,5.3,Best tool we tried this year
+R-0062,2026-10-25 08:20,Free,9,4,,yes,8.7,
+R-0063,2026-10-25 09:39,Enterprise,10,5,4,yes,2.9,Fast and simple. The CSV import saved me hours.
+R-0064,2026-10-25 15:08,Free,9,4,,yes,6.2,"Support answered in 5 minutes, great!"
+R-0065,2026-10-25 16:53,Team,8,4,4,maybe,6.1,
+R-0066,2026-10-25 17:04,Enterprise,9,5,5,yes,2.6,
+R-0067,2026-10-25 19:33,Free,7,4,2,maybe,2.4,"Good overall, but the dashboard is slow on large files."
+R-0068,2026-10-25 22:45,Pro,6,3,2,no,4.9,"Pricing page said ""Pro"" but I was charged for Team."
+R-0069,2026-10-25 23:32,Team,7,4,4,maybe,2.4,Missing an API for bulk updates
+R-0070,2026-10-26 07:53,Free,5,3,,no,2.0,"Pricing page said ""Pro"" but I was charged for Team."
+R-0071,2026-10-26 08:38,Free,6,3,2,no,4.7,"Two issues:
+1) login loops on Safari
+2) CSV import fails on files over 50 MB"
+R-0072,2026-10-26 10:36,Team,7,3,3,maybe,3.3,
+R-0073,2026-10-26 18:28,Team,9,4,4,yes,5.8,Best tool we tried this year
+R-0074,2026-10-26 23:35,Pro,10,5,,yes,5.2,"Love the templates, my team uses them daily"
+R-0075,2026-10-26 23:40,Pro,8,5,3,maybe,8.0,모바일 화면이 조금 불편해요
+R-0076,2026-10-27 01:48,Free,9,4,,yes,6.3,
+R-0077,2026-10-27 01:58,Pro,8,4,5,maybe,4.5,"Pricing is fine for Pro, Team feels expensive"
+R-0078,2026-10-27 02:24,Free,8,4,4,maybe,3.9,
+R-0079,2026-10-27 04:07,Free,4,3,1,no,6.3,"Pricing page said ""Pro"" but I was charged for Team."
+R-0080,2026-10-27 08:11,Free,9,4,5,yes,8.9,
+R-0081,2026-10-27 09:00,Pro,9,4,,yes,7.4,보고서 자동화가 정말 편해요
+R-0082,2026-10-27 09:10,Pro,9,4,5,yes,3.2,
+R-0083,2026-10-27 10:12,Free,7,3,3,maybe,5.1,
+R-0084,2026-10-27 12:19,Free,6,3,2,no,8.4,"Pricing page said ""Pro"" but I was charged for Team."
+R-0085,2026-10-27 15:19,Pro,10,5,5,yes,8.8,
+R-0086,2026-10-27 18:16,Free,4,1,,no,5.5,"Two issues:
+1) login loops on Safari
+2) CSV import fails on files over 50 MB"
+R-0087,2026-10-27 20:46,Pro,9,5,3,yes,7.5,"Love the templates, my team uses them daily"
+R-0088,2026-10-27 23:30,Pro,9,4,4,yes,4.8,"Love the templates, my team uses them daily"
+R-0089,2026-10-27 23:46,Team,10,5,,yes,4.0,보고서 자동화가 정말 편해요
+R-0090,2026-10-28 00:10,Free,4,1,,no,2.1,"Two issues:
+1) login loops on Safari
+2) CSV import fails on files over 50 MB"
+R-0091,2026-10-28 02:50,Pro,9,5,5,yes,8.3,
+R-0092,2026-10-28 06:58,Free,8,4,3,maybe,2.3,
+R-0093,2026-10-28 11:06,Pro,6,3,2,no,7.3,
+R-0094,2026-10-28 11:51,Pro,7,4,3,maybe,4.6,"Would like more export formats (Parquet, XLSX)"
+R-0095,2026-10-28 17:49,Pro,8,4,4,maybe,2.3,"Good overall, but the dashboard is slow on large files."
+R-0096,2026-10-28 22:49,Free,4,3,2,no,6.1,
+R-0097,2026-10-29 02:39,Pro,6,3,2,no,2.2,
+R-0098,2026-10-29 05:22,Free,4,1,2,no,6.0,"Pricing page said ""Pro"" but I was charged for Team."
+R-0099,2026-10-29 08:58,Pro,9,4,4,yes,5.8,Best tool we tried this year
+R-0100,2026-10-29 11:50,Pro,10,5,5,yes,6.8,"Support answered in 5 minutes, great!"
+R-0101,2026-10-29 17:00,Free,9,4,5,yes,2.7,
+R-0102,2026-10-29 20:07,Enterprise,8,5,4,maybe,6.1,"Pricing is fine for Pro, Team feels expensive"
+R-0103,2026-10-30 05:47,Pro,7,4,4,maybe,9.0,Missing an API for bulk updates
+R-0104,2026-10-30 14:44,Team,8,3,5,maybe,3.8,Missing an API for bulk updates
+R-0105,2026-10-30 15:04,Team,8,4,,maybe,7.6,Missing an API for bulk updates
+R-0106,2026-10-30 16:00,Free,9,5,5,yes,2.1,Best tool we tried this year
+R-0107,2026-10-30 18:10,Free,9,4,5,yes,6.6,"Support answered in 5 minutes, great!"
+R-0108,2026-10-30 19:22,Team,10,5,,yes,8.0,Fast and simple. The CSV import saved me hours.
+R-0109,2026-10-30 19:41,Free,9,4,4,yes,4.7,Fast and simple. The CSV import saved me hours.
+R-0110,2026-10-30 20:00,Free,7,4,4,maybe,5.2,
+R-0111,2026-10-30 21:10,Pro,10,5,4,yes,5.8,"Support answered in 5 minutes, great!"
+R-0112,2026-10-30 22:22,Free,6,3,3,no,5.4,한글 파일명이 깨져서 업로드가 안 됩니다
+R-0113,2026-10-31 00:42,Free,7,4,3,maybe,3.0,"Pricing is fine for Pro, Team feels expensive"
+R-0114,2026-10-31 05:29,Free,4,1,,no,6.6,
+R-0115,2026-10-31 11:25,Pro,6,3,3,no,4.6,"Lost my filters after the update, very frustrating"
+R-0116,2026-10-31 12:03,Pro,8,3,,maybe,7.2,모바일 화면이 조금 불편해요
+R-0117,2026-10-31 16:03,Pro,8,3,5,maybe,4.5,
+R-0118,2026-10-31 19:59,Pro,6,4,3,no,5.3,
+R-0119,2026-10-31 21:30,Team,9,5,5,yes,7.3,Best tool we tried this year
+R-0120,2026-10-31 22:18,Pro,6,3,,no,8.7,"Lost my filters after the update, very frustrating"

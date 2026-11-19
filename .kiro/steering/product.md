@@ -18,6 +18,8 @@ A prompt compiler for data analysis. It takes a role, constraints and a CSV/JSON
 The values of all canvas nodes are the blueprint: data path, sample rows, role, constraints, output format and fields, target, theme, LLM model, LLM options (max_tokens, temperature, system prompt; v3) and node layout. Ctrl+S saves, Ctrl+O opens; unsaved changes are marked with ●, and the app asks before opening another blueprint or closing the window. Blueprints are saved and opened as `.kiro` (JSON); the 5 built-in blueprints (🧩 menu) and the CLI `--blueprint` use the same format. Data inside the blueprint's folder (or a subfolder) is saved as a relative path, so the folder can be moved as a whole; data anywhere else is saved as an absolute path. When the GUI opens a blueprint it appends the working folder's steering rules that the blueprint does not have yet, and saving puts those rules (including disabled ones) into the blueprint. Use the CLI `--steering` only with blueprints that contain no rules.
 
 ## LLM run
+- Samples: the 📁 Samples menu opens the blueprints and data files of the `samples` folder next to the exe. `samples/replies/` holds one reply per blueprint for trying the analysis tools without a key.
+- Reply analysis (VIII, src/llm_view.rs): the reply is parsed once into a ReplyModel on the worker thread. Tabs: Analysis (tiles, data coverage, sortable and filterable table with data bars, column statistics, bar/donut chart, CSV), Structured, Text.
 - LLM run: shows the stop reason (stop_reason), token usage and latency. A reply cut off at the output token limit is reported as cut off, not as a format violation (it is not a pass; "Retry with 2× limit"). ■ cancels a running call.
 
 ## Demo scenario (3 minutes)
@@ -28,4 +30,4 @@ The values of all canvas nodes are the blueprint: data path, sample rows, role, 
 5. In a terminal, `Candy-Corn.exe --cli --blueprint saved-file.kiro` prints the same prompt; check the MCP `tools/list` response.
 
 ## Out of scope
-- Without an API key the LLM run only shows the schema skeleton (a mock reply). Keys are read only from environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY).
+- Without an API key the LLM run only shows the schema skeleton (a mock reply); a saved reply can still be opened with "Open reply…" and analyzed. Keys come from the 🔑 API keys window (Windows Credential Manager) or from the environment variables ANTHROPIC_API_KEY, OPENAI_API_KEY and GEMINI_API_KEY.

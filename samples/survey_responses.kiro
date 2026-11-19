@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "project": "survey_responses.kiro",
+  "target": "Claude",
+  "role": "Customer insight analyst",
+  "goals": [
+    { "text": "Count promoters (9-10), passives (7-8) and detractors (0-6) before judging the score", "on": true },
+    { "text": "Group the comments into themes and count them", "on": true },
+    { "text": "Do not infer anything not in the data", "on": true }
+  ],
+  "format": "StrictJson",
+  "fields": "nps_summary,themes,data_quality_issues,recommendations",
+  "sample_rows": 12,
+  "theme": 6,
+  "data_path": "survey_responses.csv"
+}

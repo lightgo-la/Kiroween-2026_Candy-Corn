@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "project": "ecommerce_orders.kiro",
+  "target": "Gpt",
+  "role": "E-commerce operations analyst",
+  "goals": [
+    { "text": "Compare each order with the typical order, not with the maximum", "on": true },
+    { "text": "List every affected order id", "on": true },
+    { "text": "Do not infer anything not in the data", "on": true }
+  ],
+  "format": "MarkdownTable",
+  "fields": "order_id,problem,orders_affected,suggested_action",
+  "sample_rows": 10,
+  "theme": 1,
+  "data_path": "ecommerce_orders.json"
+}

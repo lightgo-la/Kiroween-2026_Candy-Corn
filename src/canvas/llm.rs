@@ -23,6 +23,14 @@ pub fn build_request(r: &LlmRequest) -> (String, Vec<(&'static str, String)>, Va
         r.base_url.trim()
     };
     let base = base.trim_end_matches('/');
+    // OpenAI-compatible servers document their address with the version (`http://localhost:1234/v1`); the path below
+    // adds it, so strip it here instead of sending to `/v1/v1/...`.
+    let base = match r.provider {
+        Provider::Anthropic | Provider::OpenAi => base.strip_suffix("/v1"),
+        Provider::Gemini => base.strip_suffix("/v1beta").or_else(|| base.strip_suffix("/v1")),
+    }
+    .unwrap_or(base)
+    .trim_end_matches('/');
     match r.provider {
         Provider::Anthropic => {
             let mut body = json!({
@@ -74,12 +82,19 @@ pub fn build_request(r: &LlmRequest) -> (String, Vec<(&'static str, String)>, Va
                 body["systemInstruction"] = json!({ "parts": [{ "text": r.system }] });
             }
             (
-                format!("{base}/v1beta/models/{}:generateContent", r.model),
+                format!("{base}/v1beta/models/{}:generateContent", gemini_model(r.model)),
                 vec![("x-goog-api-key", r.api_key.to_string())],
                 body,
             )
         }
     }
+}
+
+/// The model name as it goes into a Gemini URL path: spaces trimmed and a leading `models/` (the form the model list
+/// API returns) removed.
+fn gemini_model(model: &str) -> &str {
+    let m = model.trim();
+    m.strip_prefix("models/").unwrap_or(m)
 }
 
 /// Token usage reported by the provider. Gemini's output includes thinking tokens (they count toward the output
@@ -211,6 +226,17 @@ pub fn call(r: &LlmRequest) -> Result<LlmReply, String> {
     if r.api_key.is_empty() {
         return Err(tr!("The API key is empty").into());
     }
+    if r.provider == Provider::Gemini {
+        let m = gemini_model(r.model);
+        // The name is part of the URL path, so anything but a plain model name could change the path or the query
+        if m.is_empty()
+            || !m
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        {
+            return Err(trf!("Invalid model name: {}", r.model.trim()));
+        }
+    }
     let (url, headers, body) = build_request(r);
     // Redirects are not followed: ureq strips only Authorization and would send x-api-key and x-goog-api-key to
     // the redirect target unchanged, so a 3xx is returned as an error.
@@ -266,7 +292,14 @@ fn read_reply(provider: Provider, api_key: &str, status: u16, retries: u32, text
         return Err(format!("HTTP {status}{retried}: {}", truncate(&safe, 500)));
     }
     let v: Value = serde_json::from_str(text).map_err(|e| trf!("JSON parse error: {e}", e = e))?;
-    extract_reply(provider, &v)
+    // The error of a reply without text quotes the response, so the key is masked there too
+    extract_reply(provider, &v).map_err(|e| {
+        if api_key.is_empty() {
+            e
+        } else {
+            e.replace(api_key, "***")
+        }
+    })
 }
 
 fn truncate(s: &str, n: usize) -> String {
@@ -494,5 +527,62 @@ mod tests {
                 "No text found in the response: {}"
             );
         });
+    }
+
+    #[test]
+    fn a_base_url_with_the_api_version_is_not_doubled() {
+        let url = |p: Provider, base: &'static str, model: &'static str| {
+            let mut r = req(p);
+            r.base_url = base;
+            r.model = model;
+            build_request(&r).0
+        };
+        assert_eq!(
+            url(Provider::OpenAi, "http://localhost:1234/v1", "m"),
+            "http://localhost:1234/v1/chat/completions"
+        );
+        assert_eq!(
+            url(Provider::OpenAi, "http://localhost:1234/v1/", "m"),
+            "http://localhost:1234/v1/chat/completions"
+        );
+        assert_eq!(
+            url(Provider::Anthropic, "https://gw.example.com/v1", "m"),
+            "https://gw.example.com/v1/messages"
+        );
+        assert_eq!(
+            url(Provider::Gemini, "https://gw.example.com/v1beta", "gemini-4-neon"),
+            "https://gw.example.com/v1beta/models/gemini-4-neon:generateContent"
+        );
+        // The form the Gemini model list returns, with stray spaces
+        assert_eq!(
+            url(Provider::Gemini, "", " models/gemini-4-neon "),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-4-neon:generateContent"
+        );
+        // A host that only ends in "v1" is left alone
+        assert_eq!(
+            url(Provider::OpenAi, "https://api-v1", "m"),
+            "https://api-v1/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn a_gemini_model_name_cannot_change_the_request_path() {
+        for bad in ["evil?x=1", "a/b", "m#f", "", "  ", "a b"] {
+            let mut r = req(Provider::Gemini);
+            r.model = bad;
+            let e = with_lang(Lang::En, || call(&r)).unwrap_err();
+            assert!(e.contains("Invalid model name"), "{bad:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn the_key_is_masked_in_the_error_of_a_reply_without_text() {
+        let key = "sk-secret-0123456789";
+        let body = format!(r#"{{"echo":"{key}"}}"#);
+        for p in Provider::ALL {
+            let e = read_reply(p, key, 200, 0, &body).unwrap_err();
+            assert!(!e.contains(key), "{p:?}: {e}");
+            assert!(e.contains("***"), "{p:?}: {e}");
+        }
     }
 }

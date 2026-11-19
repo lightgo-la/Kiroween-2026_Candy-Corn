@@ -452,6 +452,22 @@ struct RuleInfo {
     /// Exception and contrast words (instead, except, Korean "daesin"/"jeoe", the adnominal "aneun" that modifies the
     /// target, the purpose-clause "anhdorok" …)
     exceptions: BTreeSet<String>,
+    /// The sentence lists several items ("Detect outliers and duplicates"). A later negation of one item then does
+    /// not prove that the whole sentence is withdrawn.
+    coordinated: bool,
+}
+
+/// Whether the sentence lists items: an "and"/"or" word (or a Korean coordinator) or a comma between words. A comma
+/// inside a number (1,000) does not count.
+fn is_coordinated(s: &str, toks: &[Tok]) -> bool {
+    let word = |t: &Tok| {
+        matches!(t, Tok::Word { text, .. }
+            if text == "and" || text == "or" || lexicon::LINTER_KO_COORDINATORS.contains(&text.as_str()))
+    };
+    let digit_comma = |i: usize| {
+        s[..i].ends_with(|d: char| d.is_ascii_digit()) && s[i + 1..].starts_with(|d: char| d.is_ascii_digit())
+    };
+    toks.iter().any(word) || s.char_indices().any(|(i, c)| c == ',' && !digit_comma(i))
 }
 
 /// Position of a Korean ban marker at the end of a word (or before a ban ending). "geumji-eo", "boheomgeum-jigeup"
@@ -572,6 +588,7 @@ fn analyze(s: &str) -> RuleInfo {
     }
     let mut info = RuleInfo {
         negative: marker.contains(&true),
+        coordinated: is_coordinated(s, &toks),
         ..RuleInfo::default()
     };
     for (k, t) in toks.iter().enumerate() {
@@ -639,7 +656,11 @@ fn relation(a: &RuleInfo, b: &RuleInfo) -> Relation {
         // A certain contradiction only when the negation covers the positive instruction in the same word order and
         // the positive side has no exception/contrast word of its own ("instead", "daesin"). A narrower negation (an
         // exception clause) does not cover it, so it is not a contradiction.
-        if covered && in_order(&neg.content, &pos.content) && pos.exceptions.is_subset(&neg.exceptions) {
+        // "Detect outliers and duplicates" + "Do not detect outliers": the negation names one item of a list, so the
+        // other item must survive (both are kept with a warning).
+        let item_of_list = pos.coordinated && pos.content.iter().any(|w| !neg.content.contains(w));
+        if covered && !item_of_list && in_order(&neg.content, &pos.content) && pos.exceptions.is_subset(&neg.exceptions)
+        {
             return Relation::Clash;
         }
         if covered || (!neg.loose.is_empty() && neg.loose.is_subset(&pos.loose)) {
@@ -681,6 +702,18 @@ fn about(involved: &[&ConstraintNode], severity: &str, message: String) -> LintD
 
 fn is_newline(c: char) -> bool {
     matches!(c, '\n' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}')
+}
+
+/// Whether the word negates what follows ("not", "never", "don't", "cannot", "avoid").
+fn is_negation_word(w: &str) -> bool {
+    let w = w
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase()
+        .replace('’', "'");
+    matches!(
+        w.as_str(),
+        "not" | "never" | "no" | "cannot" | "avoid" | "dont" | "doesnt"
+    ) || w.ends_with("n't")
 }
 
 /// If the word is a filler, returns (leading punctuation, trailing punctuation). A word with a quote attached is not
@@ -743,13 +776,16 @@ fn compress(s: &str, keep_lines: bool, drop_fillers: bool) -> (String, usize) {
     words.extend(cur.take());
     let mut out = String::new();
     let mut removed = 0;
+    // A filler right after a negation stays: "Do not simply remove rows" must not become "Do not remove rows"
+    let mut after_neg = false;
     // Line breaks seen since the last kept word (the larger of the gaps around removed words)
     let mut sep = 0;
     // Opening punctuation that was attached to a removed filler ("(very" → "("). Put in front of the next kept word.
     let mut open = String::new();
     for (lines, w) in words {
         sep = sep.max(lines);
-        if let Some((before, after)) = filler_parts(&w).filter(|_| drop_fillers) {
+        let filler = filler_parts(&w);
+        if let Some((before, after)) = filler.filter(|_| drop_fillers && !after_neg) {
             removed += 1;
             match (before.is_empty(), after.is_empty()) {
                 (false, true) => open.push_str(before),
@@ -762,6 +798,7 @@ fn compress(s: &str, keep_lines: bool, drop_fillers: bool) -> (String, usize) {
             }
             continue;
         }
+        after_neg = is_negation_word(&w) || (after_neg && filler.is_some());
         if !out.is_empty() {
             out.push_str(match (keep_lines, sep) {
                 (true, 1) => "\n",
@@ -1688,5 +1725,43 @@ mod tests {
                 .collect();
             assert_eq!(errors, ["Output schema has no required fields"]);
         });
+    }
+
+    #[test]
+    fn a_negation_of_one_list_item_does_not_remove_the_whole_rule() {
+        for (positive, negative) in [
+            ("Detect outliers and duplicates", "Do not detect outliers"),
+            ("Report revenue, cost and margin per region", "Do not report margin"),
+            ("Flag refunds or chargebacks", "Do not flag refunds"),
+        ] {
+            let k = kept(&[positive, negative]);
+            assert_eq!(k.len(), 2, "{positive} / {negative}: {k:?}");
+        }
+        // Without a list the same wording is still a certain contradiction, and a comma inside a number is no list
+        assert_eq!(
+            kept(&["Detect outliers", "Do not detect outliers"]),
+            ["Do not detect outliers"]
+        );
+        assert_eq!(
+            kept(&["Flag amounts above 1,000", "Do not flag amounts above 1,000"]),
+            ["Do not flag amounts above 1,000"]
+        );
+    }
+
+    #[test]
+    fn a_filler_after_a_negation_is_not_dropped() {
+        // "Do not simply remove rows" must not turn into "Do not remove rows" (and then contradict the first rule)
+        let k = kept(&["Remove duplicate rows", "Do not simply remove duplicate rows"]);
+        assert_eq!(k.len(), 2, "{k:?}");
+        assert!(k[1].contains("simply"), "{k:?}");
+        for (text, want) in [
+            ("don't really change it", "don't really change it"),
+            ("never very large", "never very large"),
+            ("Avoid highly noisy columns", "Avoid highly noisy columns"),
+            // Away from a negation the filler is still compressed
+            ("it is very important", "it is important"),
+        ] {
+            assert_eq!(compress(text, false, true).0, want, "{text}");
+        }
     }
 }

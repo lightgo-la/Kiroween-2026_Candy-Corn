@@ -79,6 +79,8 @@ enum Deferred {
     Open,
     Save,
     SaveAs,
+    /// Close the window (after the user agreed to discard unsaved changes)
+    Close,
     /// Switched at the end of the frame so that the whole screen is drawn in one language from the next frame on.
     Language(Lang),
 }
@@ -500,6 +502,12 @@ pub struct CanvasApp {
     status: String,
     status_err: bool,
     deferred: Option<Deferred>,
+    /// The graph as it was last opened or saved (its JSON), to tell unsaved changes
+    saved_json: String,
+    /// New, Open or Close waiting for the answer to "discard the changes?"
+    discard_ask: Option<Deferred>,
+    /// The user agreed to discard, so the next New, Open or Close goes through without asking again
+    discard_ok: bool,
     tx: Sender<(u64, Msg)>,
     rx: Receiver<(u64, Msg)>,
 }
@@ -534,10 +542,14 @@ impl CanvasApp {
             status: tr!("Ready").into(),
             status_err: false,
             deferred: None,
+            saved_json: String::new(),
+            discard_ask: None,
+            discard_ok: false,
             tx,
             rx,
         };
         app.fix_test_node();
+        app.saved_json = app.graph.to_json().unwrap_or_default();
         app
     }
 
@@ -583,6 +595,13 @@ impl CanvasApp {
         self.scene_rect = default_scene_rect();
         self.want_fit = true;
         clear_text_undo(ctx);
+        self.saved_json = self.graph.to_json().unwrap_or_default();
+    }
+
+    /// Whether the graph differs from what was last opened or saved. Serializes the graph, so it is asked only when
+    /// something is about to replace it, not every frame.
+    fn has_unsaved_changes(&self) -> bool {
+        self.graph.to_json().map_or(true, |j| j != self.saved_json)
     }
 
     /// Whether New or Open may replace the graph. During a run this is allowed once Stop was pressed: "■ Stop" only
@@ -673,10 +692,11 @@ impl CanvasApp {
             self.path.clone()
         };
         let Some(p) = target else { return };
-        match self.graph.to_json().and_then(|s| write_atomic(&p, &s)) {
-            Ok(()) => {
+        match self.graph.to_json().and_then(|s| write_atomic(&p, &s).map(|()| s)) {
+            Ok(saved) => {
                 self.set_status(trf!("Saved: {}", p.display()), false);
                 self.path = Some(p);
+                self.saved_json = saved;
             }
             Err(e) => self.set_status(trf!("Failed to save: {e}", e = e), true),
         }
@@ -684,7 +704,19 @@ impl CanvasApp {
 
     /// Called at the end of the frame. Dialogs are opened only here.
     fn run_deferred(&mut self, d: Deferred, ctx: &egui::Context) {
+        // New, Open and Close throw the graph away: ask first when it has changes that are not saved
+        if matches!(d, Deferred::New | Deferred::Open | Deferred::Close) {
+            if !self.discard_ok && self.has_unsaved_changes() {
+                self.discard_ask = Some(d);
+                return;
+            }
+            // After a confirmed close the window still sends its own close request: it must pass too
+            if d != Deferred::Close {
+                self.discard_ok = false;
+            }
+        }
         match d {
+            Deferred::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Deferred::New => self.new_graph(ctx),
             Deferred::Open => {
                 if !self.can_replace_graph() {
@@ -1646,6 +1678,39 @@ impl CanvasApp {
         }
     }
 
+    /// "The graph has unsaved changes" prompt for New, Open and closing the window. Save is not offered here: it can
+    /// open a file dialog, which must not open in the middle of a frame. Cancel, Save, then try again.
+    fn discard_modal(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.discard_ask else {
+            return;
+        };
+        let mut discard = false;
+        let mut cancel = false;
+        let modal = egui::Modal::new(egui::Id::unique("discard-graph")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.label(RichText::new(tr!("Unsaved changes")).strong().size(16.0));
+            ui.label(tr!(
+                "The graph has changes that are not saved. They are lost if you continue. To keep them, cancel and use Save first."
+            ));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button(tr!("Discard changes")).clicked() {
+                    discard = true;
+                }
+                if ui.button(tr!("Cancel")).clicked() {
+                    cancel = true;
+                }
+            });
+        });
+        if discard {
+            self.discard_ask = None;
+            self.discard_ok = true;
+            self.deferred = Some(pending);
+        } else if cancel || modal.should_close() {
+            self.discard_ask = None;
+        }
+    }
+
     /// The whole screen for one frame. eframe and the unit tests use the same code.
     fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -1665,6 +1730,12 @@ impl CanvasApp {
             .show(ui, |ui| self.inspector(ui));
         egui::CentralPanel::default().show(ui, |ui| self.canvas(ui));
         self.keys.show(&ctx);
+        // Closing the window with unsaved changes is put off until the user decides
+        if ctx.input(|i| i.viewport().close_requested()) && !self.discard_ok && self.has_unsaved_changes() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.deferred.get_or_insert(Deferred::Close);
+        }
+        self.discard_modal(&ctx);
         // File dialogs, graph replacement and language switches run after all widgets are processed.
         if let Some(d) = self.deferred.take() {
             self.run_deferred(d, &ctx);
@@ -3242,5 +3313,75 @@ mod tests {
                 assert!(seen.iter().any(|s| s.contains(want)), "{want:?} was not drawn");
             }
         });
+    }
+
+    #[test]
+    fn new_and_open_ask_before_discarding_unsaved_changes() {
+        let (mut app, ctx) = (CanvasApp::from_graph(Graph::default()), egui::Context::default());
+        assert!(!app.has_unsaved_changes(), "a fresh graph has nothing to lose");
+        app.add_node(NodeKind::Output);
+        assert!(app.has_unsaved_changes());
+        for d in [Deferred::New, Deferred::Open, Deferred::Close] {
+            app.run_deferred(d, &ctx);
+            assert_eq!(app.discard_ask, Some(d));
+            assert_eq!(
+                app.graph.nodes.len(),
+                1,
+                "{d:?}: nothing is thrown away before the answer"
+            );
+            app.discard_ask = None;
+        }
+        // The user agrees: New goes through once, and the next one asks again if there is something to lose
+        app.discard_ok = true;
+        app.run_deferred(Deferred::New, &ctx);
+        assert!(app.graph.nodes.is_empty() && !app.discard_ok && !app.has_unsaved_changes());
+        app.run_deferred(Deferred::New, &ctx);
+        assert_eq!(
+            app.discard_ask, None,
+            "a graph without changes is replaced without asking"
+        );
+        app.add_node(NodeKind::Output);
+        app.run_deferred(Deferred::New, &ctx);
+        assert_eq!(app.discard_ask, Some(Deferred::New));
+    }
+
+    #[test]
+    fn saving_and_opening_reset_what_counts_as_unsaved() {
+        let dir = std::env::temp_dir().join(format!("cc_canvas_dirty_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut app, ctx) = (CanvasApp::from_graph(Graph::default()), egui::Context::default());
+        app.add_node(NodeKind::Output);
+        app.path = Some(dir.join("g.canvas.json"));
+        assert!(app.has_unsaved_changes());
+        app.save(false);
+        assert!(!app.status_err, "{}", app.status);
+        assert!(!app.has_unsaved_changes());
+        app.add_node(NodeKind::new_text());
+        assert!(app.has_unsaved_changes());
+        // Opening the saved file gives back a graph without changes
+        app.discard_ok = true;
+        app.load(dir.join("g.canvas.json"), &ctx);
+        assert!(!app.has_unsaved_changes() && app.graph.nodes.len() == 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_discard_prompt_draws_in_both_languages() {
+        for lang in Lang::ALL {
+            let (mut app, ctx) = (CanvasApp::from_graph(Graph::default()), egui::Context::default());
+            app.add_node(NodeKind::Output);
+            app.discard_ask = Some(Deferred::Open);
+            for _ in 0..2 {
+                let out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    i18n::with_lang(lang, || app.show(ui));
+                });
+                out.drop_without_applying_deltas();
+            }
+            assert_eq!(
+                app.discard_ask,
+                Some(Deferred::Open),
+                "{lang:?}: the prompt stays until answered"
+            );
+        }
     }
 }

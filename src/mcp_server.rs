@@ -390,7 +390,9 @@ fn call_tool(id: Value, params: Option<&Value>) -> Value {
 /// The prompt part of the result text is the same in every UI language; only the lint lines follow the UI language.
 fn compress(args: ToolArgs) -> Value {
     let data = match &args.data_path {
-        Some(p) => match pipeline::load_data(Path::new(p), args.sample_rows) {
+        Some(p) => match pipeline::mcp_data_path_problem(Path::new(p))
+            .map_or_else(|| pipeline::load_data(Path::new(p), args.sample_rows), Err)
+        {
             Ok(d) => Some(d),
             Err(e) => return tool_text(&trf!("Failed to load data: {e}", e = e), true),
         },
@@ -879,5 +881,31 @@ mod tests {
                 "{line}"
             );
         }
+    }
+
+    #[test]
+    fn data_path_must_be_a_data_file() {
+        let dir = std::env::temp_dir().join(format!("cc_mcp_secret_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let secret = dir.join("secret.env");
+        std::fs::write(
+            &secret,
+            "OPENAI_API_KEY=sk-test-0123456789abcdef\nDB_PASSWORD=hunter2\n",
+        )
+        .unwrap();
+        let v = call(json!({ "role": "r", "data_path": secret.display().to_string() }));
+        assert_eq!(v["result"]["isError"], true);
+        let text = text_of(&v).to_string();
+        assert!(text.contains("Only data files"), "{text}");
+        assert!(
+            !text.contains("sk-test") && !text.contains("hunter2"),
+            "the file must not be read: {text}"
+        );
+        if cfg!(windows) {
+            let unc = call(json!({ "role": "r", "data_path": r"\\evil.example\share\a.csv" }));
+            assert_eq!(unc["result"]["isError"], true);
+            assert!(text_of(&unc).contains("Network and device paths"), "{}", text_of(&unc));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

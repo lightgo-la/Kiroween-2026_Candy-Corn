@@ -36,6 +36,12 @@
 - [x] Tests under the English default: QC 13,000 (seeded streams unchanged), 33 scenarios (s30–s33 compare `--lang ko` with English), 16 graph e2e, QA 1,000
 - [x] English steering docs, specs and README
 
+## Round 8 (samples, reply analysis, bug review)
+- [x] Ten synthetic sample datasets (CP949, UTF-16, BOM, tab/semicolon/pipe, NDJSON), sample blueprints and replies, Samples menu, `tools/gen-samples.ps1`, `tests/samples.rs`
+- [x] VIII: Analysis tab (tiles, coverage, sort/filter, data bars, statistics, charts, CSV), Open reply, ReplyModel parsed on the worker, separate window
+- [x] API keys: endpoints, connection test, latest model pickers
+- [x] Three-reviewer bug sweep: UNC and device paths refused in graphs/blueprints/MCP, MCP data files only, graph without Output no longer shows upstream text after a failure, saved endpoint used by the graph tool, `/v1` base URLs, Gemini model names, key not echoed, unreadable settings.json stops runs and is backed up, linter list-item and filler-after-negation fixes, steering wrapped lines, profiler NA/#N/A, wide headers, bounded memory, graph tool asks before discarding unsaved edits
+
 ## Open
 - [ ] Windows Job Object for MCP child processes (survive a GUI crash today)
 - [ ] Graph canvas: undo/redo, parallel branches

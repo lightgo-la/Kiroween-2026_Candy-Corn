@@ -1,0 +1,10 @@
+{
+    "_note":  "Korean linguistic data added by the bug review (linter).",
+    "_LINTER_KO_COORDINATORS":  "Words that join items in a list (and, or). A negation of one item does not withdraw the whole sentence.",
+    "LINTER_KO_COORDINATORS":  [
+                                   "및",
+                                   "또는",
+                                   "혹은",
+                                   "그리고"
+                               ]
+}

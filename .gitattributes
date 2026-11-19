@@ -1,0 +1,10 @@
+# Sample data is read byte for byte by the tests: keep the encodings and line endings the generator wrote.
+samples/hr_employees_kr.csv -text
+samples/energy_meter_utf16.txt -text
+samples/support_tickets.csv -text
+samples/customers_messy.csv -text
+samples/bank_transactions.txt -text
+samples/web_traffic.tsv -text
+samples/iot_sensors.ndjson -text
+samples/survey_responses.csv -text
+samples/ecommerce_orders.json -text

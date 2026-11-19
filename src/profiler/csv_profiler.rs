@@ -41,7 +41,26 @@ struct ColAcc {
     max: f64,
     mean: f64,
     m2: f64,
-    distinct: HashSet<String>,
+    /// 64-bit hashes of the distinct values seen (at most DISTINCT_CAP). Hashes, not the text: a column of huge cells
+    /// must not keep them in memory.
+    distinct: HashSet<u64>,
+}
+
+/// Stable 64-bit hash of a cell for the distinct-value count.
+fn hash_cell(v: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    v.hash(&mut h);
+    h.finish()
+}
+
+/// Cuts a cell to CELL_MAX_CHARS characters (kept as is when it is already short).
+fn clip_cell(v: String) -> String {
+    if v.chars().nth(CELL_MAX_CHARS).is_some() {
+        v.chars().take(CELL_MAX_CHARS).collect()
+    } else {
+        v
+    }
 }
 
 impl ColAcc {
@@ -51,6 +70,9 @@ impl ColAcc {
             || v.eq_ignore_ascii_case("null")
             || v.eq_ignore_ascii_case("nan")
             || v.eq_ignore_ascii_case("n/a")
+            // R and Excel spell a missing value "NA" / "#N/A" (pandas reads them as missing by default too)
+            || v == "NA"
+            || v == "#N/A"
         {
             return;
         }
@@ -69,7 +91,7 @@ impl ColAcc {
             self.m2 += d * (x - self.mean);
         }
         if self.distinct.len() < DISTINCT_CAP {
-            self.distinct.insert(v.to_string());
+            self.distinct.insert(hash_cell(v));
         }
     }
 
@@ -219,12 +241,16 @@ impl Accumulator {
             self.cols[*i].push(v);
         }
         self.rows += 1;
+        // Only the kept rows are cut to CELL_MAX_CHARS here, so a few huge cells never stay in memory
+        let clip = |row: Vec<(usize, String)>| -> Vec<(usize, String)> {
+            row.into_iter().map(|(i, v)| (i, clip_cell(v))).collect()
+        };
         if self.sample.len() < self.sample_k {
-            self.sample.push(row);
+            self.sample.push(clip(row));
         } else if self.sample_k > 0 {
             let j = (self.next_rand() % self.rows as u64) as usize;
             if j < self.sample_k {
-                self.sample[j] = row;
+                self.sample[j] = clip(row);
             }
         }
     }
@@ -794,6 +820,9 @@ fn split_stats(text: &[u8], d: u8, complete: bool) -> (Vec<usize>, usize) {
             content = true;
             at_start = true;
         } else {
+            // A quote inside an unquoted field: this delimiter probably cuts through a quoted field
+            // (`id,"tags;labels"` read with `;`)
+            bad += usize::from(b == b'"' && !at_start);
             content = true;
             at_start = false;
         }
@@ -803,6 +832,10 @@ fn split_stats(text: &[u8], d: u8, complete: bool) -> (Vec<usize>, usize) {
         if content {
             counts.push(fields);
         }
+    } else if counts.is_empty() && content {
+        // The header alone is longer than the sniffed head. The fields counted so far still show that this delimiter
+        // splits it (a lower bound is enough), so a very wide tab or semicolon file is not read as one column.
+        counts.push(fields);
     }
     (counts, bad)
 }
@@ -1575,5 +1608,69 @@ mod tests {
             "{en}"
         );
         assert!(en.contains("\"dtype\":\"numeric\"") && en.contains("distinct:"), "{en}");
+    }
+
+    #[test]
+    fn na_and_excel_na_count_as_missing_values() {
+        // An R export: every 6th amount is "NA" and one amount is far above the rest
+        let mut text = String::from("\"\",\"amount\",\"region\"\n");
+        for i in 0..40 {
+            let amount = match i {
+                _ if i % 6 == 5 => "NA".to_string(),
+                20 => "90000".to_string(),
+                _ => (100 + i % 7).to_string(),
+            };
+            text.push_str(&format!("{i},{amount},\"{}\"\n", if i % 2 == 0 { "N" } else { "S" }));
+        }
+        text.push_str("40,#N/A,N\n");
+        let d = profile_bytes("na.csv", text.as_bytes(), 2).unwrap();
+        let amount = d.columns.iter().find(|c| c.name == "amount").unwrap();
+        assert_eq!(amount.dtype, "numeric", "{amount:?}");
+        assert!(amount.null_ratio > 0.15, "{amount:?}");
+        assert!(
+            d.anomalies.iter().any(|a| a.starts_with("amount: max 90000")),
+            "{:?}",
+            d.anomalies
+        );
+    }
+
+    #[test]
+    fn a_header_longer_than_the_sniffed_head_still_finds_its_delimiter() {
+        let cols = 8000;
+        let header: Vec<String> = (0..cols).map(|i| format!("col_{i:04}")).collect();
+        let row: Vec<String> = (0..cols).map(|i| i.to_string()).collect();
+        let text = format!("{}\n{}\n{}\n", header.join("\t"), row.join("\t"), row.join("\t"));
+        assert!(text.lines().next().unwrap().len() > SNIFF_BYTES);
+        // A .txt file has no delimiter hint from its extension
+        let d = profile_bytes("wide.txt", text.as_bytes(), 1).unwrap();
+        assert_eq!(d.columns.len(), cols);
+        assert_eq!(d.total_rows, 2);
+    }
+
+    #[test]
+    fn a_quoted_semicolon_does_not_make_semicolon_the_delimiter() {
+        let d = profile_bytes("semi.csv", b"id,\"tags;labels\"\n1,\"a;b\"\n2,\"c;d\"\n3,\"e;f\"\n", 3).unwrap();
+        assert_eq!(names(&d), ["id", "tags;labels"]);
+        // A real semicolon file is still read as one
+        let semi = profile_bytes("semi2.csv", b"id;name\n1;a\n2;b\n3;c\n", 3).unwrap();
+        assert_eq!(names(&semi), ["id", "name"]);
+    }
+
+    #[test]
+    fn huge_cells_do_not_stay_in_memory() {
+        let big = "x".repeat(200_000);
+        let mut text = String::from("id,note\n");
+        for i in 0..6 {
+            text.push_str(&format!("{i},{}{i}\n", big));
+        }
+        let d = profile_bytes("huge.csv", text.as_bytes(), 2).unwrap();
+        let note = d.columns.iter().find(|c| c.name == "note").unwrap();
+        // Six different cells that share a 200,000 character prefix are still six values
+        assert_eq!(note.summary_stats, "distinct:6");
+        assert!(
+            d.sample_rows.iter().all(|r| r.len() <= 2 * CELL_MAX_CHARS + 8),
+            "{:?}",
+            d.sample_rows
+        );
     }
 }

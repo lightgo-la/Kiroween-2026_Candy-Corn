@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "project": "support_tickets.kiro",
+  "target": "Gpt",
+  "role": "Customer support operations analyst",
+  "goals": [
+    { "text": "Report ticket counts and average resolution time for every category", "on": true },
+    { "text": "Name the ticket id behind any extreme value", "on": true },
+    { "text": "Do not infer anything not in the data", "on": true }
+  ],
+  "format": "MarkdownTable",
+  "fields": "category,tickets,avg_resolution_hours,finding,action",
+  "sample_rows": 10,
+  "theme": 2,
+  "data_path": "support_tickets.csv"
+}

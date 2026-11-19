@@ -191,11 +191,18 @@ pub fn save(path: &Path, lang: Lang) -> Result<(), String> {
 /// Reads the settings file (a missing or broken file counts as an empty object), lets `edit` change it and writes it
 /// back through a temp file, keeping the keys `edit` does not touch.
 pub fn update(path: &Path, edit: impl FnOnce(&mut serde_json::Value)) -> Result<(), String> {
-    let mut v = std::fs::read_to_string(path)
-        .ok()
+    let bytes = std::fs::read(path).ok();
+    let parsed = bytes
+        .as_deref()
+        .and_then(|b| std::str::from_utf8(b).ok())
         .and_then(|t| serde_json::from_str::<serde_json::Value>(t.trim_start_matches('\u{feff}')).ok())
-        .filter(serde_json::Value::is_object)
-        .unwrap_or_else(|| serde_json::json!({}));
+        .filter(serde_json::Value::is_object);
+    // A file with content that cannot be read (a hand-edit mistake, another encoding) is copied to `settings.json.bad`
+    // before it is replaced, so the user's settings are not lost
+    if parsed.is_none() && bytes.as_ref().is_some_and(|b| !b.iter().all(u8::is_ascii_whitespace)) {
+        let _ = std::fs::copy(path, path.with_extension("json.bad"));
+    }
+    let mut v = parsed.unwrap_or_else(|| serde_json::json!({}));
     edit(&mut v);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;

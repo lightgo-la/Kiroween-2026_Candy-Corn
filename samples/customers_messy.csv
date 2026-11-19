@@ -1,0 +1,84 @@
+customer_id,name,email,phone,city,signup_date,age,annual_spend_krw,segment,marketing_opt_in
+CU-1001,Choi Minseo,minseo.choi0@example.com,010-3980-8515, seoul,12/09/2025,20,"620,000",New,TRUE
+CU-1002,  lim junwoo,junwoo.lim1@example.com,010-6669-5944,Seoul,2024-07-02,62,"2,330,000",Regular,Y
+CU-1003,Cho Chaewon,chaewon.cho2@example.com,010-3046-7960,Seoul,2026-04-15,31,"410,000",New,Y
+CU-1004,Cho Jihoon,jihoon.cho3@example.com,010-3654-5831,Incheon,24 Mar 2026,46,"1,400,000",regular ,Y
+CU-1005,Lee Chaewon,,010-5602-3979,Incheon,2024-02-04,21,"5,170,000",VIP,Y
+CU-1006,Jung Taeyang,taeyang.jung5@example.com,01008129219,Incheon,2025-10-12,60,,vip,N
+CU-1007,Yoon Jiwoo,jiwoo.yoon6@example.com,010-1362-2650,Seoul,2024-05-07,41,"8,850,000",VIP,Y
+CU-1008,Park Jihoon,jihoon.park7@example.com,010-7822-6282,Seoul,2024-07-28,37,"11,110,000",vip,N
+CU-1009,Lee Chaewon,chaewon.lee8@example.com,010-2921-2939,busan,2026-02-04,,"1,050,000",Regular,yes
+CU-1010,Cho Jiwoo,jiwoo.cho9@example.com,+82 10 9889 9985,Incheon,2026-06-27,45,"2,980,000",,Y
+CU-1011,Kang Eunwoo,eunwoo.kang10@example.com,01013773629,Seoul,2025-10-27,31,"2,460,000",Regular,Y
+CU-1011,Kang Eunwoo,eunwoo.kang10@example.com,01013773629,Seoul,2025-10-27,31,"2,460,000",Regular,Y
+CU-1012,Jung Yerin,yerin.jung11@example.com,01043101392,Busan,05/30/2026,49,"9,840,000",VIP,Y
+CU-1013,Kim Jihoon,jihoon.kim12@example.com,,Busan,26 Mar 2024,29,N/A,New,N
+CU-1014,  cho hyunwoo,hyunwoo.cho13@example.com,010-1345-0445,Busan,10/07/2024,43,"1,040,000",Regular,Y
+CU-1015,Lim Yerin,yerin.lim14@example.com,,SEOUL,2026.02.20,50,"740,000",New,TRUE
+CU-1016,Cho Junwoo,junwoo.cho15@example.com,010-1375-0749,Seoul,21 Jan 2024,38,"350,000",New,N
+CU-1017,Jang Hyunwoo,hyunwoo.jang16@example.com,010-2598-1115,Busan,2025-12-16,20,"760,000",New,
+CU-1018,Yoon Siwoo,siwoo.yoon17@example.com,01025887752,busan,2026-10-31,30,"4,400,000",VIP,Y
+CU-1019,Yoon Seoyeon,seoyeon.yoon18@example.com,010-0409-5526,Daejeon,2026-08-03,51,"8,920,000",VIP,Y
+CU-1020,Jung Subin,,010-5554-7267,Seoul,2025-11-19,36,"720,000",New,Y
+CU-1021,Lee Doyun,doyun.lee20@example.com,010-0424-0300,Seoul,2025-02-24,67,"5,060,000",VIP,N
+CU-1022,Yoon Eunwoo,eunwoo.yoon21@example.com,010-0607-0488,Seoul,2025-06-15,25,"890,000",,
+CU-1023,Kang Jihoon,jihoon.kang22@example.com,010-4295-3805,Seoul,2026-04-04,34,"420,000",New,Y
+CU-1024,Choi Minjun,minjun.choi23@example.com,010-8433-3393,Busan,2025-12-17,212,"450,000",New,N
+CU-1025,Cho Jihoon,jihoon.cho24@example.com,010-2751-9363,Busan,2024-01-29,22,"9,050,000",vip,N
+CU-1026,Jang Taeyang,taeyang.jang25@example.com,01035287714,Seoul,25 Dec 2025,28,"3,410,000",regular ,N
+CU-1027,Jung Seoyeon,seoyeon.jung26@example.com,010-6019-5209,Seoul,2026-08-22,57,"6,770,000",VIP,TRUE
+CU-1028,Kang Siwoo,siwoo.kang@,010-0011-8051,Seoul,2024-07-29,29,"530,000",New,Y
+CU-1029,Park Subin,subin.park28@example.com,010-8042-2100,Daejeon,2025-01-09,36,"700,000",New,N
+CU-1030,Kang Hyunwoo,hyunwoo.kang29@example.com,01056907078,Seoul,2025-11-23,64,"550,000",New,yes
+CU-1031,Jang Subin,subin.jang30@example.com,010-1927-7190,Incheon,2024-10-25,32,"6,580,000",vip,N
+CU-1032,Lee Seoyeon,seoyeon.lee31@example.com,010-8837-7758,Seoul,2025-01-07,,"780,000",New,yes
+CU-1033,Jung Eunwoo,eunwoo.jung32@example.com,010-1448-4831,Incheon,2024-04-07,27,"950,000",New,Y
+CU-1034,Cho Chaewon,chaewon.cho33@example.com,010-5381-9407, seoul,01/02/2026,67,"2,550,000",Regular,N
+CU-1034,Cho Chaewon,chaewon.cho33@example.com,010-5381-9407, seoul,01/02/2026,67,"2,550,000",Regular,N
+CU-1035,Jung Chaewon,chaewon.jung34@example.com,010-0338-3625,Busan,2024-05-08,23,"4,910,000",VIP,Y
+CU-1036,Lee Minjun,minjun.lee35@example.com,,Incheon,2024-12-06,25,"530,000",New,N
+CU-1037,Park Yerin,yerin.park36@example.com,01055189624,Daegu,2024-06-12,53,,Regular,Y
+CU-1038,Kim Hyunwoo,hyunwoo.kim37@example.com,010-9067-3189, seoul,03/23/2025,41,"1,080,000",Regular,
+CU-1039,Cho Yerin,,010-3682-6694,Seoul,1 Apr 2025,65,"7,760,000",VIP,N
+CU-1040,JANG YERIN,yerin.jang39@example.com,010-6956-1218,Incheon,03/25/2026,66,"490,000",New,N
+CU-1041,Kang Chaewon,chaewon.kang40@example.com,01016046217,Seoul,2026-07-29,30,"900,000",,N
+CU-1042,Kim Jihoon,jihoon.kim41@example.com,01086556195,Seoul,2026-03-20,60,"460,000",New,N
+CU-1043,Lee Siwoo,siwoo.lee42@example.com,010-8952-8211,Busan,2025-11-26,66,"7,510,000",VIP,N
+CU-1044,Choi Hayoon,hayoon.choi43@example.com,010-4651-6643,Seoul,2025-07-17,49,"420,000",New,Y
+CU-1045,Lee Taeyang,taeyang.lee44@example.com,010-8566-3515,Daejeon,2025-04-29,52,"2,040,000",Regular,N
+CU-1046,Jang Jihoon,jihoon at example.com,010-6253-7929,Seoul,2025-11-10,35,"1,560,000",regular ,Y
+CU-1047,  choi subin,subin.choi46@example.com,010-0810-9467,Seoul,30 Apr 2026,67,"2,370,000",Regular,Y
+CU-1048,Lim Minjun,minjun.lim47@example.com,+82 10 6311 6053,Busan,2026-09-03,,"2,640,000",regular ,yes
+CU-1049,Lim Siwoo,siwoo.lim48@example.com,01078218281,Daegu,2024-02-05,48,"2,350,000",regular ,yes
+CU-1050,Park Minseo,minseo.park49@example.com,010-2227-9027,Incheon,2025-07-01,31,"1,330,000",Regular,yes
+CU-1051,Park Subin,subin.park50@example.com,010-0925-7978,Seoul,2024-07-27,33,"1,330,000",Regular,Y
+CU-1052,Jang Taeyang,taeyang.jang51@example.com,01043933179,Busan,06/26/2026,-1,"740,000",New,Y
+CU-1053,Kang Subin,subin.kang52@example.com,01021682073,Seoul,2024-09-03,67,"4,000,000",VIP,Y
+CU-1054,Park Chaewon,chaewon.park53@example.com,+82 10 5271 0318,Seoul,05/25/2024,23,"8,860,000",VIP,no
+CU-1055,  yoon yuna,yuna.yoon54@example.com,01085688774,Seoul,2026-02-02,58,"360,000",New,
+CU-1056,Cho Chaewon,chaewon.cho55@example.com,,Seoul,2025-08-11,45,"1,630,000",,Y
+CU-1057,KANG HYUNWOO,hyunwoo.kang56@example.com,010-2140-9218,Seoul,2026-08-07,56,"930,000",New,Y
+CU-1058,KIM DOYUN,doyun.kim57@example.com,01053095876, seoul,2026-03-03,30,"930,000",New,
+CU-1058,KIM DOYUN,doyun.kim57@example.com,01053095876, seoul,2026-03-03,30,"930,000",New,
+CU-1059,Cho Hayoon,hayoon.cho58@example.com,01072847302,Seoul,2024-09-14,44,N/A,New,Y
+CU-1060,Kang Seoyeon,seoyeon.kang59@example.com,010-3511-8593,Seoul,2026-05-26,43,"6,160,000",vip,Y
+CU-1061,Kang Minseo,,+82 10 0068 0693, seoul,2024-10-12,64,"690,000",New,Y
+CU-1062,Lee Siwoo,siwoo.lee61@example.com,010-3557-0581,busan,09/01/2026,36,"380,000",New,N
+CU-1063,Lim Jihoon,jihoon.lim62@example.com,+82 10 8126 4611,Incheon,2026-06-25,44,"3,860,000",Regular,N
+CU-1064,Lim Doyun,doyun.lim63@example.com,010-6434-8629,Busan,2026-10-06,38,"7,680,000",VIP,N
+CU-1065,Park Minseo,minseo.park64@example.com,01096953689, seoul,9 Feb 2025,27,"45,000,000",VIP,no
+CU-1066,Lee Doyun,doyun.lee65@example.com,010-1341-9449, seoul,04/17/2026,34,"340,000",New,Y
+CU-1067,Park Taeyang,taeyang.park@,010-4901-0782,Busan,2024.02.08,58,"2,700,000",Regular,Y
+CU-1068,Kim Seoyeon,seoyeon.kim67@example.com,+82 10 1555 3353,Seoul,2026-09-17,64,"1,830,000",Regular,TRUE
+CU-1069,Choi Siwoo,siwoo.choi68@example.com,+82 10 6824 2090,Seoul,2025-11-26,42,"310,000",,
+CU-1070,Cho Minjun,minjun.cho69@example.com,010-6491-8448,SEOUL,7 Aug 2025,58,"1,840,000",Regular,N
+CU-1071,Jung Siwoo,siwoo.jung70@example.com,010-3404-9297,Daejeon,2026-06-15,,"660,000",New,yes
+CU-1072,Kang Hayoon,hayoon.kang71@example.com,01072885535,SEOUL,2026-01-24,44,"560,000",New,N
+CU-1073,Park Hayoon,,,Busan,2026-07-12,20,"4,400,000",VIP,Y
+CU-1074,Jung Junwoo,junwoo.jung73@example.com,01003800351,Busan,22 Jun 2025,46,"6,590,000",vip,no
+CU-1075,KIM JUNWOO,junwoo.kim74@example.com,,Seoul,2024-01-28,55,"5,710,000",vip,no
+CU-1076,Jung Doyun,doyun.jung75@example.com,+82 10 1058 2582,Seoul,2024-12-10,33,"1,040,000",Regular,Y
+CU-1077,Kang Minjun,minjun.kang76@example.com,01037186458,Seoul,2024-08-19,49,"9,090,000",VIP,N
+CU-1078,Lee Chaewon,chaewon.lee77@example.com,010-2990-7348,Seoul,2024-08-24,28,,New,no
+CU-1079,Lim Hayoon,hayoon.lim78@example.com,01050291329,Busan,2024-11-03,24,"4,440,000",vip,N
+CU-1080,Lee Jihoon,jihoon.lee79@example.com,01058345869,Seoul,2025-05-19,24,"550,000",,

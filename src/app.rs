@@ -35,6 +35,10 @@ struct LlmRun {
     ms: u64,
     /// Output token limit used for this run
     max_tokens: u32,
+    /// File name when the reply was opened from a file instead of coming from a run
+    source: Option<String>,
+    /// The reply parsed once for the Analysis and Structured tabs (None when the call failed)
+    model: Option<llm_view::ReplyModel>,
 }
 
 /// Real LLM run result. The first value is the request generation (stale replies are discarded).
@@ -223,7 +227,48 @@ fn run_details(ms: u64, usage: Option<llm::Usage>, prompt_tokens: usize) -> Stri
     }
 }
 
+/// Column names and outlier lines of the data profile (empty without data), for the coverage check of a reply.
+fn profile_lists(r: &pipeline::CompileResult) -> (Vec<String>, Vec<String>) {
+    r.ast.data_sub_ast.as_ref().map_or_else(Default::default, |d| {
+        (d.columns.iter().map(|c| c.name.clone()).collect(), d.anomalies.clone())
+    })
+}
+
+/// Largest reply file the studio opens (a reply is text a model wrote; more than this is not one).
+const MAX_REPLY_FILE: u64 = 2 * 1024 * 1024;
+
+/// Sample data and blueprints in the `samples` folder next to the executable (the installer puts it there). Blueprints
+/// first, then data files, each sorted by name. Graph files and notes are left out.
+fn find_samples() -> Vec<(String, PathBuf)> {
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.join("samples")))
+    else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(bool, String, PathBuf)> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .filter_map(|p| {
+            let name = p.file_name()?.to_string_lossy().into_owned();
+            let ext = p.extension()?.to_string_lossy().to_lowercase();
+            let blueprint = ext == "kiro";
+            let data = DATA_EXTS.contains(&ext.as_str()) && !name.ends_with(".canvas.json");
+            (blueprint || data).then_some((!blueprint, name, p))
+        })
+        .collect();
+    found.sort();
+    found.into_iter().map(|(_, name, path)| (name, path)).collect()
+}
+
 fn run_line(run: &LlmRun, prompt_tokens: usize) -> String {
+    if let Some(name) = &run.source {
+        return trf!("Opened from the file {}", name);
+    }
     match &run.out {
         Ok(c) => run_details(run.ms, c.usage, prompt_tokens),
         Err(_) => trf!("Failed after {} ms", run.ms),
@@ -244,7 +289,7 @@ fn retry_limit(run: &LlmRun) -> Option<u32> {
 }
 
 /// File extensions loaded as data (the file dialog and drag and drop use the same list).
-const DATA_EXTS: [&str; 6] = ["csv", "tsv", "txt", "json", "jsonl", "ndjson"];
+const DATA_EXTS: [&str; 6] = pipeline::DATA_EXTS;
 
 /// Kind of a dropped file (or of a file given as a startup argument).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -482,6 +527,10 @@ enum Dialog {
     SaveOutput,
     /// Save the LLM reply body to a file
     SaveReply,
+    /// Open a reply from a file and show it in VIII
+    OpenReply,
+    /// Save the table of the Analysis tab (with its filter and sort) as CSV
+    SaveTable,
     /// Go on with the action after a successful save ("Save" in the unsaved-changes prompt)
     SaveThen(Pending),
 }
@@ -597,8 +646,12 @@ pub struct StudioApp {
     keys: KeysWindow,
     /// VIII (LLM run result) is shown in its own window instead of the right pane
     llm_window: bool,
-    /// How the reply body is shown in VIII
-    llm_tab: llm_view::ReplyTab,
+    /// The tab of the reply body in VIII that the user picked; None follows the reply (Analysis when it has a table)
+    llm_tab: Option<llm_view::ReplyTab>,
+    /// Table, sort, filter and chart settings of the Analysis tab
+    llm_analysis: llm_view::AnalysisState,
+    /// Sample data and blueprints found in the `samples` folder next to the executable (name, path)
+    samples: Vec<(String, PathBuf)>,
     /// Recent finished runs (chart and table in VIII)
     llm_history: Vec<llm_view::RunRecord>,
     /// Provider and model of the run in progress, for its history entry
@@ -714,7 +767,9 @@ impl StudioApp {
             llm_rx,
             keys: KeysWindow::load(),
             llm_window: false,
-            llm_tab: llm_view::ReplyTab::default(),
+            llm_tab: None,
+            llm_analysis: llm_view::AnalysisState::default(),
+            samples: find_samples(),
             llm_history: Vec::new(),
             llm_meta: None,
             fog_on: true,
@@ -847,6 +902,7 @@ impl StudioApp {
         let prompt = r.output.clone();
         let format = r.ast.output_schema.format;
         let fields = r.ast.output_schema.required_fields.clone();
+        let (columns, anomalies) = profile_lists(r);
         let opts = self.llm_opts.clone().normalized();
         // Send the temperature clamped to the provider's range (the saved value is left alone).
         let (max_tokens, temperature) = (opts.max_tokens, opts.effective_temperature(provider));
@@ -874,12 +930,28 @@ impl StudioApp {
                 temperature,
             };
             let started = Instant::now();
-            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                llm::call(&req).map(|reply| pipeline::check_reply(format, &fields, &reply, max_tokens))
+            // Parsing the reply for the analysis tools is inside the guard too: a panic must still end the run
+            let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                llm::call(&req).map(|reply| {
+                    let check = pipeline::check_reply(format, &fields, &reply, max_tokens);
+                    let model = llm_view::ReplyModel::build(&check.pretty, &columns, &anomalies);
+                    (check, model)
+                })
             }))
             .unwrap_or_else(|e| Err(trf!("LLM call internal error: {}", panic_text(e))));
+            let (out, model) = match done {
+                Ok((check, model)) => (Ok(check), Some(model)),
+                Err(e) => (Err(e), None),
+            };
             let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let _ = tx.send(LlmMsg::Done(generation, LlmRun { out, ms, max_tokens }));
+            let run = LlmRun {
+                out,
+                ms,
+                max_tokens,
+                source: None,
+                model,
+            };
+            let _ = tx.send(LlmMsg::Done(generation, run));
             ctx.request_repaint();
         });
     }
@@ -1096,6 +1168,7 @@ impl StudioApp {
                     },
                 );
             }
+            self.llm_analysis = llm_view::AnalysisState::for_model(run.model.as_ref());
             self.llm_out = Some(run);
         }
     }
@@ -1208,7 +1281,13 @@ impl StudioApp {
         self.loading = false;
         self.load_gen += 1;
         self.data_ref = DataRef::default();
-        match bp.data_path_from(source) {
+        let data_path = bp.data_path_from(source);
+        if let Some(dp) = &data_path
+            && let Some(why) = pipeline::untrusted_path_problem(dp)
+        {
+            return Some(trf!("Data file not opened ({}): {why}", dp.display(), why = why));
+        }
+        match data_path {
             Some(dp) if dp.is_file() => {
                 self.spawn_load(dp, ctx);
                 None
@@ -1364,6 +1443,86 @@ impl StudioApp {
         }
     }
 
+    /// Opens a reply from a file as if a model had just answered, so the format check and the analysis tools can be
+    /// used without an API key (or on a reply from another tool).
+    fn open_reply(&mut self) {
+        let Some(r) = &self.result else {
+            self.status = tr!("Compile first, so the reply can be checked against the output format").into();
+            self.status_err = true;
+            return;
+        };
+        let (format, fields) = (r.ast.output_schema.format, r.ast.output_schema.required_fields.clone());
+        let (columns, anomalies) = profile_lists(r);
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(tr!("LLM reply"), &["json", "md", "txt"])
+            .pick_file()
+        else {
+            return;
+        };
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_REPLY_FILE) {
+            self.status = tr!("That file is too large to be a reply (2 MB at most)").into();
+            self.status_err = true;
+            return;
+        }
+        let text = match pipeline::read_text_auto(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.status = e;
+                self.status_err = true;
+                return;
+            }
+        };
+        let max_tokens = self.llm_opts.clone().normalized().max_tokens;
+        let reply = llm::LlmReply {
+            text,
+            ..llm::LlmReply::default()
+        };
+        let check = pipeline::check_reply(format, &fields, &reply, max_tokens);
+        let model = llm_view::ReplyModel::build(&check.pretty, &columns, &anomalies);
+        let name = path
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        self.status = trf!("Opened the reply {}", name);
+        self.status_err = !check.ok;
+        self.llm_analysis = llm_view::AnalysisState::for_model(Some(&model));
+        self.llm_out = Some(LlmRun {
+            out: Ok(check),
+            ms: 0,
+            max_tokens,
+            source: Some(name),
+            model: Some(model),
+        });
+    }
+
+    /// Saves the table shown in the Analysis tab as CSV, with the filter and the sort applied. UTF-8 with a byte
+    /// order mark, so Excel reads Korean text correctly.
+    fn save_table(&mut self) {
+        let Some(model) = self.llm_out.as_ref().and_then(|r| r.model.as_ref()) else {
+            return;
+        };
+        let Some(table) = model.tables.get(self.llm_analysis.table) else {
+            return;
+        };
+        let text = llm_view::to_csv(table, self.llm_analysis.visible(), true);
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("CSV", &["csv"])
+            .set_file_name("table.csv")
+            .save_file()
+        else {
+            return;
+        };
+        match std::fs::write(&path, text) {
+            Ok(()) => {
+                self.status = trf!("Table saved: {}", path.display());
+                self.status_err = false;
+            }
+            Err(e) => {
+                self.status = trf!("Save failed: {e}", e = e);
+                self.status_err = true;
+            }
+        }
+    }
+
     /// Applies a built-in blueprint. The current data, LLM models and run options are kept, and the edits can be
     /// undone. It starts fresh from a template, so the link to the current file is dropped (Ctrl+S asks for a location
     /// instead of overwriting the previous .kiro).
@@ -1424,6 +1583,8 @@ impl StudioApp {
             Dialog::LoadProject => self.load_project(ctx),
             Dialog::SaveOutput => self.save_output(),
             Dialog::SaveReply => self.save_reply(),
+            Dialog::OpenReply => self.open_reply(),
+            Dialog::SaveTable => self.save_table(),
             Dialog::SaveThen(p) => match self.quick_save() {
                 SaveOutcome::Saved => self.perform(p, ctx),
                 // Without a save, the follow-up action is not done either (so no changes are lost).
@@ -1527,7 +1688,11 @@ impl StudioApp {
         // A drop during a load starts a new load that wins (load_gen).
         if let Some(path) = pick_drop(&dropped).cloned() {
             if modal_open {
-                self.status = tr!("Choose whether to save first").into();
+                self.status = if self.confirm.is_some() {
+                    tr!("Choose whether to save first").into()
+                } else {
+                    tr!("Close the API keys window first, then drop the file again").into()
+                };
                 self.status_err = true;
             } else {
                 self.open_path(path, ctx);
@@ -1730,6 +1895,33 @@ impl StudioApp {
                 ui.spinner();
             }
         });
+        // Sample data and blueprints that come with the app (the `samples` folder next to the executable)
+        let mut sample = None;
+        if !self.samples.is_empty() {
+            ui.menu_button(tr!("📁 Samples"), |ui| {
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    for (name, path) in &self.samples {
+                        let label = if name.ends_with(".kiro") {
+                            format!("📋 {name}")
+                        } else {
+                            name.clone()
+                        };
+                        if ui.button(label).clicked() {
+                            sample = Some(path.clone());
+                            ui.close();
+                        }
+                    }
+                });
+            })
+            .response
+            .on_hover_text(tr!(
+                "Sample data (📋 = a blueprint with its data and a ready prompt setup) that comes with Candy-Corn"
+            ));
+        }
+        if let Some(path) = sample {
+            let ctx = ui.ctx().clone();
+            self.open_path(path, &ctx);
+        }
         ui.horizontal(|ui| {
             ui.label(tr!("Sample rows"));
             let r = ui.add(egui::DragValue::new(&mut self.sample_rows).range(0..=blueprint::MAX_SAMPLE_ROWS));
@@ -2080,11 +2272,13 @@ impl StudioApp {
             Keys,
             Window(bool),
             SaveReply,
+            OpenReply,
+            Table(llm_view::AnalysisAct),
         }
-        let Some((target, preview, has_data, prompt_tokens, fields)) = self.result.as_ref().map(|r| {
+        // The preview text is not copied here: it can be large and this runs every frame
+        let Some((target, has_data, prompt_tokens, fields)) = self.result.as_ref().map(|r| {
             (
                 r.ast.target_model,
-                r.preview.clone(),
                 r.ast.data_sub_ast.is_some(),
                 r.comp_tokens,
                 r.ast.output_schema.required_fields.clone(),
@@ -2139,6 +2333,15 @@ impl StudioApp {
                 .clicked()
             {
                 act = Some(Act::Window(true));
+            }
+            if ui
+                .add_enabled(!running, egui::Button::new(tr!("📂 Open reply…")).small())
+                .on_hover_text(tr!(
+                    "Analyze a reply saved in a file (JSON or a Markdown table) without calling a model"
+                ))
+                .clicked()
+            {
+                act = Some(Act::OpenReply);
             }
             if running {
                 ui.spinner();
@@ -2201,7 +2404,9 @@ impl StudioApp {
             .id_salt("preview")
             .show(ui, |ui| match &self.llm_out {
                 None => {
-                    ui.add(egui::Label::new(RichText::new(&preview).monospace().color(p.sub)).selectable(true));
+                    if let Some(r) = &self.result {
+                        ui.add(egui::Label::new(RichText::new(&r.preview).monospace().color(p.sub)).selectable(true));
+                    }
                 }
                 Some(run) => {
                     let c = match &run.out {
@@ -2215,7 +2420,10 @@ impl StudioApp {
                     for (tone, line) in check_lines(c) {
                         ui.colored_label(tone_color(tone, p), line);
                     }
-                    llm_view::field_chips(ui, p, &llm_view::field_states(&fields, &c.missing, &c.nulls));
+                    // When the reply could not be parsed every field would show as missing, which only repeats the error
+                    if c.error.is_none() {
+                        llm_view::field_chips(ui, p, &llm_view::field_states(&fields, &c.missing, &c.nulls));
+                    }
                     if let Some(u) = c.usage {
                         ui.add_space(2.0);
                         llm_view::token_bars(ui, p, u, prompt_tokens, run.max_tokens);
@@ -2258,25 +2466,39 @@ impl StudioApp {
                     if empty {
                         ui.label(RichText::new(tr!("(empty reply)")).monospace().color(p.sub));
                     } else {
+                        use llm_view::ReplyTab;
+                        let model = run.model.as_ref();
+                        let auto = model.map_or(ReplyTab::Structured, llm_view::ReplyModel::default_tab);
+                        let mut tab = self.llm_tab.unwrap_or(auto);
                         ui.horizontal(|ui| {
-                            ui.selectable_value(
-                                &mut self.llm_tab,
-                                llm_view::ReplyTab::Structured,
-                                tr!("📊 Structured"),
-                            );
-                            ui.selectable_value(&mut self.llm_tab, llm_view::ReplyTab::Text, tr!("📝 Text"));
+                            ui.selectable_value(&mut tab, ReplyTab::Analysis, tr!("📈 Analysis"));
+                            ui.selectable_value(&mut tab, ReplyTab::Structured, tr!("📊 Structured"));
+                            ui.selectable_value(&mut tab, ReplyTab::Text, tr!("📝 Text"));
                         });
+                        // Remember a tab the user picked; until then each reply opens in the tab that suits it
+                        if tab != self.llm_tab.unwrap_or(auto) {
+                            self.llm_tab = Some(tab);
+                        }
                         ui.separator();
-                        let drawn = self.llm_tab == llm_view::ReplyTab::Structured && {
-                            let ok = llm_view::structured_view(ui, p, &c.pretty);
-                            if !ok {
-                                ui.label(
-                                    RichText::new(tr!("No JSON or table in the reply; showing the text"))
-                                        .small()
-                                        .color(p.sub),
-                                );
+                        let drawn = match (tab, model) {
+                            (ReplyTab::Analysis, Some(m)) => {
+                                if let Some(a) = llm_view::analysis_ui(ui, p, m, &mut self.llm_analysis) {
+                                    act = Some(Act::Table(a));
+                                }
+                                true
                             }
-                            ok
+                            (ReplyTab::Structured, Some(m)) => {
+                                let ok = llm_view::structured_view(ui, p, m);
+                                if !ok {
+                                    ui.label(
+                                        RichText::new(tr!("No JSON or table in the reply; showing the text"))
+                                            .small()
+                                            .color(p.sub),
+                                    );
+                                }
+                                ok
+                            }
+                            _ => false,
                         };
                         if !drawn {
                             ui.add(
@@ -2291,9 +2513,17 @@ impl StudioApp {
             Some(Act::Run) => self.start_llm(&ctx),
             Some(Act::Cancel) => self.cancel_llm(),
             Some(Act::Retry(limit)) => self.retry_longer(limit, &ctx),
-            Some(Act::Keys) => self.keys.show_window(),
+            Some(Act::Keys) => {
+                self.keys.show_window();
+                if in_window {
+                    // The keys window belongs to the main window; bring that one up so it is not left out of sight
+                    ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+                }
+            }
             Some(Act::Window(on)) => self.llm_window = on,
             Some(Act::SaveReply) => self.dialog = Some(Dialog::SaveReply),
+            Some(Act::OpenReply) => self.dialog = Some(Dialog::OpenReply),
+            Some(Act::Table(llm_view::AnalysisAct::SaveCsv)) => self.dialog = Some(Dialog::SaveTable),
             None => {}
         }
     }
@@ -3097,6 +3327,8 @@ mod tests {
             )),
             ms: 10,
             max_tokens,
+            source: None,
+            model: None,
         };
         assert_eq!(retry_limit(&run("max_tokens", 2048)), Some(4096));
         assert_eq!(retry_limit(&run("MAX_TOKENS", 32_000)), None); // already at the cap
@@ -3105,6 +3337,8 @@ mod tests {
             out: Err("HTTP 500".into()),
             ms: 5,
             max_tokens: 2048,
+            source: None,
+            model: None,
         };
         assert_eq!(retry_limit(&failed), None);
         assert_eq!(
@@ -3350,6 +3584,8 @@ mod tests {
                 out: Err("HTTP 500".into()),
                 ms: 5,
                 max_tokens: 2048,
+                source: None,
+                model: None,
             };
             assert_eq!(run_line(&failed, 0), "Failed after 5 ms");
             assert_eq!(window_title(" ", true, None), "● Untitled — Candy-Corn");

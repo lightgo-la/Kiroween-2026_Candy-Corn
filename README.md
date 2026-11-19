@@ -32,6 +32,8 @@ One executable, `Candy-Corn.exe`, contains a desktop GUI (egui), a terminal lint
 - **Code generation**: Claude XML, GPT Markdown, Gemini sections. Text that comes from the data is sanitized so it cannot open a new prompt section.
 - **Token report**: original vs. compressed token counts (tiktoken `o200k_base`, the same approximation for every vendor) and the estimated input-cost saving.
 - **LLM run** (GUI): sends the compiled prompt to Anthropic, OpenAI or Gemini and checks that the reply follows the output format and contains the required fields. Keys come from the 🔑 API keys window (saved in Windows Credential Manager, never in blueprints or logs) or from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `GEMINI_API_KEY`; a saved key wins. The stop reason, token usage and latency are shown, and a reply cut off at the token limit is reported as cut off. Without a key the result is a mock reply built from the schema. In 🔑 API keys, each provider also has an optional endpoint (a proxy or a local OpenAI-compatible server; https, or http for localhost) saved in `settings.json`, and a "Test connection" button. See [API keys and endpoints](#api-keys-and-endpoints).
+- **Reply analysis** (VIII): the reply is parsed once and shown as overview tiles, a sortable and filterable table with data bars (JSON arrays of objects, objects of numbers and Markdown tables), column statistics, a bar or donut chart, CSV export, and a check of which data columns and outliers the reply mentions. **📂 Open reply…** analyzes a reply saved in a file, so the tools work without an API key.
+- **Samples**: ten ready blueprints with synthetic data in nine file formats and encodings (CP949, UTF-16, UTF-8 with BOM, tab, semicolon, pipe, NDJSON), each with planted problems and a sample reply. See [samples/README.md](samples/README.md).
 - **Blueprints**: all settings of the studio canvas (data path, sample rows, role, constraints, output format and fields, target, theme, LLM model and options, node layout) are saved as a `.kiro` JSON file. Five built-in blueprints are included, and the CLI reads the same files.
 - **Steering rules**: the `- ` and `* ` bullets of `.kiro/steering/compiler-rules.md` are added as constraints when the GUI starts, or with `--steering` on the CLI.
 - **Graph tool**: a node canvas that connects Text, Prompt, LLM, MCP and Output nodes, with saved test cases and a headless runner. MCP nodes and custom LLM endpoints run only when they are explicitly allowed.
@@ -41,7 +43,7 @@ One executable, `Candy-Corn.exe`, contains a desktop GUI (egui), a terminal lint
 
 - **Language and UI**: Rust (2024 edition), egui for the desktop GUI, clap for the command line.
 - **Shared pipeline**: the GUI, the CLI and the MCP server all use one compile pipeline (`src/pipeline.rs`): profiler → AST → lint passes → code generation → token report.
-- **Testing**: unit tests, 13,000 seeded random QC cases, source checks, 33 scenarios, 16 graph end-to-end tests, and a QA suite that runs the real binary 1,000 times.
+- **Testing**: unit tests, 13,000 seeded random QC cases, source checks, 33 scenarios, 16 graph end-to-end tests, 5 sample data tests, and a QA suite that runs the real binary 1,000 times.
 - **Localization**: Rust sources are English. Korean text lives only in `locales/` and `tests/fixtures/`, and `build.rs` turns it into macros and constants, so a missing translation is a compile error.
 
 ### Development timeline
@@ -98,7 +100,7 @@ The `.kiro/` directory holds the steering docs, specs, agent and hooks used in t
 - MCP client: tool discovery (`tools/list`), a pool that reuses one server process per command, and a Windows Job Object so MCP servers started by Candy-Corn exit when it exits or crashes.
 - Graph tool: undo/redo and parallel branches.
 - A command palette (Ctrl+K) with Korean initial-consonant search, plus a minimap, alignment and snapping in both canvases.
-- MCP server: accept `data_path` only for data files inside allowed folders (`--allow-path`). Blueprints: atomic saves.
+- MCP server: accept `data_path` only for files inside allowed folders (`--allow-path`; today it accepts data files by extension anywhere on a local disk). Blueprints: atomic saves.
 
 ---
 
@@ -145,6 +147,7 @@ After installing, run these in `%LOCALAPPDATA%\Programs\Candy-Corn`.
 ```
 Candy-Corn.exe --cli --data samples/sales.csv --constraint "Detect outliers first" --constraint "Do not detect outliers"
 Candy-Corn.exe --cli --lang ko --data samples/sales.csv --target gpt --format table
+Candy-Corn.exe --cli --blueprint samples/web_traffic.kiro
 Candy-Corn.exe --cli --blueprint plan.kiro
 ```
 
@@ -161,8 +164,15 @@ The first command prints a Claude XML prompt and reports this on stderr:
 1. Start `Candy-Corn.exe` (or the Start Menu shortcut). The studio has three panes: inputs on the left, the canvas and X-Ray in the center, the compiled prompt and the LLM run on the right.
 2. Click **🔑 API keys** at the top of the left pane and paste a key for the provider you want to use (optional; without a key the LLM run shows a mock reply).
 3. Load a CSV/JSON file with **📂 Load CSV/JSON** or drop it on the window, then write the role, constraints and output fields.
-4. Press Ctrl+Enter to compile, read the lint log and the token report, and run the prompt against the model from the right pane. VIII (LLM run result) shows the required fields as ✔/⚠/✖ chips, input/output token bars and the share of the output limit used, the reply as a JSON tree with tables or a Markdown table grid (📊 Structured) or as text (📝 Text), and a chart and table of the last 12 runs. **Save reply…** writes the reply to a file, and **↗ Separate window** opens VIII in its own window (**↙ Back to the pane** or closing the window puts it back).
-5. Save everything as a `.kiro` blueprint with Ctrl+S.
+4. Press Ctrl+Enter to compile, read the lint log and the token report, and run the prompt against the model from the right pane.
+5. Read the result in VIII (LLM run result):
+   - **Checks**: the required fields as ✔/⚠/✖ chips, input and output token bars, and the share of the output limit used.
+   - **📈 Analysis**: overview tiles for the top level of the reply; *Data coverage*, which shows the columns and outliers of your data that the reply names (✔ column and value, ◐ column only, ✖ not mentioned); a table with click-to-sort headers, a row filter and data bars inside number cells; column statistics (count, min, mean, max, sum for the rows shown); and a chart that groups rows by one column and counts them or adds up a number column (bars or donut). **Copy CSV** and **Save CSV…** export the rows shown, with the filter and sort applied. Replies with several tables have a table picker.
+   - **📊 Structured**: the reply as a JSON tree with grids. **📝 Text**: the reply as it came back.
+   - **📂 Open reply…** loads a reply from a `.json`, `.md` or `.txt` file and checks it like a live reply, so the analysis works without a key and on replies from other tools. **Save reply…** writes the reply to a file.
+   - A chart and table of the last 12 runs, and **↗ Separate window** to open VIII in its own window (**↙ Back to the pane** or closing the window puts it back).
+6. Try the **📁 Samples** menu in the left pane: it lists the sample blueprints (📋) and data files that come with the app.
+7. Save everything as a `.kiro` blueprint with Ctrl+S.
 
 Shortcuts:
 
@@ -259,18 +269,21 @@ To call `compress_prompt` from Kiro, add the server to `.kiro/settings/mcp.json`
 
 The path is the installer's default. With a source build, use the path of your `Candy-Corn.exe`.
 
+For safety `data_path` accepts only data files (`.csv`, `.tsv`, `.txt`, `.json`, `.jsonl`, `.ndjson`) and never a network or device path, so an agent that was talked into it cannot read an arbitrary text file or make Windows connect to another host. A graph file or a blueprint that names a network path is refused for the same reason; a path you pick in a dialog or type after `--data` is your own choice and is not checked.
+
 ## Troubleshooting
 
 - **SmartScreen warning**: the installer is not code-signed. Choose More info > Run anyway.
 - **Korean text shows as boxes**: the GUI needs `malgun.ttf`, `NanumGothic.ttf` or `gulim.ttc` in `C:\Windows\Fonts`.
 - **`No ... API key`**: add a key in 🔑 API keys or set the environment variable, then use Test connection.
-- **Custom endpoint rejected**: use https, or http only for localhost.
+- **Custom endpoint rejected**: use https, or http only for localhost, without a `?query` or `#fragment`. An address that ends in `/v1` (LM Studio, Ollama) is fine.
+- **"The settings file is not valid JSON"**: a hand edit broke `%APPDATA%\Candy-Corn\settings.json`. Runs stop instead of silently using the provider's public address. Fix the file or delete it; when Candy-Corn rewrites a file it cannot read, it keeps a copy as `settings.json.bad`.
 - **Build fails to link during development**: a GUI started with `cargo run` locks the debug exe; close it first.
 
 ## Testing
 
 ```
-cargo test                                  # unit tests, QC (13,000 seeded random cases), source checks, 33 scenarios, 16 graph e2e tests
+cargo test                                  # unit tests, QC (13,000 seeded random cases), source checks, 33 scenarios, 16 graph e2e tests, 5 sample data tests
 cargo test --test qa -- --ignored           # QA: 1,000 runs of the real binary
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all -- --check
@@ -285,6 +298,8 @@ src/main.rs           command line (clap): GUI, --blueprint, --cli, --mcp, --can
 src/i18n.rs           UI language: tr!/trf!/trp! macros, per-thread override for tests, settings file
 src/lexicon.rs        Korean word lists for the linter and the profiler (generated from locales/)
 src/app.rs            GUI studio: 3-pane layout, workers, LLM run, undo
+src/keys.rs           🔑 API keys window: Credential Manager keys, custom endpoints, connection test
+src/llm_view.rs       VIII visuals: field chips, token bars, run history, reply analysis (tables, charts, coverage)
 src/studio_canvas.rs  blueprint canvas
 src/blueprint.rs      .kiro format, built-in blueprints
 src/pipeline.rs       compile pipeline shared by GUI, CLI and MCP; steering parser; LLM reply check
@@ -297,7 +312,8 @@ src/qc.rs             randomized QC tests (test builds only)
 build.rs              exe icon; generates ko_text!, the lexicon constants and ko_fixture!
 locales/              Korean UI text (ko*.json) and Korean linguistic data (lexicon.ko*.json)
 tests/                scenario, graph and QA tests; tests/fixtures/ holds the Korean test inputs
-samples/              sales.csv, flow.canvas.json
+samples/              synthetic sample data, sample blueprints (.kiro) and sample replies (see samples/README.md)
+tools/gen-samples.ps1 regenerates the nine generated sample data files (fixed seed)
 installer/            Windows installer: Inno Setup script (candy-corn.iss) and build script (build.ps1)
 .kiro/                steering docs, specs, agent and hooks
 ```

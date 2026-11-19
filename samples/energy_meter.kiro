@@ -1,0 +1,16 @@
+{
+  "version": 3,
+  "project": "energy_meter.kiro",
+  "target": "Gemini",
+  "role": "Facility energy manager",
+  "goals": [
+    { "text": "Compare each building with its own normal day", "on": true },
+    { "text": "Rule out weather and occupancy before blaming equipment", "on": true },
+    { "text": "Do not infer anything not in the data", "on": true }
+  ],
+  "format": "MarkdownTable",
+  "fields": "building,date,kwh,expected_kwh,finding",
+  "sample_rows": 10,
+  "theme": 0,
+  "data_path": "energy_meter_utf16.txt"
+}
