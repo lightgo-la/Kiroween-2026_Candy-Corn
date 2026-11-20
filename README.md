@@ -13,7 +13,7 @@
 |---|---|
 | **Hackathon** | Kiroween 2026 |
 | **Category** | Costume Contest |
-| **Team** | lightgo-la |
+| **Team** | lightgo1230 |
 | **Repository** | https://github.com/lightgo-la/Kiroween-2026_Candy-Corn |
 | **Demo video** | https://youtu.be/aEBaggybnm4 |
 | **License** | MIT. See [LICENSE](LICENSE) |
